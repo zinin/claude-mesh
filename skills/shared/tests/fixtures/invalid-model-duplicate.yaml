@@ -1,0 +1,12 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM One"
+    model: glm-5.1
+  - id: zai/glm
+    label: "GLM Two"
+    model: glm-5.2

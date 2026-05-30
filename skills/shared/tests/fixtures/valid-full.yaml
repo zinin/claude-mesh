@@ -1,0 +1,24 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+  - id: ollama
+    label: "Ollama"
+    base_url: http://127.0.0.1:11434
+    token: "ollama"
+    kind: ollama-daemon
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+  - id: ollama/kimi
+    label: "Kimi"
+    model: kimi-k2.6:cloud
+    haiku_model: deepseek-v4-flash:cloud
+  - id: ollama/deepseek
+    label: "DeepSeek 1M"
+    model: deepseek-v4-pro:cloud
+    haiku_model: deepseek-v4-flash:cloud
+    context_window: 1000000

@@ -1,0 +1,10 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+
+models:
+  - id: alibaba/glm          # provider "alibaba" doesn't exist
+    label: "GLM"
+    model: glm

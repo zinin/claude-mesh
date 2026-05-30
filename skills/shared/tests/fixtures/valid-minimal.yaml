@@ -1,0 +1,18 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-abc"
+
+models:
+  - id: zai/glm
+    label: "GLM 5.1"
+    model: glm-5.1
+
+runtime:
+  default_run_mode: background
+  timeouts:
+    single_run_sec: 1800
+    stall_sec: 600
+    global_sec: 3600
+    max_retries: 2

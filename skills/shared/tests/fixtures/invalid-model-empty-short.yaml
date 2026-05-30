@@ -1,0 +1,10 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+
+models:
+  - id: zai/                 # empty short after slash
+    label: "GLM"
+    model: glm

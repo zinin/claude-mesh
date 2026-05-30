@@ -1,0 +1,9 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+models:
+  - id: zai/odd
+    label: "Odd"
+    model: 'a" + .providers[0].token + "z'

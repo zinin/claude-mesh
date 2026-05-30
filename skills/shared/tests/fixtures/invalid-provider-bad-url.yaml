@@ -1,0 +1,9 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: "ftp://api.z.ai/anthropic"
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1

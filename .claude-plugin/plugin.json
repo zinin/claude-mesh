@@ -1,0 +1,13 @@
+{
+  "name": "claude-mesh",
+  "displayName": "Claude Mesh",
+  "description": "Multi-model code review, alt-Claude execution, session helpers",
+  "author": {
+    "name": "Alexander V. Zinin",
+    "email": "azinin@gmail.com",
+    "url": "https://github.com/zinin"
+  },
+  "repository": "https://github.com/zinin/claude-mesh",
+  "license": "MIT",
+  "keywords": ["claude-code", "code-review", "multi-model", "external-review"]
+}

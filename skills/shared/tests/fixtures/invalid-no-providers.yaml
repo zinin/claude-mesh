@@ -1,0 +1,5 @@
+# providers section intentionally missing
+models:
+  - id: zai/glm
+    label: "GLM 5.1"
+    model: glm-5.1

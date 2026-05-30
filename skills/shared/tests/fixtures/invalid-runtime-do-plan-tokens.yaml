@@ -1,0 +1,11 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+runtime:
+  do_plan_default_stop_tokens: 100000   # below 150000 minimum

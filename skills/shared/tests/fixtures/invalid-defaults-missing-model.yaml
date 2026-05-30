@@ -1,0 +1,14 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+defaults:
+  code_review:
+    builtin: [claude]
+    models: [zai/nonexistent]    # not in models list
+    run_mode: background

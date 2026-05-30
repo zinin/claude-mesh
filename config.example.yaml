@@ -1,0 +1,204 @@
+# ============================================================================
+# claude-mesh — example configuration
+# ============================================================================
+# Copy this file to  ~/.claude/plugins/data/claude-mesh-zinin/config.yaml  and edit.
+#
+# WARNING: the live config.yaml contains plaintext API tokens once edited.
+#          DO NOT commit it to any git repo. Only this *.example.yaml (with
+#          REPLACE_ME placeholders) belongs in version control.
+#
+# How it loads:
+#   * Parsed by shared/config-loader.sh on the first call of any skill/agent in
+#     a session, then re-read between bash invocations (edit → effect is immediate).
+#   * The loader VALIDATES the whole file on load. ANY error → the command refuses
+#     to start and prints, on stderr, the exact yaml location + how to fix it.
+#   * Sections are independent: omit an optional section to disable that feature.
+#
+# Legend used below:  [required] / [optional]  and  "valid: a | b | c" enumerations.
+# ============================================================================
+
+
+# ============================================================================
+# (1) providers — HTTP endpoints of Anthropic-compatible APIs   [required, >=1]
+# ============================================================================
+# Each model (section 2) points at exactly one provider via its id prefix.
+providers:
+  - id: zai                                    # [required] slug, must match [a-z0-9-]+ and be unique.
+                                               #   Ends up in run-dir paths (runs/ext-claude/<provider>/...),
+                                               #   so it must be filesystem-safe. Dots/underscores are
+                                               #   reserved for the model <short> id (section 2), not here.
+    label: "Z.AI"                              # [required] shown in the UI and logs. Must NOT contain '|'
+                                               #   (the '|' breaks the pipe-delimited list output).
+    base_url: https://api.z.ai/api/anthropic   # [required] must start with http:// or https://
+    token: "REPLACE_ME"                        # [required] plaintext token. The literal "REPLACE_ME"
+                                               #   passes `validate` but fails at export time with a clear
+                                               #   "edit your token" error — so this example validates as-is.
+    kind: anthropic-api                        # [optional] default: anthropic-api
+                                               #   valid: anthropic-api | ollama-daemon
+                                               #     anthropic-api  — standard Anthropic-compatible endpoint.
+                                               #     ollama-daemon  — adds an /api/tags reachability probe +
+                                               #                      cold-start retry before `claude -p`.
+
+  - id: alibaba
+    label: "Alibaba Cloud"
+    base_url: https://coding-intl.dashscope.aliyuncs.com/apps/anthropic
+    token: "REPLACE_ME"
+
+  - id: deepseek
+    label: "DeepSeek"
+    base_url: https://api.deepseek.com/anthropic
+    token: "REPLACE_ME"
+
+  - id: litellm
+    label: "LiteLLM (local proxy on 127.0.0.1:4000)"
+    # Assumes the proxy exposes the Anthropic-compatible /v1/messages endpoint.
+    # If your LiteLLM runs in OpenAI-compat mode only, pass SKIP_TOKEN_PRECHECK=1
+    # when calling ext-claude-exec — `claude -p` will then surface HTTP errors
+    # instead of the loader's 401-precheck.
+    base_url: http://127.0.0.1:4000
+    token: "dummy"                             # local proxy ignores the token, but the field is required.
+
+  - id: ollama
+    label: "Ollama (local daemon on 127.0.0.1:11434)"
+    base_url: http://127.0.0.1:11434
+    token: "ollama"
+    kind: ollama-daemon
+    # NOTE: kind=ollama-daemon assumes the daemon exposes an Anthropic-compatible
+    # endpoint at /v1/messages — `claude -p` POSTs there. Plain Ollama only serves
+    # /api/generate and /api/chat. Working configurations: (a) signed-in Ollama
+    # Cloud daemon (built-in Anthropic-compat proxy), (b) a local LiteLLM in front
+    # of Ollama that translates Anthropic↔Ollama, (c) Ollama 0.4+ with
+    # `ollama serve --openai-compat-anthropic` (if/when shipped).
+    # See README troubleshooting "Ollama daemon unreachable / 404 from /v1/messages".
+
+
+# ============================================================================
+# (2) models — id = "<provider>/<short>"                        [required, >=1]
+# ============================================================================
+# <provider> must be one of the providers above. <short> must match [a-z0-9._-]+.
+# The id must be unique and contain exactly one "/". On selection, the loader
+# exports the env block that points `claude -p` at this model.
+models:
+  - id: zai/glm                                # [required] "<provider>/<short>"; provider inferred from prefix.
+    label: "GLM 5.1"                           # [required] UI/logs; no '|'.
+    model: glm-5.1                             # [required] → ANTHROPIC_MODEL, and (unless overridden below)
+                                               #   ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL + CLAUDE_CODE_SUBAGENT_MODEL.
+    # ---- per-model overrides (all [optional]; each defaults to `model:` above) ----
+    # opus_model:     glm-5.1                   # → ANTHROPIC_DEFAULT_OPUS_MODEL
+    # sonnet_model:   glm-5.1                   # → ANTHROPIC_DEFAULT_SONNET_MODEL
+    # haiku_model:    glm-5.1                   # → ANTHROPIC_DEFAULT_HAIKU_MODEL  (the "small/fast" model)
+    # subagent_model: glm-5.1                   # → CLAUDE_CODE_SUBAGENT_MODEL
+    # context_window: 200000                    # [optional] integer → CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+                                               #   Omit to leave Claude Code's auto-compaction at its default.
+
+  - id: alibaba/glm
+    label: "Alibaba GLM 5"
+    model: glm-5
+
+  - id: alibaba/qwen
+    label: "Alibaba Qwen Coder"
+    model: qwen3-coder-plus
+
+  - id: alibaba/kimi
+    label: "Alibaba Kimi"
+    model: kimi-k2.5
+
+  - id: alibaba/minimax
+    label: "Alibaba MiniMax"
+    model: minimax-m2.7
+
+  - id: deepseek/v4-pro
+    label: "DeepSeek V4 Pro (1M)"
+    model: "deepseek-v4-pro[1m]"               # quote any value containing []/special chars.
+    haiku_model: "deepseek-v4-flash[1m]"       # example override: cheaper "small/fast" model.
+    context_window: 1000000
+
+  - id: litellm/kimi
+    label: "Kimi via LiteLLM"
+    model: kimi-k2.5
+
+  - id: ollama/kimi
+    label: "Kimi K2.6 (Ollama)"
+    model: kimi-k2.6:cloud
+    haiku_model: deepseek-v4-flash:cloud
+
+  - id: ollama/deepseek
+    label: "DeepSeek V4 Pro 1M (Ollama)"
+    model: deepseek-v4-pro:cloud
+    haiku_model: deepseek-v4-flash:cloud
+    context_window: 1000000
+
+  - id: ollama/minimax
+    label: "MiniMax M2.7 (Ollama)"
+    model: minimax-m2.7:cloud
+    haiku_model: minimax-m2.7:cloud
+
+
+# ============================================================================
+# (3) External CLI tools                                          [optional]
+# ============================================================================
+# These are NOT Anthropic-API endpoints — they shell out to the codex / gemini
+# CLIs. Omit a section entirely to remove that tool from the UI and from any
+# `defaults.*.builtin` list (referencing it in builtin then becomes a hard error).
+codex:
+  model: gpt-5.5                               # [required when codex: present]
+  reasoning_level: xhigh                       # [optional] valid: low | medium | high | xhigh
+
+gemini:
+  model: gemini-3.1-pro-preview                # [required when gemini: present]
+
+
+# ============================================================================
+# (4) defaults — preset reviewer sets for the "default" command argument
+# ============================================================================
+# Consumed when you run `/mesh-review default` / `/mesh-design-review default`.
+# The whole `defaults:` section is [optional]; each preset and each field inside
+# is [optional] too.
+defaults:
+  code_review:                                 # used by: /mesh-review default
+    builtin: [claude, codex, gemini]           # [optional] list; subset of { claude, codex, gemini }.
+                                               #   claude  — your own Claude Code via superpowers:requesting-code-review
+                                               #             (needs NO config section).
+                                               #   codex   — requires the codex: section above.
+                                               #   gemini  — requires the gemini: section above.
+    models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
+                                               # [optional] list; each entry must be a model id from section 2.
+    run_mode: background                       # [optional] valid: background | team
+                                               #   background — each reviewer runs as a detached background
+                                               #                Task (non-blocking; collect results when ready).
+                                               #   team       — reviewers run as a coordinated agent team
+                                               #                (TeamCreate + teammates).
+                                               #   NOTE: team mode is still experimental and currently
+                                               #         works poorly — prefer 'background' (the default).
+
+  design_review:                               # used by: /mesh-design-review default
+    builtin: [codex, gemini]                   # [optional] same valid set { claude, codex, gemini }.
+    models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
+                                               # NOTE: design_review has NO run_mode field (ignored if present).
+
+
+# ============================================================================
+# (5) runtime — UI preferences and supervised-run timeouts        [optional]
+# ============================================================================
+runtime:
+  default_run_mode: background                 # [optional] valid: background | team
+                                               #   Pre-selects the run-mode choice in the /mesh-review UI.
+                                               #   Keep 'background': team mode is experimental and
+                                               #   currently unreliable; background is the safe default.
+
+  # /do-plan with no argument uses this as its STOP threshold (in tokens).
+  do_plan_default_stop_tokens: 250000          # [optional] positive integer, must be >= 150000
+                                               #   (the check-context-size.sh hook emits nothing below the
+                                               #   150k milestone, so a lower STOP could never fire).
+                                               #   `/do-plan <N>` overrides this for a single invocation.
+
+  # /mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/ext-claude)
+  # flips to self-review (no run dir) or is killed mid-flight, re-dispatch it up to this many
+  # rounds. BROKEN engines (thinking-only/DSML output) are never retried — swap the model instead.
+  max_redispatch: 1                            # [optional] positive integer. default 1
+
+  timeouts:                                    # all [optional]; each must be a positive integer (seconds).
+    single_run_sec: 1800                       # one `claude -p` attempt (wrapped in `timeout`). default 1800
+    stall_sec: 600                             # supervised mode: no output for this long → kill + retry. default 600
+    global_sec: 3600                           # supervised mode: overall wall-clock budget. default 3600
+    max_retries: 2                             # supervised mode: retries after a kill. default 2
