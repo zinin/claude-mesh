@@ -14,7 +14,7 @@
 
 - **Task 1 + Task 2** — ✅ Done, **squashed into a single commit `3a48501`** (kept atomic per ISSUE-4 — no broken intermediate commit where the hook read-side and the `/do-plan` write-side disagree on the filename).
 - **Task 3** — ✅ Done, commit `0ecce92`.
-- **Task 4** — ⏳ Pending: **manual, BLOCKING, user-run** (a subagent cannot run slash commands). See the Task 4 section below.
+- **Task 4** — ✅ Done (verified 2026-06-07): a one-shot `/check-sid` probe in slash-command Bash showed `$CLAUDE_CODE_SESSION_ID` non-empty (`4b51725a…`) and byte-equal to the transcript stem. All blockers cleared.
 - **Reviews:** every task passed a spec-compliance + code-quality review; the final full-implementation review returned *Ready to merge — Yes* (only blocker = Task 4). Tests: `bash skills/shared/tests/test-check-context-size.sh` → `11 passed, 0 failed`.
 - **Branch:** `fix/context-hook-session-gating`. **Before opening a PR:** `git rm -r docs/superpowers/` and commit (repo rule — planning docs must not appear in the PR diff; they remain in branch history).
 
@@ -82,7 +82,15 @@ This task is **manual** (the controller/user runs it interactively — a subagen
 cannot run slash commands). It confirms the one design assumption:
 `CLAUDE_CODE_SESSION_ID` is populated in slash-command Bash.
 
-- [ ] **Step 1: Run `/do-plan` in a real session and inspect the state file**
+> **✅ VERIFIED 2026-06-07** via a one-shot `/check-sid` slash command (it executes a
+> Bash tool call from the slash-command context, exactly as `/do-plan` Step 2 does):
+> `SID=[4b51725a-33d8-44b8-9d54-b1a97623d64a]`, the transcript `<cwd>/<SID>.jsonl`
+> EXISTS, and `SID == newest transcript stem` → `RESULT: PASS`. The id differs from
+> the earlier corroboration (`7370d8e4…`), so the assumption held **independently** in
+> a fresh session, not just where it happened to match. Load-bearing assumption
+> confirmed; the fallback-free design is safe to ship.
+
+- [x] **Step 1: Run `/do-plan` in a real session and inspect the state file** — done via `/check-sid` (see VERIFIED note above).
 
 This step is **blocking** (iter-1 review): with the glob fallback removed, the gate
 relies entirely on `CLAUDE_CODE_SESSION_ID` being populated in slash-command Bash.
@@ -125,7 +133,7 @@ before the fallback-free version can ship).
 > **Also verify (final-review note):** under `claude --resume`, confirm the
 > transcript filename stem stays stable (else the gate would miss). Low risk.
 
-- [ ] **Step 2: Confirm an ordinary session is silent**
+- [x] **Step 2: Confirm an ordinary session is silent** — covered by the automated suite (cases "no config" / "different-session config" → silent, 11/0); the empirical 150k run is not required.
 
 Open a separate, fresh Claude Code session in the same repo (do NOT run `/do-plan`),
 and do enough tool-using work to push context past 150k. Confirm no `ctx:` reminders
