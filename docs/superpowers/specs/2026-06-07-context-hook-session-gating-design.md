@@ -64,38 +64,43 @@ including an ordinary one in the same cwd — stays silent.
 These are the same value (verified: env `CLAUDE_CODE_SESSION_ID` equals the
 transcript filename stem).
 
-The per-cwd state file `do-plan-config-<cwd-encoded>.json` is persistent and NOT
-session-bound, so a naive "file exists" check would re-enable the hook in ordinary
-sessions in the same cwd after the first `/do-plan` ever run there. We therefore
-record the session id **inside** the file and require it to match.
+The state file is **per session**: `do-plan-config-<cwd-encoded>-<session>.json`.
+`/do-plan` writes the file for its own session; the hook looks for the file named
+after *its* session and emits only if it exists. A `/do-plan` in a different
+session (or a stale file from a past one) has a different filename, so the current
+session never sees it — no "file exists" false-positive, and **two concurrent
+`/do-plan` runs in the same cwd never clobber each other** (each owns its own file).
 
-State file schema (extended):
+State file schema (session encoded in the filename, so the body is just the
+threshold):
 
 ```json
-{"stop_threshold": 250000, "plan_session_id": "b3545e84-f42e-4799-bcc6-2dc3819b71d5"}
+{"stop_threshold": 250000}
 ```
 
 ### Hook changes (`check-context-size.sh`)
 
-The hook already computes both `CONFIG_FILE` (current line ~68) and `SESSION_KEY`
-(current line ~73). Insert the gate after those are defined and before the
-milestone logic — **reuse** the existing `SESSION_KEY`, do not recompute it.
-Everything below the gate is unchanged.
+`CONFIG_FILE` now depends on `SESSION_KEY`, so it must be computed **after**
+`SESSION_KEY` (current line ~73), not at the current line ~68. Move the
+`CONFIG_FILE` + `STOP_THRESHOLD` read below `SESSION_KEY`, gate on the file's
+existence, then read the threshold:
 
 ```bash
-# (SESSION_KEY and CONFIG_FILE already defined above — do not duplicate.)
-# /do-plan never ran in this cwd → stay silent.
+SESSION_KEY="$(basename "$TRANSCRIPT_PATH" .jsonl)"
+
+# Gate: this session owns a /do-plan config iff the per-session file exists.
+CONFIG_FILE="$STATE_DIR/do-plan-config-${CWD_ENC}-${SESSION_KEY}.json"
 [ -f "$CONFIG_FILE" ] || exit 0
-PLAN_SESSION="$(jq -r '.plan_session_id // empty' "$CONFIG_FILE" 2>/dev/null || true)"
-# Config belongs to a different (stale) session → stay silent.
-[ "$PLAN_SESSION" = "$SESSION_KEY" ] || exit 0
+
+# Threshold from THIS session's config (defense in depth: // 999999999).
+STOP_THRESHOLD="$(jq -r '.stop_threshold // 999999999' "$CONFIG_FILE" 2>/dev/null || echo "999999999")"
 ```
 
 Notes:
-- Old config files without `plan_session_id` → `PLAN_SESSION` empty → never matches
-  → silent. Safe by construction.
-- After the gate, `stop_threshold` is always present (written by `/do-plan`); the
-  existing `// 999999999` default stays as defense in depth.
+- The gate is a plain `[ -f ]` — no `jq` match needed, the session is in the
+  filename. Old per-cwd `do-plan-config-<cwd>.json` files (no session suffix) have
+  a different name → never read → silent. Safe by construction.
+- `STOP_THRESHOLD` moves below the gate, so the silent path pays no `jq` at all.
 - The `agent_id`-non-empty early `exit 0` (subagent guard) stays above the gate.
 
 ### `/do-plan` changes (`commands/do-plan.md`, Step 2)
@@ -103,17 +108,30 @@ Notes:
 Resolve the session id and write it into the state file:
 
 ```bash
+# The hook derives the same id independently as
+# SESSION_KEY="$(basename "$TRANSCRIPT_PATH" .jsonl)" and reads the file named for
+# its own session, so $SID must be byte-equal to that stem.
 SID="${CLAUDE_CODE_SESSION_ID:-}"
-# Fallback if the var is empty in slash-command Bash: newest transcript of this project.
-[ -n "$SID" ] || SID="$(ls -t "$HOME/.claude/projects/${CWD_ENC}"/*.jsonl 2>/dev/null \
-    | head -1 | xargs -r -n1 basename | sed 's/\.jsonl$//')"
-[ -n "$SID" ] || { echo "/claude-mesh:do-plan: could not resolve session id" >&2; exit 1; }
-printf '{"stop_threshold": %d, "plan_session_id": "%s"}\n' <THRESHOLD> "$SID" \
-    > "$PLUGIN_DATA/state/do-plan-config-${CWD_ENC}.json"
+[ -n "$SID" ] || { echo "/claude-mesh:do-plan: CLAUDE_CODE_SESSION_ID is empty — cannot bind the context hook. Aborting." >&2; exit 1; }
+
+# Per-session config file (session in the NAME, threshold in the body). Atomic
+# write with jq: robust to a concurrent hook read seeing a half-written file.
+CONFIG_PATH="$PLUGIN_DATA/state/do-plan-config-${CWD_ENC}-${SID}.json"
+CONFIG_TMP="$(mktemp "$PLUGIN_DATA/state/.do-plan-config-${CWD_ENC}-${SID}.XXXXXX")"
+jq -nc --argjson thr <THRESHOLD> '{stop_threshold:$thr}' > "$CONFIG_TMP" \
+    && mv -f "$CONFIG_TMP" "$CONFIG_PATH"
 ```
 
-`CWD_ENC` (`pwd | sed 's|/|-|g'`) already matches the project's transcript dir
-name for ordinary paths, so the fallback glob targets the right directory.
+**No transcript-dir glob fallback.** Earlier drafts fell back to
+`ls -t ~/.claude/projects/${CWD_ENC}/*.jsonl` when the env var was empty. iter-1
+review (ISSUE-1/2, empirically verified) removed it: (a) `~/.claude/projects/` dir
+names encode `.`/`_`→`-` too, not just `/`, so `sed 's|/|-|g'` misses on many real
+paths (e.g. `/opt/git/sib.certhub2` → real dir `-opt-git-sib-certhub2`); (b)
+`ls -t | head -1` picks the most-recently-*modified* transcript, which under
+concurrent sessions may be a different session — silently binding the wrong one.
+No glob can identify "this" session (that id is exactly what we are resolving), so
+a correct fallback does not exist. Failing loudly is safer; **Task 4** verifies
+the env var and is blocking.
 
 ### What stays unchanged
 
@@ -123,18 +141,22 @@ fields) · `do_plan_default_stop_tokens >= 150000` validation.
 
 ## Edge cases
 
-- **continue-plan-fresh-session:** new session B → `/do-plan` rewrites the config
-  with `plan_session_id=B` → hook active in B. ✓
-- **Stale persistent config from a prior `/do-plan`:** session mismatch → silent.
-  This is exactly the fix for the reported problem. ✓
+- **continue-plan-fresh-session:** new session B → `/do-plan` writes
+  `do-plan-config-<cwd>-B.json` → hook active in B (its own file). ✓
+- **Stale config from a prior `/do-plan`:** a past session's file is named for that
+  session; the current session looks for its own name → not found → silent. Exactly
+  the fix for the reported problem. ✓
+- **Two concurrent `/do-plan` in one cwd:** each session writes its own
+  `do-plan-config-<cwd>-<session>.json`; neither clobbers the other, both keep their
+  STOP. (This is why the config is per-session, not per-cwd — iter-1 review.) ✓
 - **Continuing work in the same session after `/do-plan` finished:** hook stays
   active until the session ends — acceptable; the user was in plan mode.
 - **Subagent** (`agent_id` non-empty): `exit 0` before the gate, as today.
 
 ## Documentation
 
-- `commands/do-plan.md`: Step 2 (write `plan_session_id`); Step 6 (note that
-  outside the `/do-plan` session the hook is silent).
+- `commands/do-plan.md`: Step 2 (write the per-session config file + its path
+  prose); Step 6 (note that outside the `/do-plan` session the hook is silent).
 - `hooks/check-context-size.sh`: update the header comment describing behavior.
 - `README.md` (line 18): clarify the hook is active only within a `/do-plan`
   session.
@@ -147,19 +169,24 @@ New `skills/shared/tests/test-check-context-size.sh` following the existing test
 pattern (`assert_*` helpers), with transcript fixtures carrying a chosen `usage`
 (`input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`).
 
-Cases:
-1. No `do-plan-config` + ctx 200k → silent.
-2. Config with a different `plan_session_id` + ctx 200k → silent.
-3. Config with matching `plan_session_id` + ctx 150k → `ctx:150k`.
-4. Matching session + ctx 260k, threshold 250k → STOP message.
+Cases (per-session config; `own` = a `do-plan-config-<cwd>-<session>.json` named
+for the session under test):
+1. No config for this session + ctx 200k → silent.
+2. Config owned by a *different* session + ctx 200k → silent.
+3. Own config + ctx 150k → `ctx:150k`.
+4. Own config + ctx 260k, threshold 250k → STOP (format-locked: `ctx:250k` + `STOP`).
 5. Subagent (`agent_id` set) → silent.
-6. Matching session + ctx below 150k → silent.
-7. Legacy config without `plan_session_id` → silent.
+6. Own config + ctx below 150k → silent.
+7. Own config + ctx 260k, threshold 300k → milestone but **no** STOP (threshold from config).
+8. Malformed own config → milestone still emits, no STOP, no crash (`set -e` safe).
 
 ## Assumption & risk
 
 `CLAUDE_CODE_SESSION_ID` is available in slash-command Bash. Confidence is high
 (it is a session-level var, unlike the plugin-scoped `CLAUDE_PLUGIN_ROOT`/`DATA`
-which are known-empty there). The newest-transcript fallback covers the risk;
-verify empirically during implementation (run `/do-plan`, confirm the written
-`plan_session_id` equals the current transcript stem).
+which are known-empty there). With the glob fallback removed (see above), this
+assumption is now **load-bearing**: if the var is empty, `/do-plan` aborts loudly
+rather than silently mis-binding. **Task 4 verifies it empirically and is
+blocking** — run `/do-plan`, confirm the written file is
+`do-plan-config-<cwd>-$CLAUDE_CODE_SESSION_ID.json` (the session id equals the
+current transcript stem), and that the env-var branch (not the abort) was taken.
