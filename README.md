@@ -15,7 +15,7 @@ daemon), and session helpers.
 - **`codex-*`, `gemini-*` agents** — wrappers for OpenAI Codex CLI and Gemini CLI
 - **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
   `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`
-- **Context-size hook** — `check-context-size` warns when approaching STOP threshold
+- **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else)
 
 ## Install
 
