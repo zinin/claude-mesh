@@ -27,7 +27,10 @@ threshold is written to a state file exclusively by that command). Outside
 
 ## Goals
 
-- Outside `/do-plan`: the hook is **completely silent**.
+- Outside `/do-plan`: the hook emits **nothing into the model context** (no
+  `additionalContext`). Note: it still runs its cheap preamble (`mkdir -p` on the
+  state dir, one `jq` on the per-cwd config) before the gate — "silent" means *no
+  model-visible output*, not *no work*.
 - Inside `/do-plan`: behavior is **unchanged** (milestones `START_K`/`INTERVAL_K`
   = 150/25, plus the one-shot STOP at the threshold).
 - Keep the hook **lightweight** — it must not parse `config.yaml` (that needs
@@ -40,13 +43,20 @@ threshold is written to a state file exclusively by that command). Outside
   overrides stay as the (undocumented) escape hatch.
 - Changing the milestone/STOP message formats, the compaction-reset logic, or the
   `do_plan_default_stop_tokens >= 150000` validation.
+- Cleaning up accumulated per-session state files (`context-milestone-<session>.txt`
+  / `context-stop-<session>.txt`). These are pre-existing and grow one pair per
+  `/do-plan` session; the gate only prevents *new* files from being created in
+  non-`/do-plan` sessions. Bounded cleanup is left to a future change.
 
 ## Design
 
 ### Session-scoped gate
 
 Both sides already know the same session id, so we can bind hook activity to "the
-session in which `/do-plan` was started":
+session in which `/do-plan` was started". The binding is **session-scoped, not
+command-scoped**: once `/do-plan` runs in a session, the hook stays active for the
+rest of that session (even after `/do-plan` finishes). Any *other* session —
+including an ordinary one in the same cwd — stays silent.
 
 - **Hook** computes `SESSION_KEY="$(basename "$TRANSCRIPT_PATH" .jsonl)"`.
 - **`/do-plan`** reads `$CLAUDE_CODE_SESSION_ID`.

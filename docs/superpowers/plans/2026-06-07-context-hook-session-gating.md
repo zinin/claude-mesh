@@ -20,6 +20,14 @@
 
 No new `config.yaml` fields. `START_K`/`INTERVAL_K` (150/25) and `CC_CONTEXT_*` overrides are untouched.
 
+> **Commit ordering (iter-1 review, ISSUE-4):** Task 2's `/do-plan` change (writing
+> `plan_session_id`) must land **before — or in the same commit as** — Task 1's hook
+> gate. If the gate is committed first, that intermediate commit still has the real
+> `/do-plan` writing a legacy `{stop_threshold}`-only config, so the hook is silent
+> *inside* `/do-plan` until Task 2 lands. The Task-1 tests do **not** catch this (they
+> synthesise their own matching config) — treat it as a commit-hygiene rule: squash
+> Tasks 1–2 into one commit, or implement Task 2 first.
+
 ---
 
 ## Task 1: Hook session gate + test suite
@@ -62,6 +70,15 @@ assert_silent() {
     fi
 }
 
+assert_not_contains() {
+    local desc="$1" needle="$2" haystack="$3"
+    if printf '%s' "$haystack" | grep -q -- "$needle"; then
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc (expected NOT to contain: '$needle'; got: '$haystack')"
+    else
+        PASS=$((PASS+1)); echo "  PASS: $desc"
+    fi
+}
+
 # run_hook <usage_total> <session> <agent_id> <config_json|->
 #   Builds an isolated CLAUDE_PLUGIN_DATA dir, a transcript named <session>.jsonl
 #   carrying <usage_total> tokens, optionally a do-plan-config file, runs the
@@ -79,8 +96,12 @@ run_hook() {
     [ "$config" = "-" ] || printf '%s\n' "$config" > "$tmp/state/do-plan-config-${cwd_enc}.json"
     local stdin; stdin="$(jq -nc --arg t "$transcript" --arg c "$cwd" --arg a "$agent_id" \
         '{transcript_path:$t,cwd:$c,hook_event_name:"PostToolUse",agent_id:$a}')"
-    local out; out="$(printf '%s' "$stdin" | CLAUDE_PLUGIN_DATA="$tmp" bash "$HOOK" 2>/dev/null)"
+    local out rc
+    out="$(printf '%s' "$stdin" | CLAUDE_PLUGIN_DATA="$tmp" bash "$HOOK" 2>/dev/null)"; rc=$?
     rm -rf "$tmp"
+    # iter-1 ISSUE-5: surface a non-zero hook exit so assert_silent (empty-stdout)
+    # cannot mistake a crash (set -e abort, no stdout) for intentional silence.
+    [ "$rc" -eq 0 ] || out="${out}[hook exited rc=${rc}]"
     printf '%s' "$out"
 }
 
@@ -97,12 +118,26 @@ assert_silent "legacy config (no plan_session_id) → silent at 200k" \
 # --- Regressions: inside the /do-plan session behavior is unchanged ---
 assert_contains "matching session + 150k → ctx:150k" "ctx:150k" \
     "$(run_hook 150000 sessA "" '{"stop_threshold":250000,"plan_session_id":"sessA"}')"
-assert_contains "matching session + 260k → STOP" "STOP" \
-    "$(run_hook 260000 sessA "" '{"stop_threshold":250000,"plan_session_id":"sessA"}')"
+
+# iter-1 ISSUE-13: lock the STOP line format (milestone floored to 250k, STOP appended).
+STOP_OUT="$(run_hook 260000 sessA "" '{"stop_threshold":250000,"plan_session_id":"sessA"}')"
+assert_contains "matching session + 260k/thr250k → milestone ctx:250k" "ctx:250k" "$STOP_OUT"
+assert_contains "matching session + 260k/thr250k → STOP" "STOP" "$STOP_OUT"
+
 assert_silent "subagent (agent_id set) → silent" \
     "$(run_hook 200000 sessA "sub-123" '{"stop_threshold":250000,"plan_session_id":"sessA"}')"
 assert_silent "matching session + 100k (below 150k floor) → silent" \
     "$(run_hook 100000 sessA "" '{"stop_threshold":250000,"plan_session_id":"sessA"}')"
+
+# iter-1 ISSUE-12: negative STOP — threshold is read from config (300k), not hardcoded.
+# Usage 260k crosses the 250k milestone but stays below the 300k STOP threshold.
+NEG_OUT="$(run_hook 260000 sessA "" '{"stop_threshold":300000,"plan_session_id":"sessA"}')"
+assert_contains "matching session + 260k/thr300k → milestone ctx:250k" "ctx:250k" "$NEG_OUT"
+assert_not_contains "matching session + 260k/thr300k → no STOP (below threshold)" "STOP" "$NEG_OUT"
+
+# iter-1 ISSUE-12: malformed config JSON → the gate's jq fails safe under set -e → silent.
+assert_silent "malformed config JSON → silent" \
+    "$(run_hook 200000 sessA "" 'this is not json')"
 
 echo
 echo "RESULTS: $PASS passed, $FAIL failed"
@@ -118,32 +153,38 @@ chmod +x skills/shared/tests/test-check-context-size.sh
 - [ ] **Step 2: Run the tests, verify the 3 gate-driver cases FAIL**
 
 Run: `bash skills/shared/tests/test-check-context-size.sh`
-Expected: the three `→ silent at 200k` cases FAIL (current hook emits `ctx:200k` with no gate); the four regression cases PASS. Overall `RESULTS: 4 passed, 3 failed`, non-zero exit.
+Expected: the three `→ silent at 200k` gate-driver cases **and** the `malformed config JSON → silent` case FAIL (the current, ungated hook emits `ctx:200k` for all four); the seven regression assertions PASS. Overall `RESULTS: 7 passed, 4 failed`, non-zero exit.
 
 - [ ] **Step 3: Add the session gate to the hook**
 
-In `hooks/check-context-size.sh`, find this pair of lines (currently ~73–74):
+In `hooks/check-context-size.sh`, find this trio of lines (currently ~73–75):
 
 ```bash
 SESSION_KEY="$(basename "$TRANSCRIPT_PATH" .jsonl)"
 STATE_MILESTONE="$STATE_DIR/context-milestone-${SESSION_KEY}.txt"
+STATE_STOP="$STATE_DIR/context-stop-${SESSION_KEY}.txt"
 ```
 
-Replace with (insert the gate between them — reuse the existing `SESSION_KEY`/`CONFIG_FILE`, do NOT recompute them):
+Replace with (insert the gate right after `SESSION_KEY` — reuse the existing `SESSION_KEY`/`CONFIG_FILE`, do NOT recompute them; keep the two `STATE_*` lines below the gate so the silent path skips their reads):
 
 ```bash
 SESSION_KEY="$(basename "$TRANSCRIPT_PATH" .jsonl)"
 
 # ---- Gate: emit ONLY inside the session where /do-plan was started ----
-# Outside a /do-plan session the hook is fully silent (no milestone, no STOP).
+# Outside a /do-plan session the hook emits nothing to the model (no milestone,
+# no STOP). It has already run its cheap preamble (mkdir + the stop_threshold jq)
+# above — "silent" here means no additionalContext, not no work.
 # /do-plan records its session id in plan_session_id (see commands/do-plan.md
 # Step 2). A missing config file, a missing plan_session_id (legacy file), or a
 # mismatch (stale per-cwd file from an earlier session) → exit silently.
+# NOTE (set -e): the `|| true` below is required — under `set -euo pipefail`, jq
+# exits non-zero on a malformed/empty config and would otherwise abort the hook.
 [ -f "$CONFIG_FILE" ] || exit 0
 PLAN_SESSION="$(jq -r '.plan_session_id // empty' "$CONFIG_FILE" 2>/dev/null || true)"
 [ "$PLAN_SESSION" = "$SESSION_KEY" ] || exit 0
 
 STATE_MILESTONE="$STATE_DIR/context-milestone-${SESSION_KEY}.txt"
+STATE_STOP="$STATE_DIR/context-stop-${SESSION_KEY}.txt"
 ```
 
 - [ ] **Step 4: Update the hook header comment**
@@ -160,16 +201,18 @@ Replace with:
 ```bash
 # emits a compact additionalContext system reminder to the model.
 #
-# ACTIVE ONLY inside the session where /do-plan was started: the per-cwd state
-# file records that session id (plan_session_id); any other session — including
-# an ordinary session in the same cwd after a past /do-plan — gets nothing.
+# SESSION-SCOPED: active only for the session in which /do-plan was started (and
+# for the rest of that session, even after /do-plan finishes). The per-cwd state
+# file records that session id (plan_session_id); any other session — including an
+# ordinary session in the same cwd after a past /do-plan — gets no model-visible
+# output (the hook still runs its cheap mkdir/jq preamble, then exits at the gate).
 #
 ```
 
 - [ ] **Step 5: Run the tests, verify all PASS**
 
 Run: `bash skills/shared/tests/test-check-context-size.sh`
-Expected: `RESULTS: 7 passed, 0 failed`, exit 0.
+Expected: `RESULTS: 11 passed, 0 failed`, exit 0.
 
 - [ ] **Step 6: Commit**
 
@@ -177,6 +220,10 @@ Expected: `RESULTS: 7 passed, 0 failed`, exit 0.
 git add hooks/check-context-size.sh skills/shared/tests/test-check-context-size.sh
 git commit -m "fix: gate context-size hook to the /do-plan session + tests"
 ```
+
+> ⚠️ Per the Commit-ordering note at the top (ISSUE-4): do **not** ship this commit
+> ahead of Task 2's `/do-plan` change. Squash Tasks 1–2 into one commit, or commit
+> Task 2 first — otherwise this commit leaves the real `/do-plan` silent.
 
 ---
 
@@ -245,7 +292,9 @@ Replace with:
 ```markdown
 The `PostToolUse` hook will inject system reminders of two kinds. These appear
 **only** in the session where you started `/do-plan` (the hook is gated on the
-`plan_session_id` written in Step 2); in any other session it is silent.
+`plan_session_id` written in Step 2) — and for the rest of that session, even after
+`/do-plan` finishes; in any other session (including an ordinary one in the same
+cwd) it stays silent.
 ```
 
 - [ ] **Step 4: Commit**
@@ -302,7 +351,10 @@ Replace with:
 - check-context-size hook is now scoped to the `/do-plan` session: it no longer
   injects `ctx:` milestone reminders into ordinary sessions (which made the agent
   economize context prematurely). `/do-plan` records `plan_session_id`; the hook
-  emits milestone/STOP only when it matches the current session.
+  emits milestone/STOP only when it matches the current session. Legacy
+  `do-plan-config-*.json` files written before this change (no `plan_session_id`)
+  are treated as a mismatch and ignored — re-run `/claude-mesh:do-plan` to re-bind
+  the hook to the current session.
 ```
 
 - [ ] **Step 3: Commit**
