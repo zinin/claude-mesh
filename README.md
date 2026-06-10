@@ -51,7 +51,7 @@ Any errors → fix as instructed in the message.
 ## Dependencies
 
 The plugin requires:
-- `claude` CLI (this plugin runs on top of Claude Code)
+- `claude` CLI (this plugin runs on top of Claude Code) — requires a current Claude Code build whose Agent model enum includes the `fable` alias: all mesh agents and the do-plan dispatch policy pin `model: fable`
 - `yq` — **Python-yq (`kislyuk/yq`) ONLY**. Install via `pipx install yq`. **Go-yq (`mikefarah/yq`) is REJECTED** by `config-loader.sh` at startup (iter-2 SUGGESTION-1: aligns Dependencies row with iter-1 CRITICAL-1 / `require_yq()` flavor-detect). See full note below.
 - `jq` — for JSON parsing in stream-json mode
 - `bc`, `curl`, `python3` — for `ext-claude-exec` skill
