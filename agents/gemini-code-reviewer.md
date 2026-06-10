@@ -3,7 +3,7 @@ name: gemini-code-reviewer
 description: |
   Use this agent in parallel with superpowers:requesting-code-review when a major project step
   has been completed. Provides external code review via Gemini CLI for cross-validation.
-model: opus
+model: fable
 color: cyan
 ---
 

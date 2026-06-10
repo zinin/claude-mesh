@@ -3,7 +3,7 @@ name: review-discussion
 description: |
   Process design review issues from Codex. Compares with previous iterations,
   auto-answers repeated issues, asks user about new ones, updates documents.
-model: opus
+model: fable
 color: green
 ---
 
