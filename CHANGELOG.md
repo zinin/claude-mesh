@@ -4,6 +4,16 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-10
+
+### Changed
+- Model policy switched from `opus` to `fable` (`claude-fable-5`): `/do-plan`
+  now treats Opus as a forbidden "cheaper" model for subagent dispatch, and all
+  mesh agents are pinned to `model: fable` via frontmatter.
+- verify-delegation FLIP diagnostics reworded to be model-neutral.
+- README: Dependencies now require a Claude Code build whose Agent tool model
+  enum includes the `fable` alias.
+
 ## [0.1.0] - 2026-06-07
 
 ### Added
