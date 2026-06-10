@@ -4,7 +4,7 @@ description: |
   Execute any prompt via claude -p on an alt-provider model (z.ai, Alibaba, DeepSeek,
   LiteLLM, Ollama-daemon, etc.). Delegates to ext-claude-exec skill. Requires MODEL
   parameter in first line of prompt.
-model: opus
+model: fable
 color: blue
 ---
 

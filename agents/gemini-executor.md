@@ -3,7 +3,7 @@ name: gemini-executor
 description: |
   Execute any prompt via Gemini CLI. Use when you need to delegate tasks to Gemini,
   get a "second opinion" from a different model, or run analysis through external agent.
-model: opus
+model: fable
 color: green
 ---
 

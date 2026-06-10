@@ -4,7 +4,7 @@ description: |
   Use in parallel with superpowers:requesting-code-review when a major project step
   completes. Provides external code review via claude -p on an alt-provider model
   for cross-validation. Requires MODEL parameter.
-model: opus
+model: fable
 color: red
 ---
 

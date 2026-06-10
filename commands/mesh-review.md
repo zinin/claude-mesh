@@ -180,7 +180,7 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 ### Step 6.0: Verify delegation (mechanical guard)
 
-**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's Opus — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned.
+**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned.
 
 The builtin `claude` / `general-purpose` reviewer is **skipped here** — it reviews inline by design and is always accepted into Step 6.1.
 
@@ -204,7 +204,7 @@ done
 ```
 Verdicts:
 - `REAL` (exit 0) — delegated, real review → **keep** for Step 6.1.
-- `FLIP` (exit 3) — no run dir → self-reviewed on Opus → **re-dispatch**.
+- `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**.
 - `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps).
 - `BROKEN` (exit 4) — run dir but thinking-only / DSML grammar / `num_turns≤1` → **DROP, do NOT retry** (the engine itself is broken).
 
@@ -229,11 +229,11 @@ Verdicts:
 
 **5. Finalize:**
 - `REAL` reviewers → their reviews enter Step 6.1 (dedupe/classify) as normal.
-- Reviewers still `FLIP`/`STALLED` after `N` rounds → **EXCLUDE from cross-validation** and record in the Step 6.6 summary: `⚠ <reviewer> did not delegate after N attempts — NOT counted as external review (self-review on Opus / killed mid-flight)`.
+- Reviewers still `FLIP`/`STALLED` after `N` rounds → **EXCLUDE from cross-validation** and record in the Step 6.6 summary: `⚠ <reviewer> did not delegate after N attempts — NOT counted as external review (self-review on the session model / killed mid-flight)`.
 - `BROKEN` reviewers → record: `⚠ <reviewer>: external engine produced no usable review (broken — swap the model in config.yaml)`.
 - The builtin `claude` reviewer's findings always enter Step 6.1.
 
-**Do NOT silently accept a FLIP as an external review.** A flipped wrapper is Opus reviewing its own session; counting it as independent cross-validation is the exact failure this guard exists to prevent.
+**Do NOT silently accept a FLIP as an external review.** A flipped wrapper is the session's model reviewing its own work; counting it as independent cross-validation is the exact failure this guard exists to prevent.
 
 > **Concurrency note:** the guard picks the newest run dir for an engine/model created after `DISPATCH_EPOCH`. If two `/mesh-review` invocations run the same model concurrently, the window can overlap — rare in practice; run them sequentially if exact attribution matters.
 

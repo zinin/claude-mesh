@@ -5,7 +5,7 @@
 # Wrapper reviewers (codex / gemini / ext-claude-code-reviewer) are supposed to invoke
 # their *-code-review skill, which runs the external engine and writes a run dir under
 # ${DATA}/runs/<engine>/.../. Non-deterministically they sometimes "flip": skip the
-# skill and self-review inline on the session's Opus — a false cross-validation that
+# skill and self-review inline on the session's own model — a false cross-validation that
 # leaves NO run dir. This script lets the /mesh-review orchestrator (Step 6.0) detect
 # that mechanically instead of trusting the agent's returned text.
 #
@@ -21,7 +21,7 @@
 #   REAL=0     finalized + agentic — ext-claude: num_turns>1 & non-empty output;
 #                                     codex/gemini: watchdog rc=0 & non-empty output
 #   STALLED=2  killed mid-flight: no final / no result event / engine rc!=0 (retry helps)
-#   FLIP=3     no run dir for this engine in the dispatch window (self-reviewed on Opus)
+#   FLIP=3     no run dir for this engine in the dispatch window (self-reviewed on the session model)
 #   BROKEN=4   finalized but num_turns<=1 — thinking-only / DSML grammar / answered
 #              without reading code (retry futile; fix by swapping the model in config.yaml)
 set -u
@@ -61,7 +61,7 @@ esac
 emit() { echo "$1"; [ -n "${2:-}" ] && echo "verify-delegation[$ENGINE${MODEL:+/$MODEL}]: $2" >&2; exit "$3"; }
 
 # --- 1. did anything run? (run dir created in the dispatch window) ---
-[ -d "$BASE" ] || emit FLIP "no run dir under ${BASE#"$DATA_DIR"/} — reviewer did not delegate (self-reviewed on Opus)" 3
+[ -d "$BASE" ] || emit FLIP "no run dir under ${BASE#"$DATA_DIR"/} — reviewer did not delegate (self-reviewed on the session model)" 3
 
 NEWEST="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)"
 [ -n "$NEWEST" ] || emit FLIP "no run dir newer than dispatch time — reviewer did not delegate" 3

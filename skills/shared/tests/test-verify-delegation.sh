@@ -3,7 +3,7 @@
 #
 # verify-delegation.sh classifies whether a wrapper reviewer (ext-claude / codex /
 # gemini) actually DELEGATED to its external engine and produced a REAL review, vs
-# self-reviewed on Opus (FLIP), was killed mid-flight (STALLED), or got an
+# self-reviewed on the session model (FLIP), was killed mid-flight (STALLED), or got an
 # engine-broken empty/thinking-only result (BROKEN).
 #
 # Verdicts (stdout) + exit codes:
