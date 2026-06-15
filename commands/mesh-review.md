@@ -11,7 +11,7 @@ Launch multiple external code review agents in parallel, collect and deduplicate
 
 If invoked as `/claude-mesh:mesh-review default` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
 - Skip Steps 1-3 entirely.
-- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.models`, `.run_mode`); read `runtime.default_run_mode` via `"$LOADER" get-runtime | jq -r .default_run_mode` (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads).
+- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
 - Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly.
 - If `defaults.code_review` not configured → STOP with error:
   `defaults.code_review not configured in config.yaml. Use /claude-mesh:mesh-review without argument or add the preset.`
@@ -44,6 +44,11 @@ rm -f "$LOADER_ERR"
 HAS_GEMINI=$("$LOADER" get-flag has_gemini)
 HAS_MODELS=$("$LOADER" get-flag has_models)
 MODELS=$("$LOADER" list-models)  # `<id>|<label>` per line, ready for pagination
+DM_ERR=$(mktemp)
+DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
+    || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
+rm -f "$DM_ERR"
+echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
 ```
 
 rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3).
@@ -135,6 +140,8 @@ Since AskUserQuestion lacks preSelected, the recommended choice gets a "(Recomme
 
 Launch all selected reviewers via Task tool, each `run_in_background: true`, in ONE message:
 
+**Dispatch model:** if `DISPATCH_MODEL` (resolved in Step 0 for `default` mode, or Step 1 for interactive) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch below. If it is empty, omit `model:` so each reviewer inherits this session's model. This applies to the builtin `claude` reviewer dispatch too.
+
 For each builtin reviewer:
 - claude: `subagent_type: "general-purpose"` (built-in — NOT namespaced), prompt invokes `superpowers:requesting-code-review` skill
 - codex: `subagent_type: "claude-mesh:codex-code-reviewer"`, prompt: `Review the changes for production readiness`
@@ -160,7 +167,7 @@ When each agent completes, read its output. After all agents finish (or the user
 
 1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewer) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
 2. Create one task per selected reviewer
-3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task.
+3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task. The Step 5a **Dispatch model** rule also applies here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it.
 4. Wait for completion → Step 6
 5. Shut down team
 
@@ -221,7 +228,7 @@ Verdicts:
 
 `PROBLEMS` = reviewers whose verdict is `FLIP` or `STALLED`. While `PROBLEMS` is non-empty AND rounds-done < `N`:
   - **a. Stamp a fresh window** via Bash: `DISPATCH_EPOCH=$(date +%s)` — so the guard inspects the NEW run, not the old failed one.
-  - **b. Re-dispatch ONLY the `PROBLEMS` reviewers** with the EXACT same short delegation prompt as Step 5a (`MODEL=<id> Review the changes for production readiness` for ext-claude; `Review the changes for production readiness` for codex/gemini), same `subagent_type`, same run mode. Wait for completion.
+  - **b. Re-dispatch ONLY the `PROBLEMS` reviewers** with the EXACT same short delegation prompt as Step 5a (`MODEL=<id> Review the changes for production readiness` for ext-claude; `Review the changes for production readiness` for codex/gemini), same `subagent_type`, same run mode. Apply the Step 5a **Dispatch model** rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit). Wait for completion.
   - **c. Re-run the guard** (step 2) for those reviewers with the new `DISPATCH_EPOCH`; update their verdicts.
   - **d.** rounds-done++.
 
