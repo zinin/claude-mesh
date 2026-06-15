@@ -466,8 +466,9 @@ assert_stderr_contains "names max_redispatch" "max_redispatch" "$ERR"
 rm -rf "$TDIR" "$ERR"
 
 # === Test 36: validate enforces the dispatch_model charset ===
-# Hardened charset ^[A-Za-z0-9][A-Za-z0-9._-]*$ : reject whitespace/punct AND a leading
-# dash/dot, but accept a normal alias or full id (internal dashes ok).
+# Hardened charset ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ : reject whitespace/punct AND a leading
+# dash/dot, but accept a normal alias or full id (internal dashes ok), incl. provider
+# ids — Bedrock (…-v2:0, colon) and Vertex (…@date, at-sign).
 echo "=== Test 36: dispatch_model charset (reject bad / leading-dash, accept valid id) ==="
 TDIR=$(mktemp -d); ERR=$(mktemp)
 
@@ -483,6 +484,14 @@ assert_exit "rejects leading-dash dispatch_model" "1" "$RC"
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "claude-fable-5"\n' > "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts a valid alias/id (internal dashes ok)" "0" "$RC"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "us.anthropic.claude-3-5-sonnet-20241022-v2:0"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a Bedrock full id (colon ok)" "0" "$RC"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "claude-opus-4@20250514"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a Vertex full id (at-sign ok)" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
 

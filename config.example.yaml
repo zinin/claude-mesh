@@ -201,9 +201,10 @@ runtime:
   # [optional] If set, those commands pass `model: "<value>"` on every dispatch.
   # If absent (or config.yaml absent), subagents inherit your current session model
   # (your /model). Set this to FORCE a specific tier regardless of the session.
-  # Accepts any Claude Code Agent model alias or id (e.g. opus, sonnet, haiku, fable,
-  # claude-fable-5). No enum is enforced — flip it freely when a model opens or closes,
-  # no plugin release needed. Charset: [A-Za-z0-9._-].
+  # Accepts any Claude Code Agent model alias or id — incl. full cloud-provider ids
+  # (e.g. opus, sonnet, fable, claude-fable-5, Bedrock us.anthropic.…-v2:0, Vertex
+  # claude-opus-4@date). No enum is enforced — flip it freely when a model opens or
+  # closes, no plugin release needed. Charset: [A-Za-z0-9._:@-] (first char alphanumeric).
   # dispatch_model: opus
 
   timeouts:                                    # all [optional]; each must be a positive integer (seconds).

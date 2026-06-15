@@ -375,11 +375,13 @@ validate_runtime() {
     local dm
     dm=$(jq -r '.runtime.dispatch_model // ""' "$CONFIG_JSON")
     if [ -n "$dm" ]; then
-        # Forward-compatible: any model alias (opus/fable/…) or full id (claude-fable-5,
-        # us.anthropic.*). No enum — a new model must never require a validator change.
-        # The charset also keeps the value safe as it flows through jq/bash downstream.
-        [[ "$dm" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-            || die "runtime.dispatch_model: must start with a letter/digit and match [A-Za-z0-9._-] (a model alias or id), got \"$dm\""
+        # Forward-compatible: any model alias (opus/fable/…) or full id, including
+        # cloud-provider ids — Bedrock (e.g. us.anthropic.…-v2:0, colon) and Vertex
+        # (e.g. claude-opus-4@date, at-sign). No enum — a new model must never require a
+        # validator change. The leading-char anchor still rejects a value starting with
+        # -/./:/@ (flag-injection); the charset keeps it safe through jq/bash downstream.
+        [[ "$dm" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ ]] \
+            || die "runtime.dispatch_model: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$dm\""
     fi
 
     local key
