@@ -197,6 +197,15 @@ runtime:
   # rounds. BROKEN engines (thinking-only/DSML output) are never retried — swap the model instead.
   max_redispatch: 1                            # [optional] positive integer. default 1
 
+  # Model for subagents dispatched by /do-plan, /mesh-review, /mesh-design-review.
+  # [optional] If set, those commands pass `model: "<value>"` on every dispatch.
+  # If absent (or config.yaml absent), subagents inherit your current session model
+  # (your /model). Set this to FORCE a specific tier regardless of the session.
+  # Accepts any Claude Code Agent model alias or id (e.g. opus, sonnet, haiku, fable,
+  # claude-fable-5). No enum is enforced — flip it freely when a model opens or closes,
+  # no plugin release needed. Charset: [A-Za-z0-9._-].
+  # dispatch_model: opus
+
   timeouts:                                    # all [optional]; each must be a positive integer (seconds).
     single_run_sec: 1800                       # one `claude -p` attempt (wrapped in `timeout`). default 1800
     stall_sec: 600                             # supervised mode: no output for this long → kill + retry. default 600
