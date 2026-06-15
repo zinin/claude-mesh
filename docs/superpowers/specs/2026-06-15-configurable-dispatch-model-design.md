@@ -77,11 +77,13 @@ runtime:
   dispatch_model: opus      # optional; empty / key absent = inherit the session model
 ```
 
-Validation in `validate_runtime` is **minimal and forward-compatible**: if the key
-is present it must be a non-empty string matching the safe charset `[A-Za-z0-9._-]`
-(covers aliases like `opus`/`fable` and full ids like `claude-fable-5`). **No enum**
-— a new model alias must never require a validator change. The charset also
-prevents the value from breaking out of the jq/bash handling in config-loader.
+Validation in `validate_runtime` is **minimal and forward-compatible**: an empty or
+absent `dispatch_model` is accepted and means "inherit the session model" (no error —
+same as a missing key). If the key is present **and non-empty**, it must match the safe
+charset `[A-Za-z0-9._-]` (covers aliases like `opus`/`fable` and full ids like
+`claude-fable-5`). **No enum** — a new model alias must never require a validator
+change. The charset also prevents the value from breaking out of the jq/bash handling
+in config-loader.
 
 ### 3. `skills/shared/config-loader.sh` — read path
 

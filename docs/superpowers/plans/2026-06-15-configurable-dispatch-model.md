@@ -252,7 +252,7 @@ Replace line 119:
 with:
 
 ```
-/claude-mesh:do-plan: STOP threshold = 250000 tokens. Dispatch model = opus, full review rigor. Starting subagent-driven-development.
+/claude-mesh:do-plan: STOP threshold = 250000 tokens. Dispatch model = <DISPATCH_MODEL>, full review rigor. Starting subagent-driven-development.
 ```
 
 Then, directly under the closing ``` of that example block, add a line of prose:
@@ -285,7 +285,7 @@ New bullets:
   - **Empty** (no config value, or no config.yaml) → **omit `model:`** so each subagent **inherits this session's model**. Never explicitly pass a model *cheaper* than the session to economize on a "simple" subtask.
 ```
 
-Leave the two following bullets (lines 135–136: external reviewers; "if a subagent type does not accept a model override, accept the default") unchanged.
+Then reword the next bullet (line 135) so its "Same for…" no longer dangles from the now-deleted `fable` bullet. Change line 135 to read: the same dispatch-model rule applies to external reviewers (`superpowers:requesting-code-review` and friends) where a model parameter is accepted — set `model: "<DISPATCH_MODEL>"` when non-empty, otherwise omit it. Leave the last bullet (line 136: "if a subagent type does not accept a model override, accept the default") unchanged.
 
 - [ ] **Step 4: Verify no stale model literal remains in the policy**
 
@@ -304,21 +304,36 @@ git commit -m "feat(do-plan): resolve runtime.dispatch_model; inherit session wh
 ### Task 5: `commands/mesh-review.md` — read `dispatch_model` and pass it on dispatch
 
 **Files:**
-- Modify: `commands/mesh-review.md:46` (Step 1 bash — add read)
+- Modify: `commands/mesh-review.md:14` (Step 0 default-path — resolve `dispatch_model` from the `get-runtime` it already reads)
+- Modify: `commands/mesh-review.md:46` (Step 1 bash — add rc-aware read)
 - Modify: `commands/mesh-review.md:136` (Step 5a — dispatch rule)
 - Modify: `commands/mesh-review.md:163` (Step 5b — reference the rule)
 - Modify: `commands/mesh-review.md:224` (Step 6 re-dispatch — reference the rule)
 
-- [ ] **Step 1: Read the dispatch model in Step 1**
+- [ ] **Step 1: Read the dispatch model in BOTH dispatch paths**
 
-In the Step 1 bash block, after line 46 (`MODELS=$("$LOADER" list-models) …`), and before the closing ``` at line 47, add:
+`mesh-review.md` has two entry paths that both reach the Step 5a/5b dispatch, so each must resolve `DISPATCH_MODEL`.
+
+**(a) Step 0 — `default` mode** (`mesh-review.md:14`). Step 0 already reads runtime via `"$LOADER" get-runtime` (for `default_run_mode`) and already applies the rc=2/rc=1 distinction. Task 2 adds `dispatch_model` to that JSON, so capture the JSON once and pull both fields — no extra loader call, and `get-runtime` runs `validate_runtime`, so a charset-invalid value fast-fails here:
 
 ```bash
-DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model)   # empty = inherit session model on dispatch
-echo "DISPATCH_MODEL=$DISPATCH_MODEL"                  # surface to the controller
+RUNTIME_JSON=$("$LOADER" get-runtime)            # Step 0 already does this read
+DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')
+DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')   # empty = inherit
+echo "DISPATCH_MODEL=$DISPATCH_MODEL"
 ```
 
-(By this point rc=2 / rc=1 are already handled by the `has_codex` probe above, so config is present and valid here.)
+**(b) Step 1 — interactive mode.** In the Step 1 bash block, after line 46 (`MODELS=$("$LOADER" list-models) …`) and before the closing ``` at line 47, add an **rc-aware** read. The earlier `has_codex` probe loads the config but does NOT validate the `runtime` section (only `get-runtime` / the typed getter call `validate_runtime`), so a charset-invalid `dispatch_model` must fast-fail rather than silently inherit:
+
+```bash
+DM_ERR=$(mktemp)
+DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
+    || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
+rm -f "$DM_ERR"
+echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
+```
+
+(rc=2 is impossible here — the `has_codex` probe already exited cleanly on a missing config — so any non-zero rc is a validator failure → fast-fail, mirroring do-plan.)
 
 - [ ] **Step 2: Add the dispatch rule to Step 5a**
 
@@ -347,7 +362,7 @@ In Step 6 item b (line 224), append after "same `subagent_type`, same run mode."
 - [ ] **Step 5: Verify**
 
 Run: `grep -n 'DISPATCH_MODEL' commands/mesh-review.md`
-Expected: `DISPATCH_MODEL` appears in the Step 1 bash (read + echo), the Step 5a rule, the Step 5b reference, and the Step 6 reference.
+Expected: `DISPATCH_MODEL` appears in the Step 0 default-path bash, the Step 1 bash (rc-aware read + echo), the Step 5a rule, the Step 5b reference, and the Step 6 reference.
 Run: `grep -niE '\b(fable|opus)\b' commands/mesh-review.md`
 Expected: no match.
 
@@ -363,20 +378,23 @@ git commit -m "feat(mesh-review): pass runtime.dispatch_model on dispatch; inher
 ### Task 6: `skills/mesh-design-review/SKILL.md` — read `dispatch_model` and pass it on dispatch
 
 **Files:**
-- Modify: `skills/mesh-design-review/SKILL.md:229` (Step 5.1 bash — add read)
+- Modify: `skills/mesh-design-review/SKILL.md:230` (Step 5.0 config-read block — add read; runs for BOTH `default` and interactive paths)
 - Modify: `skills/mesh-design-review/SKILL.md:306` (Step 6 executor dispatch — dispatch rule)
 - Modify: `skills/mesh-design-review/SKILL.md:370` (Step 8 review-discussion dispatch — reference the rule)
 
-- [ ] **Step 1: Read the dispatch model in Step 5.1**
+- [ ] **Step 1: Read the dispatch model in the Step 5.0 config-read block**
 
-In the Step 5.1 bash block, after line 229 (`DEFAULTS_JSON=$("$LOADER" get-defaults design_review) …`), and before the closing ``` of that block, add:
+The read goes in the **Step 5.0** block (the config read ending with `echo "$DEFAULTS_JSON"` at line 230), NOT the `default` short-circuit labelled Step 5.1. Step 5.0 runs for BOTH the `default` and interactive paths, so placing the read here covers both (mesh-design-review has no separate default fast-path bash, unlike mesh-review). After line 230 (`echo "$DEFAULTS_JSON"`), before the closing ``` at line 231, add an **rc-aware** read — the `has_codex` probe above loads the config but does NOT validate the `runtime` section, so a charset-invalid `dispatch_model` must fast-fail rather than silently inherit:
 
 ```bash
-DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model)   # empty = inherit session model on dispatch
-echo "DISPATCH_MODEL=$DISPATCH_MODEL"                  # surface to the controller
+DM_ERR=$(mktemp)
+DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
+    || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
+rm -f "$DM_ERR"
+echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
 ```
 
-(rc=2 / rc=1 are already handled by the `has_codex` probe above; config is present and valid here.)
+(rc=2 is impossible here — the `has_codex` probe already exited cleanly on a missing config — so any non-zero rc is a validator failure → fast-fail.)
 
 - [ ] **Step 2: Add the dispatch rule to Step 6**
 
@@ -397,7 +415,7 @@ Apply the same **Dispatch model** rule as Step 6: add `model: "<DISPATCH_MODEL>"
 - [ ] **Step 4: Verify**
 
 Run: `grep -n 'DISPATCH_MODEL' skills/mesh-design-review/SKILL.md`
-Expected: `DISPATCH_MODEL` appears in the Step 5.1 bash (read + echo), the Step 6 rule, and the Step 8 reference.
+Expected: `DISPATCH_MODEL` appears in the Step 5.0 config-read block (read + echo), the Step 6 rule, and the Step 8 reference.
 Run: `grep -niE '\b(fable|opus)\b' skills/mesh-design-review/SKILL.md`
 Expected: no match.
 
@@ -508,8 +526,8 @@ Expected: `OK: no agent model pins`
 
 - [ ] **Step 3: No model literal remains in dispatch-policy prose**
 
-Run: `grep -niE '\b(fable|opus)\b' commands/do-plan.md commands/mesh-review.md skills/mesh-design-review/SKILL.md`
-Expected: no output.
+Run: `grep -niE '\b(fable|opus|sonnet|haiku)\b' commands/do-plan.md commands/mesh-review.md skills/mesh-design-review/SKILL.md`
+Expected: no output (the do-plan forbidden-model list `opus`/`sonnet`/`haiku` is removed along with the `fable` literal; the repo-wide sweep in Step 4 deliberately stays `fable|opus` so it does not match `ANTHROPIC_DEFAULT_SONNET_MODEL` and friends).
 
 - [ ] **Step 4: Repo-wide sweep matches only expected places**
 
