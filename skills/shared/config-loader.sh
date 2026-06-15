@@ -372,6 +372,16 @@ validate_runtime() {
             || die "runtime.max_redispatch: must be positive integer, got \"$mrd\""
     fi
 
+    local dm
+    dm=$(jq -r '.runtime.dispatch_model // ""' "$CONFIG_JSON")
+    if [ -n "$dm" ]; then
+        # Forward-compatible: any model alias (opus/fable/…) or full id (claude-fable-5,
+        # us.anthropic.*). No enum — a new model must never require a validator change.
+        # The charset also keeps the value safe as it flows through jq/bash downstream.
+        [[ "$dm" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+            || die "runtime.dispatch_model: must start with a letter/digit and match [A-Za-z0-9._-] (a model alias or id), got \"$dm\""
+    fi
+
     local key
     for key in single_run_sec stall_sec global_sec max_retries; do
         local v
