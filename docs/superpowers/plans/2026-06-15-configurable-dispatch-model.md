@@ -19,7 +19,7 @@
 - `agents/*.md` (8 files) — delete the `model: fable` line. (Task 3)
 - `commands/do-plan.md` — resolve `dispatch_model` in Step 1; reword Step 5 policy; update Step 3 status line. (Task 4)
 - `commands/mesh-review.md` — read `dispatch_model` in Step 1; pass `model:` in Step 5a/5b + Step 6 re-dispatch. (Task 5)
-- `skills/mesh-design-review/SKILL.md` — read `dispatch_model` in Step 5.1; pass `model:` in Step 6 + Step 8. (Task 6)
+- `skills/mesh-design-review/SKILL.md` — read `dispatch_model` in Step 5.0; pass `model:` in Step 6 + Step 8. (Task 6)
 - `config.example.yaml` — document `runtime.dispatch_model`. (Task 7)
 - `README.md` — fix the Dependencies bullet that hard-requires the `fable` alias. (Task 8)
 
@@ -38,14 +38,25 @@ Ordering note: every change is safe in isolation because the fallback (omit `mod
 Append after Test 35 (the `max_redispatch=0` test, ends ~line 462), before the `echo ""` / `=== Summary` block. Use the `validate` subcommand with a full inline config so this task is a self-contained TDD cycle (no dependency on Task 2's getter):
 
 ```bash
-# === Test 36: validate rejects dispatch_model with invalid charset ===
-echo "=== Test 36: dispatch_model invalid charset is rejected ==="
-TDIR=$(mktemp -d)
+# === Test 36: validate enforces the dispatch_model charset ===
+# Hardened charset ^[A-Za-z0-9][A-Za-z0-9._-]*$ : reject whitespace/punct AND a leading
+# dash/dot, but accept a normal alias or full id (internal dashes ok).
+echo "=== Test 36: dispatch_model charset (reject bad / leading-dash, accept valid id) ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "bad model!"\n' > "$TDIR/config.yaml"
-ERR=$(mktemp)
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
-assert_exit "exits non-zero on bad dispatch_model" "1" "$RC"
+assert_exit "rejects whitespace/punct dispatch_model" "1" "$RC"
 assert_stderr_contains "names dispatch_model" "dispatch_model" "$ERR"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "-opus"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects leading-dash dispatch_model" "1" "$RC"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "claude-fable-5"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a valid alias/id (internal dashes ok)" "0" "$RC"
+
 rm -rf "$TDIR" "$ERR"
 ```
 
@@ -65,8 +76,8 @@ In `validate_runtime`, immediately after the `max_redispatch` block (the `mrd` b
         # Forward-compatible: any model alias (opus/fable/…) or full id (claude-fable-5,
         # us.anthropic.*). No enum — a new model must never require a validator change.
         # The charset also keeps the value safe as it flows through jq/bash downstream.
-        [[ "$dm" =~ ^[A-Za-z0-9._-]+$ ]] \
-            || die "runtime.dispatch_model: must match [A-Za-z0-9._-] (a model alias or id), got \"$dm\""
+        [[ "$dm" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+            || die "runtime.dispatch_model: must start with a letter/digit and match [A-Za-z0-9._-] (a model alias or id), got \"$dm\""
     fi
 ```
 
@@ -401,7 +412,7 @@ echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispa
 In Step 6, immediately after line 306 (`For each selected agent, use Task tool (plugin `subagent_type`s are `claude-mesh:`-namespaced …).`), insert:
 
 ```markdown
-**Dispatch model:** if `DISPATCH_MODEL` (from Step 5.1) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch in this step. If it is empty, omit `model:` so each executor inherits this session's model.
+**Dispatch model:** if `DISPATCH_MODEL` (from Step 5.0) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch in this step. If it is empty, omit `model:` so each executor inherits this session's model.
 ```
 
 - [ ] **Step 3: Reference the rule from Step 8**
@@ -549,5 +560,5 @@ Record the observed behavior in the task notes. (No code change; this confirms t
 ## Notes for the executor
 
 - **Out of scope — do not touch:** the ext-claude provider model mapping (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL`, per-model `subagent_model`) in `config.example.yaml` / `config-loader.sh` / `test-config-loader.sh`; the already-neutral FLIP diagnostics wording; the CHANGELOG / version bump (maintainer does it via standard-version).
-- **`<DISPATCH_MODEL>` in the Markdown files** is an instruction to the LLM controller, not a shell variable the Markdown executes — the controller resolves the value from the Step 1 / Step 5.1 bash output and substitutes it into the `model:` dispatch parameter.
+- **`<DISPATCH_MODEL>` in the Markdown files** is an instruction to the LLM controller, not a shell variable the Markdown executes — the controller resolves the value from the Step 1 / Step 5.0 bash output and substitutes it into the `model:` dispatch parameter.
 - **Test runs**: this repo's checks are the bash smoke suite `skills/shared/tests/test-config-loader.sh`. Run it directly (or via the build-runner agent). There is no compile/lint step for the Markdown changes — grep sweeps are their verification.

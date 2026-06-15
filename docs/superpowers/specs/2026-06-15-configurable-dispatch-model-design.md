@@ -79,8 +79,9 @@ runtime:
 
 Validation in `validate_runtime` is **minimal and forward-compatible**: an empty or
 absent `dispatch_model` is accepted and means "inherit the session model" (no error —
-same as a missing key). If the key is present **and non-empty**, it must match the safe
-charset `[A-Za-z0-9._-]` (covers aliases like `opus`/`fable` and full ids like
+same as a missing key). If the key is present **and non-empty**, it must start with a
+letter or digit and otherwise match the safe charset `[A-Za-z0-9._-]` — i.e.
+`^[A-Za-z0-9][A-Za-z0-9._-]*$` (covers aliases like `opus`/`fable` and full ids like
 `claude-fable-5`). **No enum** — a new model alias must never require a validator
 change. The charset also prevents the value from breaking out of the jq/bash handling
 in config-loader.
