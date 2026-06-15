@@ -3,7 +3,6 @@ name: codex-executor
 description: |
   Execute any prompt via OpenAI Codex CLI. Use when you need to delegate tasks to Codex,
   get a "second opinion" from a different model, or run analysis through external agent.
-model: fable
 color: orange
 ---
 

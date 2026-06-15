@@ -3,7 +3,6 @@ name: codex-native-reviewer
 description: |
   Code review using built-in Codex review command. Alternative to codex-code-reviewer
   with simpler setup and support for uncommitted changes.
-model: fable
 color: cyan
 ---
 
