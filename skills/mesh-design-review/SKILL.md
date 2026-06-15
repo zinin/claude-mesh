@@ -228,6 +228,11 @@ HAS_MODELS=$("$LOADER" get-flag has_models)
 MODELS=$("$LOADER" list-models)            # `<id>|<label>` per line, ready for pagination
 DEFAULTS_JSON=$("$LOADER" get-defaults design_review)   # {"builtin":[...],"models":[...],"run_mode":null}
 echo "$DEFAULTS_JSON"
+DM_ERR=$(mktemp)
+DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
+    || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
+rm -f "$DM_ERR"
+echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
 ```
 
 rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.models`) to build `DEFAULT_IDS` (the recommended model ids) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
@@ -305,6 +310,8 @@ Launch **all selected** agents **in parallel** in a single message:
 
 For each selected agent, use Task tool (plugin `subagent_type`s are `claude-mesh:`-namespaced — verified on CC 2.1.156; bare names do not resolve).
 
+**Dispatch model:** if `DISPATCH_MODEL` (from Step 5.0) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch in this step. If it is empty, omit `model:` so each executor inherits this session's model.
+
 **codex / gemini executors** parse `PROMPT` / `MODEL` / `REASONING_LEVEL` as named params (any line), so use the wrapped form:
 ```
 Task tool:
@@ -368,6 +375,8 @@ Only include sections for agents that were actually selected and completed succe
 ### Step 8: Parse Issues via Discussion Agent
 
 Use Task tool to launch the `claude-mesh:review-discussion` agent (plugin agent — namespaced; ported in Task 17):
+
+Apply the same **Dispatch model** rule as Step 6: add `model: "<DISPATCH_MODEL>"` when `DISPATCH_MODEL` is non-empty, otherwise omit `model:`.
 ```
 Task tool:
   subagent_type: claude-mesh:review-discussion
