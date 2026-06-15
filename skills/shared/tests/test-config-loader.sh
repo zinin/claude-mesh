@@ -486,6 +486,33 @@ assert_exit "accepts a valid alias/id (internal dashes ok)" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
 
+# === Test 37: get-flag dispatch_model returns the configured value ===
+echo "=== Test 37: get-flag dispatch_model returns value ==="
+TDIR=$(mktemp -d)
+printf 'runtime:\n  dispatch_model: opus\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag dispatch_model)
+if [ "$GOT" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: dispatch_model (expected opus, got '$GOT')"; fi
+rm -rf "$TDIR"
+
+# === Test 38: get-flag dispatch_model is empty when the key is absent ===
+echo "=== Test 38: get-flag dispatch_model empty when absent ==="
+TDIR=$(mktemp -d)
+printf 'runtime:\n  default_run_mode: background\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag dispatch_model)
+if [ -z "$GOT" ]; then PASS=$((PASS+1)); echo "  PASS: empty when absent"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty, got '$GOT'"; fi
+rm -rf "$TDIR"
+
+# === Test 39: get-runtime surfaces dispatch_model (value, and "" when absent) ===
+echo "=== Test 39: get-runtime emits dispatch_model ==="
+TDIR=$(mktemp -d)
+printf 'runtime:\n  dispatch_model: fable\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
+if [ "$GOT" = "fable" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model=fable"; else FAIL=$((FAIL+1)); echo "  FAIL: expected fable, got '$GOT'"; fi
+printf 'runtime:\n  default_run_mode: team\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
+if [ -z "$GOT" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model defaults to empty"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty, got '$GOT'"; fi
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

@@ -569,8 +569,16 @@ cmd_get_flag() {
             validate_runtime
             jq -r '.runtime.do_plan_default_stop_tokens // 250000' "$CONFIG_JSON"
             ;;
+        dispatch_model)
+            # Optional. Empty output = no value set → the caller omits model: on dispatch
+            # and the subagent inherits the session model. validate_runtime owns the
+            # field's charset check, so run it before reading (mirrors
+            # do_plan_default_stop_tokens above).
+            validate_runtime
+            jq -r '.runtime.dispatch_model // empty' "$CONFIG_JSON"
+            ;;
         *)
-            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_defaults_code_review, do_plan_default_stop_tokens)"
+            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
             ;;
     esac
 }
@@ -632,7 +640,7 @@ cmd_get_defaults() {
 cmd_get_runtime() {
     load_or_die
     validate_runtime
-    jq -c "{default_run_mode: (.runtime.default_run_mode // \"background\"), do_plan_default_stop_tokens: (.runtime.do_plan_default_stop_tokens // 250000), max_redispatch: (.runtime.max_redispatch // 1)}" "$CONFIG_JSON"
+    jq -c "{default_run_mode: (.runtime.default_run_mode // \"background\"), do_plan_default_stop_tokens: (.runtime.do_plan_default_stop_tokens // 250000), max_redispatch: (.runtime.max_redispatch // 1), dispatch_model: (.runtime.dispatch_model // \"\")}" "$CONFIG_JSON"
 }
 
 case "${1:-}" in
