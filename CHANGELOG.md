@@ -4,6 +4,24 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-15
+
+### Changed
+- Subagent dispatch model is no longer hardcoded. The static `model: fable` pin
+  was removed from all mesh agents; by default subagents now **inherit your
+  current session model** (your `/model`), so a model alias opening or closing no
+  longer requires editing the plugin. The "never delegate to a cheaper model"
+  policy is preserved relative to the resolved/session model rather than a literal.
+- README/Dependencies: dropped the hard requirement for a Claude Code build whose
+  Agent model enum includes the `fable` alias.
+
+### Added
+- Optional `runtime.dispatch_model` config knob: set it to **force** a specific
+  tier on every `/do-plan`, `/mesh-review`, and `/mesh-design-review` dispatch;
+  leave it unset (or omit `config.yaml`) to inherit the session model. Accepts any
+  model alias or full id, including cloud-provider ids (Bedrock `…-v2:0`, Vertex
+  `…@date`). Exposed via `config-loader.sh` (`get-flag` / `get-runtime`).
+
 ## [0.2.0] - 2026-06-10
 
 ### Changed

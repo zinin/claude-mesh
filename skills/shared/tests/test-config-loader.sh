@@ -465,6 +465,63 @@ assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "names max_redispatch" "max_redispatch" "$ERR"
 rm -rf "$TDIR" "$ERR"
 
+# === Test 36: validate enforces the dispatch_model charset ===
+# Hardened charset ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ : reject whitespace/punct AND a leading
+# dash/dot, but accept a normal alias or full id (internal dashes ok), incl. provider
+# ids — Bedrock (…-v2:0, colon) and Vertex (…@date, at-sign).
+echo "=== Test 36: dispatch_model charset (reject bad / leading-dash, accept valid id) ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "bad model!"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects whitespace/punct dispatch_model" "1" "$RC"
+assert_stderr_contains "names dispatch_model" "dispatch_model" "$ERR"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "-opus"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects leading-dash dispatch_model" "1" "$RC"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "claude-fable-5"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a valid alias/id (internal dashes ok)" "0" "$RC"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "us.anthropic.claude-3-5-sonnet-20241022-v2:0"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a Bedrock full id (colon ok)" "0" "$RC"
+
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "claude-opus-4@20250514"\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a Vertex full id (at-sign ok)" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 37: get-flag dispatch_model returns the configured value ===
+echo "=== Test 37: get-flag dispatch_model returns value ==="
+TDIR=$(mktemp -d)
+printf 'runtime:\n  dispatch_model: opus\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag dispatch_model)
+if [ "$GOT" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: dispatch_model (expected opus, got '$GOT')"; fi
+rm -rf "$TDIR"
+
+# === Test 38: get-flag dispatch_model is empty when the key is absent ===
+echo "=== Test 38: get-flag dispatch_model empty when absent ==="
+TDIR=$(mktemp -d)
+printf 'runtime:\n  default_run_mode: background\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag dispatch_model)
+if [ -z "$GOT" ]; then PASS=$((PASS+1)); echo "  PASS: empty when absent"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty, got '$GOT'"; fi
+rm -rf "$TDIR"
+
+# === Test 39: get-runtime surfaces dispatch_model (value, and "" when absent) ===
+echo "=== Test 39: get-runtime emits dispatch_model ==="
+TDIR=$(mktemp -d)
+printf 'runtime:\n  dispatch_model: fable\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
+if [ "$GOT" = "fable" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model=fable"; else FAIL=$((FAIL+1)); echo "  FAIL: expected fable, got '$GOT'"; fi
+printf 'runtime:\n  default_run_mode: team\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
+if [ -z "$GOT" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model defaults to empty"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty, got '$GOT'"; fi
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

@@ -372,6 +372,18 @@ validate_runtime() {
             || die "runtime.max_redispatch: must be positive integer, got \"$mrd\""
     fi
 
+    local dm
+    dm=$(jq -r '.runtime.dispatch_model // ""' "$CONFIG_JSON")
+    if [ -n "$dm" ]; then
+        # Forward-compatible: any model alias (opus/fable/…) or full id, including
+        # cloud-provider ids — Bedrock (e.g. us.anthropic.…-v2:0, colon) and Vertex
+        # (e.g. claude-opus-4@date, at-sign). No enum — a new model must never require a
+        # validator change. The leading-char anchor still rejects a value starting with
+        # -/./:/@ (flag-injection); the charset keeps it safe through jq/bash downstream.
+        [[ "$dm" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ ]] \
+            || die "runtime.dispatch_model: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$dm\""
+    fi
+
     local key
     for key in single_run_sec stall_sec global_sec max_retries; do
         local v
@@ -559,8 +571,16 @@ cmd_get_flag() {
             validate_runtime
             jq -r '.runtime.do_plan_default_stop_tokens // 250000' "$CONFIG_JSON"
             ;;
+        dispatch_model)
+            # Optional. Empty output = no value set → the caller omits model: on dispatch
+            # and the subagent inherits the session model. validate_runtime owns the
+            # field's charset check, so run it before reading (mirrors
+            # do_plan_default_stop_tokens above).
+            validate_runtime
+            jq -r '.runtime.dispatch_model // empty' "$CONFIG_JSON"
+            ;;
         *)
-            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_defaults_code_review, do_plan_default_stop_tokens)"
+            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
             ;;
     esac
 }
@@ -622,7 +642,7 @@ cmd_get_defaults() {
 cmd_get_runtime() {
     load_or_die
     validate_runtime
-    jq -c "{default_run_mode: (.runtime.default_run_mode // \"background\"), do_plan_default_stop_tokens: (.runtime.do_plan_default_stop_tokens // 250000), max_redispatch: (.runtime.max_redispatch // 1)}" "$CONFIG_JSON"
+    jq -c "{default_run_mode: (.runtime.default_run_mode // \"background\"), do_plan_default_stop_tokens: (.runtime.do_plan_default_stop_tokens // 250000), max_redispatch: (.runtime.max_redispatch // 1), dispatch_model: (.runtime.dispatch_model // \"\")}" "$CONFIG_JSON"
 }
 
 case "${1:-}" in
