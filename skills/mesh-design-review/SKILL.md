@@ -351,7 +351,7 @@ After all agents complete:
 ```markdown
 # Merged Design Review — Iteration N
 
-## codex-executor (gpt-5.5)
+## codex-executor
 
 [full output from codex]
 
