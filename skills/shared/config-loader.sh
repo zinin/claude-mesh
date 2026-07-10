@@ -42,6 +42,10 @@ die() {
     exit 1
 }
 
+warn() {
+    echo "config-loader: WARN: $*" >&2
+}
+
 require_yq() {
     if ! command -v yq >/dev/null 2>&1; then
         die "yq not found. claude-mesh requires Python-yq (kislyuk/yq). Install: 'pipx install yq' or 'pip install --user yq'. Do NOT install via 'brew install yq' or recent 'snap install yq' — those provide Go-yq with an incompatible DSL."
@@ -244,8 +248,12 @@ validate_codex_gemini() {
         [ -n "$model" ] || die "codex.model: required when codex: section present"
         if [ -n "$level" ]; then
             case "$level" in
-                low|medium|high|xhigh) ;;
-                *) die "codex.reasoning_level: unknown value \"$level\". Valid: low, medium, high, xhigh" ;;
+                # Known today (OpenAI server-accepted set as of 2026-07). New levels
+                # ship with new models (gpt-5.6 added `ultra`) — an unknown value is
+                # NOT an error: warn and pass through; the codex CLI/API is the final
+                # validator and rejects truly invalid values with a clear HTTP 400.
+                none|minimal|low|medium|high|xhigh|ultra) ;;
+                *) warn "codex.reasoning_level: unknown value \"$level\" — passing through (codex CLI will validate)" ;;
             esac
         fi
     fi
