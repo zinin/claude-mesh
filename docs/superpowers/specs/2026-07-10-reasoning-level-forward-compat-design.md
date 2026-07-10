@@ -77,28 +77,38 @@ unless the orchestrator explicitly passes MODEL/REASONING_LEVEL, so the user's
 - `cmd_get_codex` / `cmd_get_gemini` — code unchanged; they now inherit the
   warn-not-die level policy. Output contract stays `<model>|<reasoning_level>`.
 
-### 2. Config wiring in review flows
+### 2. Config wiring: codex executors resolve model/level from config.yaml
 
-Files: `skills/mesh-design-review/SKILL.md`, `commands/mesh-review.md`.
+Revised during planning (2026-07-10, approved by user): resolution lives in the
+**executor skills**, mirroring the existing gemini-exec idiom (its MODEL doc already
+resolves via `"$LOADER" get-gemini` with a `gemini-3.1-pro-preview` fallback and
+caller-override precedence). Orchestrators pass codex parameters only when the user
+gave them explicitly. Gemini therefore needs no new wiring at all — gemini-exec
+becomes config-driven as soon as the loader stops dying on the codex section.
 
-- In pre-flight (next to the existing `dispatch_model` read):
-  - If `get-flag has_codex` = 1: `CG=$("$LOADER" get-codex)` →
-    `CODEX_MODEL=${CG%%|*}`, `CODEX_REASONING_LEVEL=${CG##*|}`;
-    empty level → skill default (`xhigh`).
-  - If `get-flag has_gemini` = 1: `GEMINI_MODEL=$("$LOADER" get-gemini)`.
-  - `get-codex`/`get-gemini` failure (rc≠0, e.g. missing `codex.model`) → surface
-    the loader error and stop, consistent with the existing invalid-config
-    pre-flight handling.
-- Precedence rule, documented in both files:
-  **explicit invocation parameter > config.yaml > skill default (`gpt-5.5`/`xhigh`)**.
-- Dispatch blocks are untouched — they already use
-  `MODEL={CODEX_MODEL}, REASONING_LEVEL={CODEX_REASONING_LEVEL}` placeholders;
-  only the variables' source changes. Gemini dispatch gains `MODEL={GEMINI_MODEL}`
-  when set.
-- Doc updates in `codex-exec`, `codex-code-review`, `codex-review-native`,
-  `mesh-design-review`: reasoning-level tables gain `ultra` (and mention
-  `none`/`minimal`), plus a note that unknown levels are passed through to codex.
-  The lone-`|` pitfall note for `get-codex` remains valid and stays.
+Precedence everywhere:
+**explicit caller parameter > config.yaml > built-in fallback (`gpt-5.5`/`xhigh`)**.
+
+- `skills/codex-exec/SKILL.md`: MODEL / REASONING_LEVEL Input docs get the
+  gemini-exec wording (resolve via `"$LOADER" get-codex`, output `<model>|<level>`,
+  fallbacks `gpt-5.5` / `xhigh`); the header loader-note gains "(c) resolve the
+  default model/level via `get-codex`"; both execution blocks (default and
+  supervised) gain a resolution snippet: empty MODEL/REASONING_LEVEL → `get-codex`,
+  gated on `get-flag has_codex`; `get-codex` failure → STOP and surface the loader
+  error. "Replace before execution" bullets, the Options table and the Reasoning
+  Levels table updated (add `none`/`minimal`/`ultra`; unknown levels pass through).
+- `skills/codex-code-review/SKILL.md`: Step 4 no longer hardcodes
+  `MODEL=gpt-5.5` / `REASONING_LEVEL=xhigh` as MANDATORY — both are omitted unless
+  the user explicitly requested values; codex-exec resolves from config.
+- `skills/codex-review-native/SKILL.md`: `MODEL="${MODEL:-gpt-5.5}"` /
+  `REASONING_LEVEL="${REASONING_LEVEL:-xhigh}"` become get-codex-based resolution
+  with the same fallbacks; Input docs updated.
+- `skills/mesh-design-review/SKILL.md`: CODEX_MODEL / CODEX_REASONING_LEVEL Input
+  docs become "default: resolved from config.yaml by the executor"; the dispatch
+  parameter line says to pass MODEL/REASONING_LEVEL only when explicitly provided.
+- `commands/mesh-review.md`: no dispatch change (it already passes no codex
+  params); behavior changes transitively via codex-code-review → codex-exec.
+- The lone-`|` pitfall note for `get-codex` remains valid and stays.
 
 ### 3. Guardrail: config.yaml is user-owned
 
@@ -146,8 +156,10 @@ Post-release smoke: one `/mesh-design-review` run confirming codex dispatch uses
     ext-claude executors (warn + passthrough; `ultra` incident).
   - **Changed:** `cmd_export` validates only the sections it uses
     (providers/models/runtime).
-  - **Added:** reviews read codex model/reasoning level and gemini model from
-    `config.yaml`; user-owned-config guardrail wording in all pre-flights.
+  - **Added:** codex executors resolve model/reasoning level from `config.yaml`
+    when the caller passes none (mirrors gemini-exec); reviews become
+    config-driven transitively; user-owned-config guardrail wording in all
+    pre-flights.
 - Flow (mirrors 0.3.0): implementation commits on
   `feature/reasoning-level-forward-compat` → `git rm -r docs/superpowers` before PR
   (spec/plan stay in branch history; pre-existing untracked `docs/superpowers/plans/*`
