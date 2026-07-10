@@ -83,8 +83,8 @@ See `config.example.yaml` for the canonical example. Sections:
 |---|---|---|
 | `providers:` | yes | API endpoint + auth + kind (anthropic-api / ollama-daemon) |
 | `models:` | yes | id = `<provider>/<short>`, model name, optional alias overrides |
-| `codex:` | no | model + reasoning_level for codex CLI |
-| `gemini:` | no | model for gemini CLI |
+| `codex:` | no | model + reasoning_level for codex CLI — the default for `/codex-*` skills and reviews unless the caller overrides; unknown levels pass through with a WARN |
+| `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
 | `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |
 | `runtime:` | no | UI defaults + timeouts |
 
