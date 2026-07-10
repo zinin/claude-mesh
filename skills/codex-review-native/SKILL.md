@@ -51,8 +51,8 @@ Optional (caller can specify):
 - **COMMIT_SHA** — review changes introduced by a specific commit
 - **UNCOMMITTED** — set to `true` to review staged/unstaged/untracked changes
 - **TITLE** — optional title for review summary
-- **MODEL** — Codex model. **MUST be `gpt-5.5`** unless caller EXPLICITLY specifies a different model. Do NOT choose a model yourself.
-- **REASONING_LEVEL** — **MUST be `xhigh`** unless caller EXPLICITLY specifies a different level. Do NOT choose a level yourself.
+- **MODEL** — Codex model. If the caller does NOT specify one, the execution block resolves it from config (`get-codex` → `codex.model`), falling back to `gpt-5.5`. Do NOT choose a model yourself.
+- **REASONING_LEVEL** — reasoning level. If the caller does NOT specify one, resolved from config (`get-codex` → `codex.reasoning_level`), falling back to `xhigh`. Unknown levels pass through to codex. Do NOT choose a level yourself.
 
 **Priority:** UNCOMMITTED > COMMIT_SHA > BASE_BRANCH (first non-empty wins)
 
@@ -90,14 +90,14 @@ fi
 
 Substitute parameters before execution:
 - Replace `${BASE_BRANCH}` with actual value (e.g., "master")
-- Replace `${MODEL}` with model — **MUST be `gpt-5.5`** unless caller explicitly specified otherwise
-- Replace `${REASONING_LEVEL}` with level — **MUST be `xhigh`** unless caller explicitly specified otherwise
+- Replace `${MODEL}` with the caller's model, or leave UNSET — the block resolves it from config (`get-codex`), falling back to `gpt-5.5`
+- Replace `${REASONING_LEVEL}` with the caller's level, or leave UNSET — the block resolves it from config (`get-codex`), falling back to `xhigh`
 
 ```bash
 # === EXECUTE THIS ENTIRE BLOCK AS ONE BASH CALL ===
 set -e && \
-MODEL="${MODEL:-gpt-5.5}" && \
-REASONING_LEVEL="${REASONING_LEVEL:-xhigh}" && \
+MODEL="${MODEL:-}" && \
+REASONING_LEVEL="${REASONING_LEVEL:-}" && \
 BASE_REF=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') && \
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}" && \
 TIMESTAMP=$(date +%Y-%m-%d-%H-%M-%S) && \
@@ -105,6 +105,16 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' || echo "unkno
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>" && \
 LOADER="$SKILL_BASE/../shared/config-loader.sh" && \
 PLUGIN_DATA="$("$LOADER" data-dir)" && \
+{ [ -n "$MODEL" ] && [ -n "$REASONING_LEVEL" ]; } || { \
+  CG="|"; \
+  if [ "$("$LOADER" get-flag has_codex 2>/dev/null)" = "1" ]; then \
+    CG=$("$LOADER" get-codex) || { echo "STOP: config-loader get-codex failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }; \
+  fi; \
+  [ -n "$MODEL" ] || MODEL="${CG%%|*}"; \
+  [ -n "$REASONING_LEVEL" ] || REASONING_LEVEL="${CG##*|}"; \
+} && \
+MODEL="${MODEL:-gpt-5.5}" && \
+REASONING_LEVEL="${REASONING_LEVEL:-xhigh}" && \
 WORK_DIR="$PLUGIN_DATA/runs/codex/${TIMESTAMP}-native-review-${BRANCH}" && \
 mkdir -p "$WORK_DIR" && \
 LOG_FILE="$WORK_DIR/log.jsonl" && \
