@@ -423,10 +423,17 @@ cmd_export() {
     [ -n "$model_id" ] || die "export: model id required (e.g. zai/glm)"
 
     load_or_die
-    # Full validation so malformed defaults/runtime/codex/gemini fast-fail BEFORE
-    # ext-claude-exec spends 30+ minutes on a flawed config. See CRITICAL-10.
-    # Latency cost is amortised by the JSON-snapshot strategy (CONCERN-12 / Risk #12).
-    validate_all
+    # Scoped validation (CRITICAL-10, revised 2026-07-10): fast-fail malformed
+    # providers/models/runtime BEFORE ext-claude-exec spends 30+ minutes — but ONLY
+    # the sections export actually reads (runtime for timeouts). Errors in
+    # codex:/gemini:/defaults: cannot affect an ext-claude run and must NOT block it:
+    # the `ultra` incident (2026-07-10) killed every ext-claude executor over a codex
+    # setting. Mirrors the typed-getter principle (iter-2 CONCERN-2/3); cmd_validate
+    # remains the full-config lint. Latency cost amortised by the JSON snapshot
+    # (CONCERN-12 / Risk #12).
+    validate_providers
+    validate_models
+    validate_runtime
 
     # iter-3 CRITICAL-1 + SUGGESTION-1: reads via jq on snapshot; REPLACE_ME check before model resolution.
     local provider_id="${model_id%%/*}"
