@@ -245,11 +245,36 @@ validate_models() {
 # resolution and vice versa; Codex PR-review finding). validate_all runs both.
 validate_codex() {
     if jq -e '.codex' "$CONFIG_JSON" >/dev/null 2>&1; then
-        local model level
-        model=$(jq -r '.codex.model // ""' "$CONFIG_JSON")
-        level=$(jq -r '.codex.reasoning_level // ""' "$CONFIG_JSON")
+        local stype mtype ltype model level
+        stype=$(jq -r '.codex | type' "$CONFIG_JSON")
+        [ "$stype" = "object" ] || die "codex: must be a mapping with model/reasoning_level keys (got $stype)"
+        # Type + charset guards (fix wave 3, external review): pass-through must stay
+        # a *string* pass-through. A non-string value (unquoted `reasoning_level: 3`,
+        # YAML-1.1 booleans like `off`) used to survive validation and then crash
+        # cmd_get_codex with a raw jq type error; unsafe characters would corrupt the
+        # `model|level` pipe protocol or shell substitution in the executor skills.
+        # Same forward-compatible charset as runtime.dispatch_model: no enum, new
+        # models/levels never require a validator change.
+        mtype=$(jq -r '.codex.model | type' "$CONFIG_JSON")
+        case "$mtype" in
+            string) ;;
+            null) die "codex.model: required when codex: section present" ;;
+            *) die "codex.model: must be a string (got $mtype)" ;;
+        esac
+        model=$(jq -r '.codex.model' "$CONFIG_JSON")
         [ -n "$model" ] || die "codex.model: required when codex: section present"
+        [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ ]] \
+            || die "codex.model: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$model\""
+        ltype=$(jq -r '.codex.reasoning_level | type' "$CONFIG_JSON")
+        case "$ltype" in
+            string|null) ;;
+            *) die "codex.reasoning_level: must be a string (got $ltype) — quote it, e.g. reasoning_level: \"ultra\"" ;;
+        esac
+        level=""
+        [ "$ltype" = "string" ] && level=$(jq -r '.codex.reasoning_level' "$CONFIG_JSON")
         if [ -n "$level" ]; then
+            [[ "$level" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ ]] \
+                || die "codex.reasoning_level: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$level\""
             case "$level" in
                 # Known today (OpenAI server-accepted set as of 2026-07). New levels
                 # ship with new models (gpt-5.6 added `ultra`) — an unknown value is

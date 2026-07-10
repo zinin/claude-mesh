@@ -171,6 +171,115 @@ RC=$?
 assert_exit "validate (full lint) still rejects the broken codex section" "1" "$RC"
 rm -rf "$TDIR" "$ERR"
 
+echo "=== Test 7e: all known reasoning levels pass silently ==="
+# Mutation guard (external review, fix wave 3): removing a level from the known
+# set must turn the suite red — previously no test exercised any known level.
+for LVL in none minimal low medium high xhigh ultra; do
+    TDIR=$(mktemp -d)
+    sed "s/reasoning_level: extreme.*/reasoning_level: $LVL/" \
+        "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+    ERR=$(mktemp)
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+    RC=$?
+    assert_exit "validate exits zero on level '$LVL'" "0" "$RC"
+    if [ -s "$ERR" ]; then
+        FAIL=$((FAIL+1)); echo "  FAIL: stderr not silent on known level '$LVL'"
+        echo "    stderr was:"; sed 's/^/      /' "$ERR"
+    else
+        PASS=$((PASS+1)); echo "  PASS: stderr silent on known level '$LVL'"
+    fi
+    rm -rf "$TDIR" "$ERR"
+done
+
+echo "=== Test 7f: get-codex passes an unknown level through (the consumer path) ==="
+# The executor skills consume get-codex, not validate — lock the passthrough
+# contract on the path they actually call.
+TDIR=$(mktemp -d)
+cp "$FIXTURES/unknown-codex-reasoning.yaml" "$TDIR/config.yaml"
+ERR=$(mktemp)
+VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>"$ERR")
+RC=$?
+assert_exit "get-codex exits zero on unknown level" "0" "$RC"
+if [ "$VAL" = "gpt-5.5|extreme" ]; then
+    PASS=$((PASS+1)); echo "  PASS: get-codex prints model|unknown-level unchanged"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' (expected 'gpt-5.5|extreme')"
+fi
+assert_stderr_contains "warns about the unknown level" "reasoning_level: unknown value" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test 7g: export unaffected by die-class codex section (scoped validation) ==="
+# 7b covers the warn-noise case; this locks the die-class case — a codex: section
+# without model must not block ext-claude exports either.
+TDIR=$(mktemp -d)
+cp "$FIXTURES/broken-codex-valid-gemini.yaml" "$TDIR/config.yaml"
+OUT=$(mktemp)
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>"$ERR"
+RC=$?
+assert_exit "export exits zero despite die-class codex section" "0" "$RC"
+if grep -q -- "codex" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: export stderr mentions codex (out of export scope)"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: export stderr silent on codex"
+fi
+# cmd_export prints the path to a mode-600 env file; remove it without reading it.
+ENV_FILE=$(cat "$OUT" 2>/dev/null)
+[ -n "$ENV_FILE" ] && rm -f "$ENV_FILE"
+rm -rf "$TDIR" "$OUT" "$ERR"
+
+echo "=== Test 7h: get-codex dies on codex section without model ==="
+# The executor STOP contract relies on this rc=1 (resolution snippets surface it).
+TDIR=$(mktemp -d)
+cp "$FIXTURES/broken-codex-valid-gemini.yaml" "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex >/dev/null 2>"$ERR"
+RC=$?
+assert_exit "get-codex exits non-zero" "1" "$RC"
+assert_stderr_contains "names the missing model" "codex.model: required" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test 7i: non-string reasoning_level dies with a clear message ==="
+# Previously an unquoted numeric level passed validate (warn) and then crashed
+# get-codex with a raw jq type error (rc=5) — worse than 0.3.0's clean die.
+TDIR=$(mktemp -d)
+sed "s/reasoning_level: extreme.*/reasoning_level: 3/" \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "validate exits non-zero on numeric level" "1" "$RC"
+assert_stderr_contains "explains the type requirement" "must be a string" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex >/dev/null 2>/dev/null
+RC=$?
+assert_exit "get-codex dies cleanly too (no raw jq rc=5)" "1" "$RC"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test 7j: reasoning_level with unsafe characters dies ==="
+# '|' would corrupt the get-codex model|level protocol; quotes/spaces would break
+# shell substitution in the executor skills.
+TDIR=$(mktemp -d)
+sed 's/reasoning_level: extreme.*/reasoning_level: "a|b"/' \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "validate exits non-zero on 'a|b'" "1" "$RC"
+assert_stderr_contains "names reasoning_level charset" "codex.reasoning_level: must start with" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test 7k: codex.model with unsafe characters dies ==="
+TDIR=$(mktemp -d)
+sed 's/model: gpt-5.5/model: "gpt 5.5"/' \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "validate exits non-zero on 'gpt 5.5'" "1" "$RC"
+assert_stderr_contains "names codex.model charset" "codex.model: must start with" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
 echo "=== Test 8: defaults references unknown model ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-missing-model.yaml" "$TDIR/config.yaml"
