@@ -31,8 +31,8 @@ Optional (caller can specify):
 - **DESIGN_PATH** — explicit path to design document
 - **PLAN_PATH** — explicit path to plan document
 - **TOPIC** — topic name for file naming
-- **CODEX_MODEL** — Codex model (default: "gpt-5.5")
-- **CODEX_REASONING_LEVEL** — low, medium, high, xhigh (default: "xhigh")
+- **CODEX_MODEL** — Codex model. Default: resolved from `config.yaml` (`codex.model`) by the codex executor itself; final fallback "gpt-5.5". Set only when the user explicitly overrides.
+- **CODEX_REASONING_LEVEL** — reasoning level (`none|minimal|low|medium|high|xhigh|ultra`; unknown values pass through to codex). Default: resolved from `config.yaml` (`codex.reasoning_level`) by the executor; final fallback "xhigh". Set only when the user explicitly overrides.
 - **DEFAULT** — if `default` argument is passed, skip the Step 5 selection UI and use the `defaults.design_review` preset from `config.yaml` (each `builtin` entry → its executor; each `models` id → `claude-mesh:ext-claude-executor MODEL=<id>`). See Step 5.
 
 ## Iron Rules for Processing Issues
@@ -335,7 +335,7 @@ Task tool:
 ```
 
 Agent-specific parameters:
-- **`claude-mesh:codex-executor`** (built-in selected: `codex`): MODEL={CODEX_MODEL}, REASONING_LEVEL={CODEX_REASONING_LEVEL}
+- **`claude-mesh:codex-executor`** (built-in selected: `codex`): pass `MODEL={CODEX_MODEL}` / `REASONING_LEVEL={CODEX_REASONING_LEVEL}` ONLY when the user explicitly set them; otherwise omit both lines entirely — codex-exec resolves model/level from `config.yaml` (`codex.model` / `codex.reasoning_level`, fallbacks `gpt-5.5`/`xhigh`)
 - **`claude-mesh:gemini-executor`** (built-in selected: `gemini`): default settings
 - **`claude-mesh:ext-claude-executor`** (one per selected model id): `MODEL=<id>` on line 1 (e.g. `MODEL=zai/glm`, `MODEL=alibaba/qwen`, `MODEL=ollama/kimi`) — the model id comes from the config (`SELECTED_IDS`, or `defaults.design_review.models` in `default` mode), NOT a hardcoded provider profile.
 
@@ -670,7 +670,7 @@ When loop exits, display:
 |-------|----------|
 | No design doc found | Ask user to specify DESIGN_PATH |
 | `config.yaml` not found (loader rc=2) | Copy `config.example.yaml` to `${CLAUDE_PLUGIN_DATA}/config.yaml`, fill tokens, retry |
-| `config.yaml` invalid (loader rc=1) | Surface the validator stderr, fix the config, retry |
+| `config.yaml` invalid (loader rc=1) | Surface the validator stderr to the user; the USER edits config.yaml (agents never modify it); retry after the user confirms |
 | `defaults.design_review` missing (with `default` arg) | Run without `default`, or add the preset to `config.yaml` |
 | One agent fails, others succeed | Continue with available results, note failure in merged output |
 | All agents fail | Show error, save progress, allow retry |

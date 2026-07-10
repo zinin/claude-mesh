@@ -232,12 +232,12 @@ Verdicts:
   - **c. Re-run the guard** (step 2) for those reviewers with the new `DISPATCH_EPOCH`; update their verdicts.
   - **d.** rounds-done++.
 
-`BROKEN` reviewers are **never** re-dispatched — retry is futile (fix it by swapping the model in `config.yaml`, not by retrying).
+`BROKEN` reviewers are **never** re-dispatched — retry is futile (the fix is the USER swapping the model in `config.yaml` — agents never edit it — not retrying).
 
 **5. Finalize:**
 - `REAL` reviewers → their reviews enter Step 6.1 (dedupe/classify) as normal.
 - Reviewers still `FLIP`/`STALLED` after `N` rounds → **EXCLUDE from cross-validation** and record in the Step 6.6 summary: `⚠ <reviewer> did not delegate after N attempts — NOT counted as external review (self-review on the session model / killed mid-flight)`.
-- `BROKEN` reviewers → record: `⚠ <reviewer>: external engine produced no usable review (broken — swap the model in config.yaml)`.
+- `BROKEN` reviewers → record: `⚠ <reviewer>: external engine produced no usable review (broken — ask the user to swap the model in config.yaml; agents never edit it)`.
 - The builtin `claude` reviewer's findings always enter Step 6.1.
 
 **Do NOT silently accept a FLIP as an external review.** A flipped wrapper is the session's model reviewing its own work; counting it as independent cross-validation is the exact failure this guard exists to prevent.
