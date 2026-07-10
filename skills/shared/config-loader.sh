@@ -240,7 +240,10 @@ validate_models() {
     done
 }
 
-validate_codex_gemini() {
+# Per-section validators: get-codex / get-gemini validate ONLY their own section
+# (typed-getter principle — a malformed gemini: section must not block codex
+# resolution and vice versa; Codex PR-review finding). validate_all runs both.
+validate_codex() {
     if jq -e '.codex' "$CONFIG_JSON" >/dev/null 2>&1; then
         local model level
         model=$(jq -r '.codex.model // ""' "$CONFIG_JSON")
@@ -257,7 +260,9 @@ validate_codex_gemini() {
             esac
         fi
     fi
+}
 
+validate_gemini() {
     if jq -e '.gemini' "$CONFIG_JSON" >/dev/null 2>&1; then
         local model
         model=$(jq -r '.gemini.model // ""' "$CONFIG_JSON")
@@ -408,7 +413,8 @@ validate_all() {
     # then models, then sections that reference models (defaults), then runtime.
     validate_providers
     validate_models
-    validate_codex_gemini
+    validate_codex
+    validate_gemini
     validate_defaults
     validate_runtime
 }
@@ -621,7 +627,7 @@ cmd_list_providers() {
 # apply uniformly. Output: pipe-separated to match cmd_list_* convention.
 cmd_get_codex() {
     load_or_die
-    validate_codex_gemini
+    validate_codex
     # Format: <model>|<reasoning_level>
     # NOTE: when codex: is absent this still prints a lone "|" (empty model + level), exit 0.
     # Callers (Task 13) must gate on `get-flag has_codex` first, or split on "|" and test the
@@ -631,7 +637,7 @@ cmd_get_codex() {
 
 cmd_get_gemini() {
     load_or_die
-    validate_codex_gemini
+    validate_gemini
     # Format: <model>
     jq -r '.gemini.model // ""' "$CONFIG_JSON"
 }

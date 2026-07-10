@@ -122,6 +122,55 @@ ENV_FILE=$(cat "$OUT" 2>/dev/null)
 [ -n "$ENV_FILE" ] && rm -f "$ENV_FILE"
 rm -rf "$TDIR" "$OUT" "$ERR"
 
+echo "=== Test 7c: get-codex unaffected by broken gemini section (scoped validation) ==="
+# get-codex validates only the codex: section — a gemini: section without model
+# must not block config-driven codex resolution (Codex PR-review finding).
+# validate stays the full-config lint and still rejects the same fixture.
+TDIR=$(mktemp -d)
+cp "$FIXTURES/broken-gemini-valid-codex.yaml" "$TDIR/config.yaml"
+ERR=$(mktemp)
+VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>"$ERR")
+RC=$?
+assert_exit "get-codex exits zero despite broken gemini section" "0" "$RC"
+if [ "$VAL" = "gpt-5.5|xhigh" ]; then
+    PASS=$((PASS+1)); echo "  PASS: get-codex prints model|level"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' (expected 'gpt-5.5|xhigh')"
+fi
+if grep -q -- "gemini" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: get-codex stderr mentions gemini (out of scope)"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: get-codex stderr silent on gemini"
+fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>/dev/null
+RC=$?
+assert_exit "validate (full lint) still rejects the broken gemini section" "1" "$RC"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test 7d: get-gemini unaffected by broken codex section (scoped validation) ==="
+TDIR=$(mktemp -d)
+cp "$FIXTURES/broken-codex-valid-gemini.yaml" "$TDIR/config.yaml"
+ERR=$(mktemp)
+VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-gemini 2>"$ERR")
+RC=$?
+assert_exit "get-gemini exits zero despite broken codex section" "0" "$RC"
+if [ "$VAL" = "gemini-3.1-pro" ]; then
+    PASS=$((PASS+1)); echo "  PASS: get-gemini prints model"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: get-gemini printed '$VAL' (expected 'gemini-3.1-pro')"
+fi
+if grep -q -- "codex" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: get-gemini stderr mentions codex (out of scope)"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: get-gemini stderr silent on codex"
+fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>/dev/null
+RC=$?
+assert_exit "validate (full lint) still rejects the broken codex section" "1" "$RC"
+rm -rf "$TDIR" "$ERR"
+
 echo "=== Test 8: defaults references unknown model ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-missing-model.yaml" "$TDIR/config.yaml"
