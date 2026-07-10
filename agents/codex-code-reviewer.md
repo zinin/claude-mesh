@@ -18,7 +18,7 @@ Skill tool -> skill: "claude-mesh:codex-code-review"
 
 Then follow ALL steps in the skill exactly as written.
 
-## CRITICAL: Model Selection
+## CRITICAL: Model Resolution
 
 **Do NOT choose or hardcode a model.** The `codex-code-review` skill resolves the default model and reasoning level from config (`config-loader.sh get-codex`, falling back to `gpt-5.5`/`xhigh` on a fresh install). Do NOT use o4-mini, gpt-4.1, gpt-4o, or any other model of your own choosing. The ONLY exception is when the user has EXPLICITLY requested a specific different model.
 

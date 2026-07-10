@@ -43,8 +43,19 @@ die() {
 }
 
 warn() {
+    # Echoes its arguments to stderr verbatim — callers are responsible for the
+    # content being safe to print (config values pass the charset guards before
+    # they reach a warn call).
     echo "config-loader: WARN: $*" >&2
 }
+
+# Forward-compatible identifier charsets (fix waves 3+5, single source of truth).
+# The leading-alnum anchor rejects flag-injection (values starting with -/./:/@);
+# both sets exclude `|` (the model|level pipe protocol) and anything unsafe for
+# shell substitution in the executor skills. No enum — a new model or level must
+# never require a validator change.
+IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, runtime.dispatch_model
+MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'   # engine models: adds "/" for provider-qualified ids
 
 require_yq() {
     if ! command -v yq >/dev/null 2>&1; then
@@ -133,9 +144,12 @@ load_or_die() {
 validate_providers() {
     local count
     # CONCERN-12: null-coalesce so `providers: null` (or `providers: ~`) doesn't yield
-    # "integer expression expected" on the next line.
-    count=$(jq '(.providers // []) | length' "$CONFIG_JSON")
-    [ "$count" -gt 0 ] || die "providers: section is empty or missing"
+    # "integer expression expected" on the next line. An EMPTY config.yaml is nastier
+    # still: the JSON snapshot is an empty stream, jq emits nothing at all and $count
+    # is "" — default it to 0 so the check below dies cleanly instead of spraying
+    # bash arithmetic noise first (fix wave 5).
+    count=$(jq '(.providers // []) | length' "$CONFIG_JSON" 2>/dev/null)
+    [ "${count:-0}" -gt 0 ] || die "providers: section is empty or missing"
 
     # Per-provider checks
     local i=0
@@ -244,55 +258,78 @@ validate_models() {
 # (typed-getter principle — a malformed gemini: section must not block codex
 # resolution and vice versa; Codex PR-review finding). validate_all runs both.
 validate_codex() {
-    if jq -e '.codex' "$CONFIG_JSON" >/dev/null 2>&1; then
-        local stype mtype ltype model level
-        stype=$(jq -r '.codex | type' "$CONFIG_JSON")
-        [ "$stype" = "object" ] || die "codex: must be a mapping with model/reasoning_level keys (got $stype)"
-        # Type + charset guards (fix wave 3, external review): pass-through must stay
-        # a *string* pass-through. A non-string value (unquoted `reasoning_level: 3`,
-        # YAML-1.1 booleans like `off`) used to survive validation and then crash
-        # cmd_get_codex with a raw jq type error; unsafe characters would corrupt the
-        # `model|level` pipe protocol or shell substitution in the executor skills.
-        # Same forward-compatible charset as runtime.dispatch_model: no enum, new
-        # models/levels never require a validator change.
-        mtype=$(jq -r '.codex.model | type' "$CONFIG_JSON")
-        case "$mtype" in
-            string) ;;
-            null) die "codex.model: required when codex: section present" ;;
-            *) die "codex.model: must be a string (got $mtype)" ;;
+    # Type-dispatch gate (fix wave 5): the old `jq -e '.codex'` truthiness probe
+    # skipped a scalar section entirely, so `codex: false` passed validate and
+    # later crashed cmd_get_codex with a raw jq "Cannot index boolean" (rc=5).
+    # null — key absent, empty `codex:` key, or an empty config snapshot — keeps
+    # the absent semantics; any other non-mapping type dies cleanly here.
+    local stype
+    stype=$(jq -r '.codex | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$stype" in
+        ""|null) return 0 ;;
+        object) ;;
+        *) die "codex: must be a mapping with model/reasoning_level keys (got $stype)" ;;
+    esac
+    local mtype ltype model level
+    # Type + charset guards (fix wave 3, external review): pass-through must stay
+    # a *string* pass-through. A non-string value (unquoted `reasoning_level: 3`,
+    # YAML booleans `true`/`false`) used to survive validation and then crash
+    # cmd_get_codex with a raw jq type error; unsafe characters would corrupt the
+    # `model|level` pipe protocol or shell substitution in the executor skills.
+    # (Note: with kislyuk-yq the YAML-1.1 words `off`/`on`/`yes`/`no` parse as
+    # STRINGS and take the warn-and-pass-through path below, not the type die —
+    # empirically locked by Test 45.) Same forward-compatible charset family as
+    # runtime.dispatch_model — no enum, new models/levels never require a
+    # validator change; codex.model additionally allows "/" for
+    # provider-qualified ids like `openai/gpt-oss-20b` (fix wave 5).
+    # Single snapshot read (fix wave 5 refactor): one jq call fetches all four
+    # values/types (was 4 calls); @tsv escapes embedded tabs/newlines so the read
+    # below cannot desync (the charset guards reject such values anyway; a die on
+    # a non-string type fires before its garbled value column is ever used).
+    local fields
+    fields=$(jq -r '[(.codex.model | type), (.codex.model // ""),
+                     (.codex.reasoning_level | type), (.codex.reasoning_level // "")] | @tsv' "$CONFIG_JSON")
+    IFS=$'\t' read -r mtype model ltype level <<< "$fields"
+    case "$mtype" in
+        string) ;;
+        null) die "codex.model: required when codex: section present" ;;
+        *) die "codex.model: must be a string (got $mtype)" ;;
+    esac
+    [ -n "$model" ] || die "codex.model: required when codex: section present"
+    [[ "$model" =~ $MODEL_RE ]] \
+        || die "codex.model: must start with a letter/digit and match [A-Za-z0-9._:@/-], got \"$model\""
+    case "$ltype" in
+        string|null) ;;
+        *) die "codex.reasoning_level: must be a string (got $ltype) — quote it, e.g. reasoning_level: \"ultra\"" ;;
+    esac
+    if [ -n "$level" ]; then
+        [[ "$level" =~ $IDENT_RE ]] \
+            || die "codex.reasoning_level: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$level\""
+        case "$level" in
+            # Known today (OpenAI server-accepted set as of 2026-07). New levels
+            # ship with new models (gpt-5.6 added `ultra`) — an unknown value is
+            # NOT an error: warn and pass through; the codex CLI/API is the final
+            # validator and rejects truly invalid values with a clear HTTP 400.
+            none|minimal|low|medium|high|xhigh|ultra) ;;
+            *) warn "codex.reasoning_level: unknown value \"$level\" — passing through (codex CLI will validate)" ;;
         esac
-        model=$(jq -r '.codex.model' "$CONFIG_JSON")
-        [ -n "$model" ] || die "codex.model: required when codex: section present"
-        [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ ]] \
-            || die "codex.model: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$model\""
-        ltype=$(jq -r '.codex.reasoning_level | type' "$CONFIG_JSON")
-        case "$ltype" in
-            string|null) ;;
-            *) die "codex.reasoning_level: must be a string (got $ltype) — quote it, e.g. reasoning_level: \"ultra\"" ;;
-        esac
-        level=""
-        [ "$ltype" = "string" ] && level=$(jq -r '.codex.reasoning_level' "$CONFIG_JSON")
-        if [ -n "$level" ]; then
-            [[ "$level" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ ]] \
-                || die "codex.reasoning_level: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$level\""
-            case "$level" in
-                # Known today (OpenAI server-accepted set as of 2026-07). New levels
-                # ship with new models (gpt-5.6 added `ultra`) — an unknown value is
-                # NOT an error: warn and pass through; the codex CLI/API is the final
-                # validator and rejects truly invalid values with a clear HTTP 400.
-                none|minimal|low|medium|high|xhigh|ultra) ;;
-                *) warn "codex.reasoning_level: unknown value \"$level\" — passing through (codex CLI will validate)" ;;
-            esac
-        fi
     fi
 }
 
 validate_gemini() {
-    if jq -e '.gemini' "$CONFIG_JSON" >/dev/null 2>&1; then
-        local model
-        model=$(jq -r '.gemini.model // ""' "$CONFIG_JSON")
-        [ -n "$model" ] || die "gemini.model: required when gemini: section present"
-    fi
+    # Same type-dispatch gate as validate_codex (fix wave 5): a scalar `gemini:`
+    # section used to skip validation and crash cmd_get_gemini with a raw jq
+    # error. (Full type/charset parity for gemini.model stays on the fix-later
+    # list — this closes only the gate class.)
+    local stype model
+    stype=$(jq -r '.gemini | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$stype" in
+        ""|null) return 0 ;;
+        object) ;;
+        *) die "gemini: must be a mapping with a model key (got $stype)" ;;
+    esac
+    model=$(jq -r '.gemini.model // ""' "$CONFIG_JSON")
+    [ -n "$model" ] || die "gemini.model: required when gemini: section present"
 }
 
 validate_defaults() {
@@ -418,7 +455,7 @@ validate_runtime() {
         # (e.g. claude-opus-4@date, at-sign). No enum — a new model must never require a
         # validator change. The leading-char anchor still rejects a value starting with
         # -/./:/@ (flag-injection); the charset keeps it safe through jq/bash downstream.
-        [[ "$dm" =~ ^[A-Za-z0-9][A-Za-z0-9._:@-]*$ ]] \
+        [[ "$dm" =~ $IDENT_RE ]] \
             || die "runtime.dispatch_model: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$dm\""
     fi
 
@@ -685,10 +722,20 @@ cmd_get_defaults() {
 
 # iter-3 CONCERN-1: typed getter for runtime UI defaults (default_run_mode) + the do-plan
 # threshold, as a JSON object. /mesh-review and /do-plan read these without raw yq.
+# timeouts added in fix wave 5: the mesh-review / mesh-design-review disk-watch bounds
+# itself by runtime.timeouts.global_sec "via the loader", so the getter must actually
+# emit the block. Defaults mirror cmd_export / Design §4 exactly.
 cmd_get_runtime() {
     load_or_die
     validate_runtime
-    jq -c "{default_run_mode: (.runtime.default_run_mode // \"background\"), do_plan_default_stop_tokens: (.runtime.do_plan_default_stop_tokens // 250000), max_redispatch: (.runtime.max_redispatch // 1), dispatch_model: (.runtime.dispatch_model // \"\")}" "$CONFIG_JSON"
+    jq -c '{default_run_mode: (.runtime.default_run_mode // "background"),
+            do_plan_default_stop_tokens: (.runtime.do_plan_default_stop_tokens // 250000),
+            max_redispatch: (.runtime.max_redispatch // 1),
+            dispatch_model: (.runtime.dispatch_model // ""),
+            timeouts: {single_run_sec: (.runtime.timeouts.single_run_sec // 1800),
+                       stall_sec: (.runtime.timeouts.stall_sec // 600),
+                       global_sec: (.runtime.timeouts.global_sec // 3600),
+                       max_retries: (.runtime.timeouts.max_retries // 2)}}' "$CONFIG_JSON"
 }
 
 case "${1:-}" in

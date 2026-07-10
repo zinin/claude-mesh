@@ -18,7 +18,7 @@ Skill tool -> skill: "claude-mesh:gemini-code-review"
 
 Then follow ALL steps in the skill exactly as written.
 
-## CRITICAL: Model Selection
+## CRITICAL: Model Resolution
 
 **Do NOT choose or hardcode a model.** The `gemini-code-review` skill resolves the default model from config (`config-loader.sh get-gemini`, falling back to `gemini-3.1-pro-preview` on a fresh install). Only pass a specific model when the user has EXPLICITLY requested one.
 

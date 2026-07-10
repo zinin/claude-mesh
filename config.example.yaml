@@ -142,7 +142,10 @@ models:
 # `defaults.*.builtin` list (referencing it in builtin then becomes a hard error).
 codex:
   model: gpt-5.5                               # [required when codex: present]
-  reasoning_level: xhigh                       # [optional] none | minimal | low | medium | high | xhigh | ultra; unknown values pass through with a WARN (codex CLI validates)
+  # [optional] known levels as of 2026-07: none | minimal | low | medium | high | xhigh | ultra.
+  # Unknown values pass through with a WARN (the codex CLI validates). This list is the
+  # canonical copy — keep the agent defs and README in sync with it.
+  reasoning_level: xhigh
 
 gemini:
   model: gemini-3.1-pro-preview                # [required when gemini: present]

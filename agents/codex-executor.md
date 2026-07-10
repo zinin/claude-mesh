@@ -29,7 +29,7 @@ The caller should provide:
 Optional parameters:
 - **TASK_NAME** — short identifier for log files (default: "task")
 - **MODEL** — Codex model. If omitted, the skill resolves the default from config (`get-codex`, falling back to `gpt-5.5`). Pass a model ONLY when the caller EXPLICITLY specifies one — do NOT choose a model yourself.
-- **REASONING_LEVEL** — one of: `none|minimal|low|medium|high|xhigh|ultra` (unknown values pass through to codex). If omitted, the skill resolves the default from config (`get-codex`, falling back to `xhigh`). Pass a level ONLY when the caller EXPLICITLY specifies one — do NOT choose a level yourself.
+- **REASONING_LEVEL** — one of: `none|minimal|low|medium|high|xhigh|ultra` (known set as of 2026-07; unknown values pass through to codex). If omitted, the skill resolves the default from config (`get-codex`, falling back to `xhigh`). Pass a level ONLY when the caller EXPLICITLY specifies one — do NOT choose a level yourself.
 
 ## Process
 
@@ -41,7 +41,7 @@ Optional parameters:
 
 You will return:
 - Work directory path: `${CLAUDE_PLUGIN_DATA}/runs/codex/YYYY-MM-DD-HH-MM-SS-taskname/`
-- Files inside: `prompt.md`, `log.jsonl`, `output.txt`, `report.md`
+- Files inside: `prompt.md`, `log.jsonl`, `output.txt`, `report.md` (supervised mode writes `raw.jsonl` instead of `log.jsonl`)
 - The final output content from Codex
 
 ## WARNING

@@ -408,8 +408,9 @@ LOADER="$SKILL_BASE/../shared/config-loader.sh" && \
 LOG_DIR="$("$LOADER" data-dir)/runs/codex" && \
 LATEST_DIR=$(ls -td "$LOG_DIR"/*/ 2>/dev/null | head -1) && \
 [ -n "$LATEST_DIR" ] && echo "Latest: $LATEST_DIR" && ls -la "$LATEST_DIR" && \
-[ -f "$LATEST_DIR/log.jsonl" ] && echo "=== Last 30 lines ===" && tail -30 "$LATEST_DIR/log.jsonl" && \
-[ -f "$LATEST_DIR/stderr.txt" ] && echo "=== STDERR ===" && cat "$LATEST_DIR/stderr.txt"
+{ [ ! -f "$LATEST_DIR/log.jsonl" ] || { echo "=== Last 30 lines (log.jsonl, default mode) ==="; tail -30 "$LATEST_DIR/log.jsonl"; }; } && \
+{ [ ! -f "$LATEST_DIR/raw.jsonl" ] || { echo "=== Last 30 lines (raw.jsonl, supervised mode) ==="; tail -30 "$LATEST_DIR/raw.jsonl"; }; } && \
+{ [ ! -f "$LATEST_DIR/stderr.txt" ] || { echo "=== STDERR ==="; cat "$LATEST_DIR/stderr.txt"; }; }
 ```
 
 **Return to caller:** The work directory path and the final output content.

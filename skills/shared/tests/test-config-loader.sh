@@ -182,11 +182,23 @@ for LVL in none minimal low medium high xhigh ultra; do
     CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
     RC=$?
     assert_exit "validate exits zero on level '$LVL'" "0" "$RC"
-    if [ -s "$ERR" ]; then
-        FAIL=$((FAIL+1)); echo "  FAIL: stderr not silent on known level '$LVL'"
+    # Scoped assert (fix wave 5): an unrelated future WARN must not break this test —
+    # the mutation guard only needs "no reasoning_level noise" (removing a level from
+    # the known set emits 'codex.reasoning_level: unknown value …', still caught).
+    if grep -q -- "reasoning_level" "$ERR"; then
+        FAIL=$((FAIL+1)); echo "  FAIL: stderr mentions reasoning_level on known level '$LVL'"
         echo "    stderr was:"; sed 's/^/      /' "$ERR"
     else
         PASS=$((PASS+1)); echo "  PASS: stderr silent on known level '$LVL'"
+    fi
+    # Consumer-path round-trip (fix wave 5): executors read get-codex, not validate —
+    # a known level must round-trip verbatim and keep the `<model>|<level>` shape
+    # (exactly one pipe; the resolution snippets split on the LAST '|').
+    VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+    if [ "$VAL" = "gpt-5.5|$LVL" ]; then
+        PASS=$((PASS+1)); echo "  PASS: get-codex round-trips level '$LVL'"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' (expected 'gpt-5.5|$LVL')"
     fi
     rm -rf "$TDIR" "$ERR"
 done
@@ -583,7 +595,7 @@ EXPECTED='a" + .providers[0].token + "z'
 unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_SUBAGENT_MODEL
 rm -rf "$TDIR" "$OUT"
 
-echo "=== Test 14: full config.example.yaml validates ==="
+echo "=== Test 31: full config.example.yaml validates ==="
 PLUGIN_ROOT="$(cd "$TESTS_DIR/../../.." && pwd)"
 # NB: name this TMPD, not TMPDIR — mktemp consumes a set $TMPDIR as its base dir; clobbering it would break staging.
 TMPD=$(mktemp -d)
@@ -595,7 +607,7 @@ assert_exit "config.example.yaml validates" "0" "$RC"
 [ "$RC" != "0" ] && { echo "    stderr:"; sed 's/^/      /' "$ERR"; }
 rm -rf "$TMPD" "$ERR"
 
-echo "=== Test 15: export every model in config.example.yaml ==="
+echo "=== Test 32: export every model in config.example.yaml ==="
 TMPD=$(mktemp -d)
 # iter-3 CRITICAL-4: stage a REPLACE_ME→fake-token copy so cmd_export's
 # REPLACE_ME guard (iter-2 CONCERN-10) doesn't trip on the shipped example.
@@ -619,7 +631,7 @@ for mid in $MODEL_IDS; do
 done
 rm -rf "$TMPD"
 
-# === Test 30: get-runtime surfaces runtime.max_redispatch from config ===
+# === Test 33: get-runtime surfaces runtime.max_redispatch from config ===
 # (consumed by /mesh-review Step 6.0 guard as the auto-redispatch round cap)
 echo "=== Test 33: get-runtime emits max_redispatch from config ==="
 TDIR=$(mktemp -d)
@@ -628,7 +640,7 @@ GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.max_redispatch'
 if [ "$GOT" = "3" ]; then PASS=$((PASS+1)); echo "  PASS: max_redispatch=3"; else FAIL=$((FAIL+1)); echo "  FAIL: max_redispatch (expected 3, got '$GOT')"; fi
 rm -rf "$TDIR"
 
-# === Test 31: get-runtime defaults max_redispatch to 1 when absent ===
+# === Test 34: get-runtime defaults max_redispatch to 1 when absent ===
 echo "=== Test 34: get-runtime defaults max_redispatch to 1 ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  default_run_mode: team\n' > "$TDIR/config.yaml"
@@ -636,7 +648,7 @@ GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.max_redispatch'
 if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: default 1"; else FAIL=$((FAIL+1)); echo "  FAIL: default (expected 1, got '$GOT')"; fi
 rm -rf "$TDIR"
 
-# === Test 32: validate_runtime rejects non-positive max_redispatch ===
+# === Test 35: validate_runtime rejects non-positive max_redispatch ===
 echo "=== Test 35: get-runtime rejects max_redispatch=0 ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  max_redispatch: 0\n' > "$TDIR/config.yaml"
@@ -702,6 +714,124 @@ printf 'runtime:\n  default_run_mode: team\n' > "$TDIR/config.yaml"
 GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
 if [ -z "$GOT" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model defaults to empty"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty, got '$GOT'"; fi
 rm -rf "$TDIR"
+
+# === Test 40: codex.model accepts provider-qualified ids (slash) ===
+# codex CLI accepts provider-qualified model ids (e.g. ollama-style `openai/gpt-oss-20b`);
+# the model charset must allow "/" — unlike reasoning_level/dispatch_model, which keep the
+# stricter charset. Leading "/" stays rejected (leading-alnum anchor).
+echo "=== Test 40: codex.model with '/' validates and round-trips ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+sed 's|model: gpt-5.5|model: openai/gpt-oss-20b|' \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on provider-qualified codex.model" "0" "$RC"
+VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+if [ "$VAL" = "openai/gpt-oss-20b|extreme" ]; then
+    PASS=$((PASS+1)); echo "  PASS: get-codex round-trips the slash model"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' (expected 'openai/gpt-oss-20b|extreme')"
+fi
+sed 's|model: gpt-5.5|model: "/gpt-oss"|' \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "still rejects a leading-slash codex.model" "1" "$RC"
+assert_stderr_contains "names codex.model charset" "codex.model: must start with" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+# === Test 41: scalar codex:/gemini: sections die cleanly (not raw jq rc=5) ===
+# `jq -e '.codex'` gated on truthiness, so `codex: false` skipped validation and then
+# crashed cmd_get_codex with a raw jq "Cannot index boolean" (rc=5). The gate must
+# type-dispatch: null → absent, object → validate, anything else → clean die.
+echo "=== Test 41: codex:/gemini: as non-mapping scalars die cleanly ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\ncodex: false\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on codex: false" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "codex: must be a mapping" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-codex dies cleanly on codex: false (no raw jq rc=5)" "1" "$RC"
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\ngemini: false\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on gemini: false" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "gemini: must be a mapping" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-gemini >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-gemini dies cleanly on gemini: false (no raw jq rc=5)" "1" "$RC"
+# An explicitly EMPTY key (`codex:` → null) keeps the absent semantics: no error.
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\ncodex:\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on empty 'codex:' key (null = absent)" "0" "$RC"
+rm -rf "$TDIR" "$ERR"
+
+# === Test 42: empty config.yaml dies cleanly, without bash arithmetic noise ===
+# An empty yaml gives an empty JSON snapshot; jq then emits NOTHING, and the old
+# `[ "$count" -gt 0 ]` printed "integer expression expected" before the die message.
+echo "=== Test 42: empty config.yaml dies without integer-expression noise ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+: > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on empty config" "1" "$RC"
+assert_stderr_contains "names the empty providers section" "providers: section is empty or missing" "$ERR"
+if grep -q -- "integer expression" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: bash arithmetic noise leaked to stderr"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: stderr free of integer-expression noise"
+fi
+rm -rf "$TDIR" "$ERR"
+
+# === Test 43: get-runtime exposes timeouts (watch loops read global_sec via the loader) ===
+# The mesh-review/mesh-design-review disk-watch bounds itself by runtime.timeouts.global_sec
+# "via the loader" — so get-runtime must actually emit the timeouts block (defaults match
+# cmd_export: single_run_sec 1800, stall_sec 600, global_sec 3600, max_retries 2).
+echo "=== Test 43: get-runtime emits timeouts with export-parity defaults ==="
+TDIR=$(mktemp -d)
+printf 'runtime:\n  timeouts:\n    global_sec: 7200\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.timeouts.global_sec')
+if [ "$GOT" = "7200" ]; then PASS=$((PASS+1)); echo "  PASS: configured global_sec=7200"; else FAIL=$((FAIL+1)); echo "  FAIL: global_sec (expected 7200, got '$GOT')"; fi
+printf 'runtime:\n  default_run_mode: background\n' > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '[.timeouts.single_run_sec, .timeouts.stall_sec, .timeouts.global_sec, .timeouts.max_retries] | join(",")')
+if [ "$GOT" = "1800,600,3600,2" ]; then PASS=$((PASS+1)); echo "  PASS: defaults 1800,600,3600,2"; else FAIL=$((FAIL+1)); echo "  FAIL: timeout defaults (got '$GOT')"; fi
+rm -rf "$TDIR"
+
+# === Test 44: export still validates its OWN sections (regression guard) ===
+# cmd_export's scoping (fix wave 1) must not be read as "export skips validation":
+# deleting validate_providers/validate_models/validate_runtime from cmd_export would
+# keep the whole suite green without these asserts (final-review + wave-5 finding).
+echo "=== Test 44: export fails on broken providers/models/runtime sections ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+cp "$FIXTURES/invalid-provider-bad-url.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
+assert_exit "export exits 1 on invalid provider base_url" "1" "$RC"
+assert_stderr_contains "names the invalid URL" "invalid URL" "$ERR"
+cp "$FIXTURES/invalid-model-duplicate.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
+assert_exit "export exits 1 on duplicate model id" "1" "$RC"
+assert_stderr_contains "names the duplicate id" "duplicate id" "$ERR"
+cp "$FIXTURES/invalid-runtime-timeout-zero.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
+assert_exit "export exits 1 on zero runtime timeout" "1" "$RC"
+assert_stderr_contains "names the positive-integer rule" "positive integer" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+# === Test 45: unquoted YAML-1.1-style `off` parses as a STRING with kislyuk-yq ===
+# Locks the empirical behavior the validate_codex comment describes (fix wave 5):
+# `reasoning_level: off` reaches the validator as the string "off" and takes the
+# warn-and-pass-through path — NOT the non-string type die (that path is for
+# true/false/numbers, covered by Test 41 / 7i).
+echo "=== Test 45: reasoning_level: off warns and passes through as a string ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on unquoted 'off'" "0" "$RC"
+assert_stderr_contains "warns about the unknown level" 'unknown value "off"' "$ERR"
+VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+if [ "$VAL" = "gpt-5.5|off" ]; then
+    PASS=$((PASS+1)); echo "  PASS: get-codex passes 'off' through as a string"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' (expected 'gpt-5.5|off')"
+fi
+rm -rf "$TDIR" "$ERR"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="

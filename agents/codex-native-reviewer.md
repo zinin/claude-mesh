@@ -22,7 +22,7 @@ Optional (specify if needed):
 - **UNCOMMITTED** — `true` to review staged/unstaged/untracked changes
 - **TITLE** — title for review summary
 - **MODEL** — Codex model. If omitted, the skill resolves the default from config (`get-codex`, falling back to `gpt-5.5`). Pass a model ONLY when the user EXPLICITLY specifies one — do NOT choose a model yourself.
-- **REASONING_LEVEL** — one of: `none|minimal|low|medium|high|xhigh|ultra` (unknown values pass through to codex). If omitted, the skill resolves the default from config (`get-codex`, falling back to `xhigh`). Pass a level ONLY when the user EXPLICITLY specifies one — do NOT choose a level yourself.
+- **REASONING_LEVEL** — one of: `none|minimal|low|medium|high|xhigh|ultra` (known set as of 2026-07; unknown values pass through to codex). If omitted, the skill resolves the default from config (`get-codex`, falling back to `xhigh`). Pass a level ONLY when the user EXPLICITLY specifies one — do NOT choose a level yourself.
 
 Priority: UNCOMMITTED > COMMIT_SHA > BASE_BRANCH
 

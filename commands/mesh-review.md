@@ -12,7 +12,7 @@ Launch multiple external code review agents in parallel, collect and deduplicate
 If invoked as `/claude-mesh:mesh-review default` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
 - Skip Steps 1-3 entirely.
 - Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
-- Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly.
+- Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly; rc=1 ⇒ surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it).
 - If `defaults.code_review` not configured → STOP with error:
   `defaults.code_review not configured in config.yaml. Use /claude-mesh:mesh-review without argument or add the preset.`
 - Spawn all reviewers per preset:
@@ -51,7 +51,7 @@ rm -f "$DM_ERR"
 echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
 ```
 
-rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3).
+rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it) (iter-3 CRITICAL-3).
 
 ## Step 2 (Q1): Ask which reviewer TYPES
 
@@ -166,8 +166,8 @@ When each agent completes, read its output. After all agents finish (or the user
 **CRITICAL — a wrapper's report does NOT arrive on its own: disk-watch the runs and ping idle wrappers.** A wrapper launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…`), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits (verified 2026-07-10: 0 notifications in 5/5 smoke transcripts; wrappers sat 8–12 min over a finished `output.txt` until explicitly pinged). Treat the interim status as the last thing a wrapper says unprompted. After dispatch:
 
 1. **Capture each wrapper's run dir** from its interim status. Fallback when a status names none: the newest dir under `$DATA_DIR/runs/<engine>/[<provider>/<model>/]` created after `DISPATCH_EPOCH` — the same discovery `verify-delegation.sh` uses (locate `DATA_DIR` as in Step 6.0 point 1).
-2. **Poll the disk via Bash** (~30–60 s cadence; bound the whole watch by `runtime.timeouts.global_sec`, default 3600, plus a margin) until each run reaches a finalized state: root `output.txt` present, `final` symlink, or a `cleanup` event in the run's `watchdog.log`.
-3. **When a run is finalized but its wrapper has not delivered a report — SendMessage that wrapper:** `your external run finished — read its output.txt, extract the findings and send your report`. A pinged wrapper answers promptly.
+2. **Poll the disk via Bash — as a background Bash task**, so "Do NOT block" above stays true (a background watcher that exits on each state change re-invokes the orchestrator per event; a foreground poll loop would hold the session hostage). ~30–60 s cadence; bound the whole watch by `runtime.timeouts.global_sec` (read it via `"$LOADER" get-runtime | jq -r '.timeouts.global_sec'`, default 3600) plus a margin. A run is finalized when: root `output.txt` is present **and non-empty** (gemini-exec pre-creates a zero-byte `output.txt` at launch — an empty file is NOT finalization), or a `final` symlink exists, or the run's `watchdog.log` has a `cleanup` event.
+3. **When a run is finalized but its wrapper has not delivered a report — SendMessage that wrapper:** `your external run finished — read its output.txt, extract the findings and send your report`. A pinged wrapper answers promptly. **Ping once per finalized run** — track who was already pinged and re-ping only if a wrapper is still silent after the next poll interval (~60–90 s), so a wrapper whose answer is already in flight is not spammed.
 4. **Repeat** until every dispatched wrapper has reported or the watch budget expires; whatever is still silent lands in Step 6.0, which classifies it mechanically. Never interpret wrapper silence as "no findings".
 
 The builtin `claude` reviewer is exempt: it reviews inline and completes on its own.
