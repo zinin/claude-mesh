@@ -120,7 +120,7 @@ if [ -x "$LOADER" ]; then
 fi
 ```
 
-If the codex CLI check fails, stop and help user fix it.
+If the codex CLI check fails, STOP and report the error to the user verbatim. Do NOT edit config.yaml (or any plugin config) yourself — only the user changes it.
 
 ## Process
 

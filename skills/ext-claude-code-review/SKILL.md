@@ -75,3 +75,5 @@ agent's response. Append a one-liner pointing to the full `report.md`.
 
 If `ext-claude-exec` returns an error, surface verbatim and STOP. Do NOT
 attempt to review the code yourself — the whole point is external review.
+Do NOT edit config.yaml (or any plugin config) to "unblock" the run — config
+is user-owned; report the error and wait for the user.

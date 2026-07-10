@@ -71,7 +71,7 @@ if [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_gemini 2>/dev/null)" != "1" ]
 fi
 ```
 
-If any check fails, stop and help user fix it.
+If any pre-flight check fails, STOP and report the error to the user verbatim. Do NOT edit config.yaml (or any plugin config) yourself — only the user changes it.
 
 ## Process
 

@@ -86,7 +86,7 @@ command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found"; exit 1; 
 # Validate + resolve env via loader. cmd_export writes a mode-600 tmpfile and
 # prints its path on stdout — see CONCERN-1. We source it and unlink immediately
 # so the token never lands in the Bash-tool transcript.
-ENV_FILE=$("$LOADER" export "$MODEL") || { echo "STOP: config-loader failed"; exit 1; }
+ENV_FILE=$("$LOADER" export "$MODEL") || { echo "STOP: config-loader failed — surface the error verbatim; do NOT edit config.yaml (user-owned)"; exit 1; }
 [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] || { echo "STOP: config-loader produced no env file"; exit 1; }
 trap 'rm -f "$ENV_FILE"' EXIT
 # shellcheck source=/dev/null
@@ -177,7 +177,7 @@ SKILL_DIR="$SKILL_BASE"
 TASK_NAME=$(cat "$WORK_DIR/.task_name" 2>/dev/null || basename "$WORK_DIR")
 
 # Resolve env via loader tmpfile (CONCERN-1)
-ENV_FILE=$("$LOADER" export "$MODEL") || { echo "STOP: config-loader failed" >&2; exit 1; }
+ENV_FILE=$("$LOADER" export "$MODEL") || { echo "STOP: config-loader failed — surface the error verbatim; do NOT edit config.yaml (user-owned)" >&2; exit 1; }
 trap 'rm -f "$ENV_FILE"' EXIT
 # shellcheck source=/dev/null
 source "$ENV_FILE"
@@ -231,7 +231,7 @@ WATCHDOG="$SKILL_BASE/../shared/watchdog.sh"
 TASK_NAME=$(cat "$WORK_DIR/.task_name" 2>/dev/null || basename "$WORK_DIR")
 
 # Resolve env via loader tmpfile (CONCERN-1)
-ENV_FILE=$("$LOADER" export "$MODEL") || { echo "STOP: config-loader failed" >&2; exit 1; }
+ENV_FILE=$("$LOADER" export "$MODEL") || { echo "STOP: config-loader failed — surface the error verbatim; do NOT edit config.yaml (user-owned)" >&2; exit 1; }
 trap 'rm -f "$ENV_FILE"' EXIT
 # shellcheck source=/dev/null
 source "$ENV_FILE"
