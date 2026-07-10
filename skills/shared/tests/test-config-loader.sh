@@ -89,15 +89,38 @@ assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "explains empty short" "short name after .*/.* is empty" "$ERR"
 rm -rf "$TDIR" "$ERR"
 
-echo "=== Test 7: codex.reasoning_level invalid ==="
+echo "=== Test 7: codex.reasoning_level unknown (warn + pass through) ==="
+# Forward-compat: unknown levels are NOT fatal — the loader warns on stderr and
+# passes the value through (the codex CLI/API is the authority on valid levels).
 TDIR=$(mktemp -d)
-cp "$FIXTURES/invalid-codex-reasoning.yaml" "$TDIR/config.yaml"
+cp "$FIXTURES/unknown-codex-reasoning.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
-assert_exit "exits non-zero" "1" "$RC"
-assert_stderr_contains "names reasoning_level" "reasoning_level" "$ERR"
+assert_exit "exits zero (unknown level warns, not dies)" "0" "$RC"
+assert_stderr_contains "warns about the unknown level" "reasoning_level: unknown value" "$ERR"
 rm -rf "$TDIR" "$ERR"
+
+echo "=== Test 7b: export ignores codex-section issues (scoped validation) ==="
+# cmd_export validation is scoped to providers/models/runtime — the same
+# unknown-level fixture must export cleanly with no reasoning_level noise on stderr.
+TDIR=$(mktemp -d)
+cp "$FIXTURES/unknown-codex-reasoning.yaml" "$TDIR/config.yaml"
+OUT=$(mktemp)
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>"$ERR"
+RC=$?
+assert_exit "export exits zero despite unknown codex level" "0" "$RC"
+if grep -q -- "reasoning_level" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: export stderr mentions reasoning_level (codex section is out of export scope)"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: export stderr silent on reasoning_level"
+fi
+# cmd_export prints the path to a mode-600 env file; remove it without reading it.
+ENV_FILE=$(cat "$OUT" 2>/dev/null)
+[ -n "$ENV_FILE" ] && rm -f "$ENV_FILE"
+rm -rf "$TDIR" "$OUT" "$ERR"
 
 echo "=== Test 8: defaults references unknown model ==="
 TDIR=$(mktemp -d)

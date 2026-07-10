@@ -9,4 +9,4 @@ models:
     model: glm-5.1
 codex:
   model: gpt-5.5
-  reasoning_level: extreme   # invalid
+  reasoning_level: extreme   # unknown — warns and passes through
