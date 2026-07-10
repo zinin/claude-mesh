@@ -163,12 +163,21 @@ N code review агентов запущены параллельно в фоне
 **Do NOT block.** Continue accepting user instructions while agents work.
 When each agent completes, read its output. After all agents finish (or the user cancels some), proceed to **Step 6: Process Results**.
 
+**CRITICAL — a wrapper's report does NOT arrive on its own: disk-watch the runs and ping idle wrappers.** A wrapper launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…`), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits (verified 2026-07-10: 0 notifications in 5/5 smoke transcripts; wrappers sat 8–12 min over a finished `output.txt` until explicitly pinged). Treat the interim status as the last thing a wrapper says unprompted. After dispatch:
+
+1. **Capture each wrapper's run dir** from its interim status. Fallback when a status names none: the newest dir under `$DATA_DIR/runs/<engine>/[<provider>/<model>/]` created after `DISPATCH_EPOCH` — the same discovery `verify-delegation.sh` uses (locate `DATA_DIR` as in Step 6.0 point 1).
+2. **Poll the disk via Bash** (~30–60 s cadence; bound the whole watch by `runtime.timeouts.global_sec`, default 3600, plus a margin) until each run reaches a finalized state: root `output.txt` present, `final` symlink, or a `cleanup` event in the run's `watchdog.log`.
+3. **When a run is finalized but its wrapper has not delivered a report — SendMessage that wrapper:** `your external run finished — read its output.txt, extract the findings and send your report`. A pinged wrapper answers promptly.
+4. **Repeat** until every dispatched wrapper has reported or the watch budget expires; whatever is still silent lands in Step 6.0, which classifies it mechanically. Never interpret wrapper silence as "no findings".
+
+The builtin `claude` reviewer is exempt: it reviews inline and completes on its own.
+
 ## Step 5b: Team of reviewers mode
 
 1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewer) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
 2. Create one task per selected reviewer
 3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task. The Step 5a **Dispatch model** rule also applies here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it.
-4. Wait for completion → Step 6
+4. Wait for completion → Step 6. Teammate wrappers idle exactly like the Step 5a background ones — run the same disk-watch + ping loop from Step 5a to collect their reports
 5. Shut down team
 
 ## Step 6: Process Results
@@ -187,7 +196,7 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 ### Step 6.0: Verify delegation (mechanical guard)
 
-**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned.
+**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned. The inverse failure also exists: a wrapper whose run is `REAL` on disk but which never sent a report is not a flip — it is idle (wrappers do not wake when their background run finishes); ping it per the Step 5a watch loop to collect the report before classifying.
 
 The builtin `claude` / `general-purpose` reviewer is **skipped here** — it reviews inline by design and is always accepted into Step 6.1.
 

@@ -306,6 +306,8 @@ Remember the confirmed set (built-in TYPES + `SELECTED_IDS`) for all subsequent 
 
 **LOOP START:**
 
+Before dispatch — via a Bash call, stamp `DISPATCH_EPOCH=$(date +%s)` and keep the number (the result-collection watch below needs it).
+
 Launch **all selected** agents **in parallel** in a single message:
 
 For each selected agent, use Task tool (plugin `subagent_type`s are `claude-mesh:`-namespaced — verified on CC 2.1.156; bare names do not resolve).
@@ -340,6 +342,13 @@ Agent-specific parameters:
 - **`claude-mesh:ext-claude-executor`** (one per selected model id): `MODEL=<id>` on line 1 (e.g. `MODEL=zai/glm`, `MODEL=alibaba/qwen`, `MODEL=ollama/kimi`) — the model id comes from the config (`SELECTED_IDS`, or `defaults.design_review.models` in `default` mode), NOT a hardcoded provider profile.
 
 Wait for all agents to complete. Collect output paths from each.
+
+**CRITICAL — an executor's report does NOT arrive on its own: disk-watch the runs and ping idle executors.** Each executor launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…` under the plugin data dir), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits, so the report stalls until pinged (same mechanics verified 2026-07-10 on the mesh-review wrappers: 0 notifications in 5/5 transcripts, reports stalled 8–12 min over a finished `output.txt`). After dispatch:
+
+1. Capture each executor's run dir from its interim status. Fallback when a status names none: the newest dir under `$PLUGIN_DATA/runs/<engine>/[<provider>/<model>/]` (`PLUGIN_DATA` = `"$LOADER" data-dir`) created after `DISPATCH_EPOCH`.
+2. Poll the disk via Bash (~30–60 s cadence; bound the whole watch by `runtime.timeouts.global_sec`, default 3600, plus a margin) until each run reaches a finalized state: root `output.txt` present, `final` symlink, or a `cleanup` event in the run's `watchdog.log`.
+3. When a run is finalized but its executor has not delivered its review — SendMessage that agent: `your external run finished — read its output.txt, extract the findings and send your report`.
+4. Repeat until every dispatched executor has reported or the watch budget expires; treat a still-silent executor as failed per Error Handling ("One agent fails, others succeed") — never interpret silence as "no findings".
 
 ### Step 7: Merge Review Results
 
