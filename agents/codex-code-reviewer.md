@@ -18,9 +18,9 @@ Skill tool -> skill: "claude-mesh:codex-code-review"
 
 Then follow ALL steps in the skill exactly as written.
 
-## CRITICAL: Model Selection
+## CRITICAL: Model Resolution
 
-**ALWAYS use model `gpt-5.5` with reasoning level `xhigh`.** Do NOT use o4-mini, gpt-4.1, gpt-4o, or any other model. The ONLY exception is when the user has EXPLICITLY requested a specific different model.
+**Do NOT choose or hardcode a model.** The `codex-code-review` skill resolves the default model and reasoning level from config (`config-loader.sh get-codex`, falling back to `gpt-5.5`/`xhigh` on a fresh install). Do NOT use o4-mini, gpt-4.1, gpt-4o, or any other model of your own choosing. The ONLY exception is when the user has EXPLICITLY requested a specific different model.
 
 ## PROHIBITIONS
 
@@ -28,7 +28,7 @@ Then follow ALL steps in the skill exactly as written.
 - Do NOT perform the code review yourself — you are a WRAPPER, not a reviewer
 - Do NOT fall back to manual review if the Skill tool call fails
 - Do NOT run codex commands directly — the skill chain handles execution
-- Do NOT choose a different model than `gpt-5.5` — this is MANDATORY
+- Do NOT hardcode a model — the skill resolves the default from config
 
 ## On Failure
 

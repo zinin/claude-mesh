@@ -13,8 +13,8 @@ Execute arbitrary prompts via OpenAI Codex CLI with streaming progress and full 
 > **Codex manages its own auth/config.** Unlike the ext-claude skills, codex is NOT
 > an anthropic-api provider — the `codex` CLI handles login itself. This skill does
 > NOT call `config-loader.sh export` and does NOT source `ANTHROPIC_*`. The loader is
-> used ONLY to (a) discover the plugin data dir for run logs and (b) gate on the
-> `has_codex` config flag.
+> used ONLY to (a) discover the plugin data dir for run logs, (b) gate on the
+> `has_codex` config flag, and (c) resolve the default model/level via `get-codex`.
 
 ## Locating plugin files (Task 2.5)
 
@@ -72,18 +72,25 @@ The caller must provide:
 
 Optional:
 - **TASK_NAME** — short name for log files (default: "task")
-- **MODEL** — Codex model to use. **MUST be `gpt-5.5` unless the caller EXPLICITLY specifies a different model.** Do NOT choose a model yourself — if not specified, use `gpt-5.5`.
-- **REASONING_LEVEL** — reasoning effort level. **MUST be `xhigh` unless the caller EXPLICITLY specifies a different level.** Do NOT choose a level yourself — if not specified, use `xhigh`.
+- **MODEL** — Codex model to use. If the caller does NOT specify a model, the skill resolves the default from config (`"$LOADER" get-codex` reads `codex.model` from `config.yaml`), falling back to `gpt-5.5` when config is absent (fresh install) or the `codex:` section is missing. Do NOT hardcode a model yourself — let the config/loader provide the default, and only override when the caller EXPLICITLY supplies a different model.
+- **REASONING_LEVEL** — reasoning effort level. If the caller does NOT specify a level, the skill resolves the default from config (`get-codex` also returns `codex.reasoning_level`), falling back to `xhigh` when unset. Unknown levels are passed through to codex as-is (the codex CLI/API validates them). Do NOT choose a level yourself.
 - **SUPERVISED_MODE** — `none` (default) or `shell`. When `shell`, the codex invocation is wrapped by `shared/watchdog.sh` (located at `$SKILL_BASE/../shared/watchdog.sh`), which auto-restarts the CLI on stall (no stream events for `HARD_ZERO_TIMEOUT` seconds, default 600) up to `MAX_RETRIES=2` times. A wall-clock `GLOBAL_TIMEOUT` (default 3600s) caps total duration across all attempts. Output artifacts are produced under `$WORK_DIR/attempt-N/` (where `$WORK_DIR` is under `${CLAUDE_PLUGIN_DATA}/runs/codex/...`); the successful (or last) attempt is exposed via `$WORK_DIR/final/` symlink, and `raw.jsonl` / `output.txt` / `report.md` are additionally copied to `$WORK_DIR/` root for backward compatibility with legacy callers (note: `log.jsonl` is no longer generated — review skills consume `raw.jsonl` directly; see Task 10b for `generate-md.sh` updates). `SUPERVISED_MODE=none` preserves today's behavior.
 
 ### Reasoning Levels
 
 | Level | Flag value | Description |
 |-------|------------|-------------|
+| none | `"none"` | No extended reasoning |
+| minimal | `"minimal"` | Minimal reasoning depth |
 | low | `"low"` | Fast responses with lighter reasoning |
 | medium | `"medium"` | Balances speed and reasoning depth for everyday tasks |
 | high | `"high"` | Greater reasoning depth for complex problems |
-| xhigh | `"xhigh"` | Extra high reasoning depth (default, may consume rate limits quickly) |
+| xhigh | `"xhigh"` | Extra high reasoning depth (final fallback default; may consume rate limits quickly) |
+| ultra | `"ultra"` | Deepest reasoning (gpt-5.6+ models) |
+
+Levels not in this table are passed through unchanged — OpenAI adds levels with
+new models, and the codex CLI/API rejects truly invalid values with a clear
+HTTP 400 (`Invalid value: ...`).
 
 ## Pre-flight Checks
 
@@ -113,7 +120,7 @@ if [ -x "$LOADER" ]; then
 fi
 ```
 
-If the codex CLI check fails, stop and help user fix it.
+If the codex CLI check fails, STOP and report the error to the user verbatim. Do NOT edit config.yaml (or any plugin config) yourself — only the user changes it.
 
 ## Process
 
@@ -164,8 +171,8 @@ echo "WORK_DIR=$WORK_DIR"
 
 Replace before execution:
 - `{WORK_DIR}` → path from Step 1
-- `{MODEL}` → **MUST be `gpt-5.5`** unless caller explicitly provided a different model. Do NOT substitute any other model name.
-- `{REASONING_LEVEL}` → **MUST be `xhigh`** unless caller explicitly provided a different level. Do NOT substitute any other level.
+- `{MODEL}` → leave EMPTY if the caller did not supply a model (the block resolves the default from config via `get-codex`, falling back to `gpt-5.5`). Substitute a model name ONLY when the caller explicitly provided one.
+- `{REASONING_LEVEL}` → leave EMPTY if the caller did not supply a level (the block resolves it from config via `get-codex`, falling back to `xhigh`). Substitute a level ONLY when the caller explicitly provided one.
 
 **Branch on `SUPERVISED_MODE`:**
 - If `SUPERVISED_MODE` is unset or `none` → use **Default execution** below (unchanged).
@@ -193,6 +200,20 @@ MD_FILE="$WORK_DIR/report.md"
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 SKILL_DIR="$SKILL_BASE"
+# Resolve model/level from config.yaml when the caller left them empty (mirrors
+# gemini-exec). Gated on has_codex; get-codex rc!=0 = broken codex: section —
+# STOP and surface it. config.yaml is user-owned: do NOT edit it.
+LOADER="$SKILL_BASE/../shared/config-loader.sh"
+if [ -z "$MODEL" ] || [ -z "$REASONING_LEVEL" ]; then
+    CG="|"
+    if [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_codex 2>/dev/null)" = "1" ]; then
+        CG=$("$LOADER" get-codex) || { echo "STOP: config-loader get-codex failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
+    fi
+    [ -n "$MODEL" ] || MODEL="${CG%%|*}"
+    [ -n "$REASONING_LEVEL" ] || REASONING_LEVEL="${CG##*|}"
+fi
+MODEL="${MODEL:-gpt-5.5}"
+REASONING_LEVEL="${REASONING_LEVEL:-xhigh}"
 echo "=== Codex Exec ==="
 echo "Work dir: $WORK_DIR"
 echo "Model: $MODEL | Reasoning: $REASONING_LEVEL"
@@ -287,6 +308,17 @@ REASONING_LEVEL=$(cat <<'__REASONING_LEVEL_BOUNDARY_60678825_9225_47fd_8703_bbca
 {REASONING_LEVEL}
 __REASONING_LEVEL_BOUNDARY_60678825_9225_47fd_8703_bbca0e7b7d85_REASONING_LEVEL_END__
 ) && \
+LOADER="$SKILL_BASE/../shared/config-loader.sh" && \
+{ [ -n "$MODEL" ] && [ -n "$REASONING_LEVEL" ]; } || { \
+  CG="|"; \
+  if [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_codex 2>/dev/null)" = "1" ]; then \
+    CG=$("$LOADER" get-codex) || { echo "STOP: config-loader get-codex failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }; \
+  fi; \
+  [ -n "$MODEL" ] || MODEL="${CG%%|*}"; \
+  [ -n "$REASONING_LEVEL" ] || REASONING_LEVEL="${CG##*|}"; \
+} && \
+MODEL="${MODEL:-gpt-5.5}" && \
+REASONING_LEVEL="${REASONING_LEVEL:-xhigh}" && \
 TASK_NAME=$(cat "$WORK_DIR/.task_name" 2>/dev/null || basename "$WORK_DIR") && \
 PROMPT_FILE="$WORK_DIR/prompt.md" && \
 echo "=== Codex Exec (supervised: shell watchdog) ===" && \
@@ -376,8 +408,9 @@ LOADER="$SKILL_BASE/../shared/config-loader.sh" && \
 LOG_DIR="$("$LOADER" data-dir)/runs/codex" && \
 LATEST_DIR=$(ls -td "$LOG_DIR"/*/ 2>/dev/null | head -1) && \
 [ -n "$LATEST_DIR" ] && echo "Latest: $LATEST_DIR" && ls -la "$LATEST_DIR" && \
-[ -f "$LATEST_DIR/log.jsonl" ] && echo "=== Last 30 lines ===" && tail -30 "$LATEST_DIR/log.jsonl" && \
-[ -f "$LATEST_DIR/stderr.txt" ] && echo "=== STDERR ===" && cat "$LATEST_DIR/stderr.txt"
+{ [ ! -f "$LATEST_DIR/log.jsonl" ] || { echo "=== Last 30 lines (log.jsonl, default mode) ==="; tail -30 "$LATEST_DIR/log.jsonl"; }; } && \
+{ [ ! -f "$LATEST_DIR/raw.jsonl" ] || { echo "=== Last 30 lines (raw.jsonl, supervised mode) ==="; tail -30 "$LATEST_DIR/raw.jsonl"; }; } && \
+{ [ ! -f "$LATEST_DIR/stderr.txt" ] || { echo "=== STDERR ==="; cat "$LATEST_DIR/stderr.txt"; }; }
 ```
 
 **Return to caller:** The work directory path and the final output content.
@@ -389,8 +422,8 @@ LATEST_DIR=$(ls -td "$LOG_DIR"/*/ 2>/dev/null | head -1) && \
 | `--json` | Output JSONL events for parsing and logging |
 | `--skip-git-repo-check` | Work outside git repositories |
 | `--dangerously-bypass-approvals-and-sandbox` | Skip approvals AND disable bwrap sandbox. Required in Docker — bwrap cannot create user namespaces there. Do NOT combine with `--full-auto` or `-s`: `--full-auto` is an alias for `--sandbox workspace-write` and will override `-s danger-full-access` depending on flag order, re-activating bwrap. |
-| `-m $MODEL` | Model to use (**MUST be `gpt-5.5`** unless explicitly overridden) |
-| `-c model_reasoning_effort="$REASONING_LEVEL"` | Reasoning effort (**MUST be `xhigh`** unless explicitly overridden) |
+| `-m $MODEL` | Model to use (caller value, else `codex.model` from config.yaml, else `gpt-5.5`) |
+| `-c model_reasoning_effort="$REASONING_LEVEL"` | Reasoning effort (caller value, else `codex.reasoning_level` from config.yaml, else `xhigh`; unknown levels pass through) |
 | `-o <file>` | Save final response to file |
 | `timeout 1800` | 30 minute limit |
 

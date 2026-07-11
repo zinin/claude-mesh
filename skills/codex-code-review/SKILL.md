@@ -71,7 +71,7 @@ if [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_codex 2>/dev/null)" != "1" ];
 fi
 ```
 
-If any check fails, stop and help user fix it.
+If any pre-flight check fails, STOP and report the error to the user verbatim. Do NOT edit config.yaml (or any plugin config) yourself — only the user changes it.
 
 ## Process
 
@@ -128,12 +128,10 @@ Pass these parameters:
 ```
 PROMPT=<formatted prompt from Step 3>
 TASK_NAME="review-${BRANCH}"
-MODEL=gpt-5.5      # MANDATORY — do NOT change unless user explicitly requested a different model
-REASONING_LEVEL=xhigh    # MANDATORY — do NOT change unless user explicitly requested a different level
 SUPERVISED_MODE=shell
 ```
 
-**CRITICAL: You MUST pass MODEL=gpt-5.5 and REASONING_LEVEL=xhigh exactly as shown above. Do NOT substitute o4-mini, gpt-4.1, or any other model. The only exception is when the user has EXPLICITLY asked to use a specific different model.**
+**Do NOT pass MODEL or REASONING_LEVEL unless the user EXPLICITLY requested specific values. When omitted, codex-exec resolves them from `config.yaml` (`codex.model` / `codex.reasoning_level`), falling back to `gpt-5.5`/`xhigh`. Never substitute o4-mini, gpt-4.1, or any other model on your own.**
 
 The codex-exec skill will create a supervised work directory under the plugin data dir
 (`${CLAUDE_PLUGIN_DATA}/runs/codex/`):
