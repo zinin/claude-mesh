@@ -4,6 +4,72 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-10
+
+### Fixed
+- `config-loader.sh` no longer aborts on an unknown `codex.reasoning_level`
+  (e.g. the new gpt-5.6 `ultra`): unknown levels WARN and pass through — the
+  codex CLI/API is the final validator. Previously a single unknown level in
+  the `codex:` section killed `export` for **every** ext-claude executor
+  mid-review and pushed blocked review subagents into "fixing" the user's
+  config (`ultra` → `xhigh` flips).
+- codex agent definitions (`codex-executor`, `codex-code-reviewer`,
+  `codex-native-reviewer`) no longer hardcode `gpt-5.5`/`xhigh` mandates that
+  bypassed config-driven resolution on the `/mesh-review` and
+  `/mesh-design-review` dispatch paths (final-review finding).
+- `validate_codex` now type- and charset-checks `codex.model` /
+  `codex.reasoning_level` (same forward-compatible charset as
+  `runtime.dispatch_model`): a non-string value (e.g. an unquoted
+  `reasoning_level: 3`) used to pass validation and then crash `get-codex`
+  with a raw jq type error, and a `|` in a value silently corrupted the
+  `model|level` protocol. Unknown-but-safe string levels still WARN and pass
+  through; the known-levels contract is now locked by tests (0.4.0 pre-merge
+  external review, fix wave 3).
+- `/mesh-review` and `/mesh-design-review` orchestrators now disk-watch
+  external runs and ping idle wrapper reviewers: a wrapper launches its engine
+  as a background task and never wakes on its completion (the harness delivers
+  no task-notification to idle subagents), so finished reviews sat unreported
+  until a manual ping (0.4.0 pre-merge external review, fix wave 4).
+- Wave-5 fixes from the 0.4.0 pre-merge `/mesh-review` smoke (7 reviewers):
+  `codex.model` charset now allows provider-qualified ids
+  (`openai/gpt-oss-20b`); `get-runtime` exposes the `timeouts` block the
+  orchestrator disk-watch is told to read; a scalar `codex:`/`gemini:` section
+  (`codex: false`) dies cleanly instead of crashing typed getters with a raw
+  jq error; an empty config.yaml dies without bash arithmetic noise; watch
+  loops run as a background Bash task, count only a non-empty root
+  `output.txt` as finalization (gemini-exec pre-creates a zero-byte one) and
+  ping each finished-but-silent wrapper once per poll cycle; loader test
+  suite grown to 171 assertions (export-own-sections and known-level
+  round-trip regression guards; duplicate test numbering fixed).
+- `validate_runtime` type-gates `runtime:` and `runtime.timeouts` like the
+  wave-5 `codex:`/`gemini:` gates: `runtime: false` used to pass validation
+  silently, and a non-mapping `timeouts` passed it with raw jq noise — both
+  then crashed `get-runtime` (raw jq rc=5), which the `/mesh-review` /
+  `/mesh-design-review` watch loops call for `timeouts.global_sec` (Codex
+  PR-review P2, fix wave 6; loader suite 171 → 180 assertions).
+
+### Changed
+- `cmd_export` validates only the sections it reads (providers/models/runtime).
+  Errors in `codex:` / `gemini:` / `defaults:` can no longer block ext-claude
+  runs. `validate` remains the full-config lint.
+- `get-codex` / `get-gemini` likewise validate only their own section — a
+  malformed `gemini:` section no longer blocks config-driven codex resolution
+  (and vice versa); Codex PR-review finding.
+- Known reasoning levels extended to `none|minimal|low|medium|high|xhigh|ultra`.
+- Loader test suite: the unknown-level test asserts the new warn-and-pass
+  contract; new scoped-export assertion (codex-section errors don't block
+  `export`).
+
+### Added
+- codex executors (`codex-exec`, `codex-code-review`, `codex-review-native`)
+  resolve MODEL / REASONING_LEVEL from `config.yaml` (`codex.model` /
+  `codex.reasoning_level`) when the caller passes none — mirroring the existing
+  gemini-exec idiom. `/mesh-review` and `/mesh-design-review` become
+  config-driven for codex transitively. Precedence: explicit caller parameter >
+  config.yaml > `gpt-5.5`/`xhigh` fallbacks.
+- Guardrail wording in every pre-flight: on config failures agents STOP and
+  report verbatim; `config.yaml` is user-owned and never edited by agents.
+
 ## [0.3.0] - 2026-06-15
 
 ### Changed
