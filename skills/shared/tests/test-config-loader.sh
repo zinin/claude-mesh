@@ -833,6 +833,42 @@ else
 fi
 rm -rf "$TDIR" "$ERR"
 
+# === Test 46: scalar runtime:/runtime.timeouts sections die cleanly (not raw jq rc=5) ===
+# Same class as Test 41 (fix wave 6, Codex PR-review P2): `jq -e '.runtime'` gated on
+# truthiness, so `runtime: false` passed validate SILENTLY, and a non-mapping
+# `runtime.timeouts` passed rc=0 while spraying raw jq "Cannot index boolean" noise;
+# both then crashed cmd_get_runtime (rc=5) — which the mesh-review/mesh-design-review
+# watch loops call for timeouts.global_sec. The gate must type-dispatch like the
+# codex:/gemini: ones: null → absent, object → validate, anything else → clean die.
+echo "=== Test 46: runtime:/runtime.timeouts as non-mapping scalars die cleanly ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime: false\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on runtime: false" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "runtime: must be a mapping" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-runtime dies cleanly on runtime: false (no raw jq rc=5)" "1" "$RC"
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  timeouts: false\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on runtime.timeouts: false" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "runtime.timeouts: must be a mapping" "$ERR"
+if grep -q -- "Cannot index" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: raw jq indexing noise leaked to validate stderr"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: validate stderr free of raw jq indexing noise"
+fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-runtime dies cleanly on runtime.timeouts: false (no raw jq rc=5)" "1" "$RC"
+# Explicitly EMPTY keys (`runtime:` / `timeouts:` → null) keep the absent semantics.
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on empty 'runtime:' key (null = absent)" "0" "$RC"
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  timeouts:\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on empty 'timeouts:' key (null = absent)" "0" "$RC"
+rm -rf "$TDIR" "$ERR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

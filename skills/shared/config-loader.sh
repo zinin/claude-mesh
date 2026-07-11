@@ -418,9 +418,28 @@ validate_defaults() {
 }
 
 validate_runtime() {
-    if ! jq -e '.runtime' "$CONFIG_JSON" >/dev/null 2>&1; then
-        return 0
-    fi
+    # Type-dispatch gates (fix wave 6, Codex PR-review P2): same class as the
+    # validate_codex/validate_gemini gates from wave 5. The old `jq -e '.runtime'`
+    # truthiness probe let `runtime: false` skip validation entirely (silent rc=0),
+    # and a non-mapping `runtime.timeouts` passed the per-key loop below with raw
+    # jq "Cannot index boolean" noise; both then crashed cmd_get_runtime (rc=5) —
+    # which the mesh-review/mesh-design-review watch loops call for
+    # timeouts.global_sec. null — key absent or an explicitly empty key — keeps
+    # the absent semantics; any other non-mapping type dies cleanly here.
+    local stype
+    stype=$(jq -r '.runtime | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$stype" in
+        ""|null) return 0 ;;
+        object) ;;
+        *) die "runtime: must be a mapping of runtime settings (got $stype)" ;;
+    esac
+    local ttype
+    ttype=$(jq -r '.runtime.timeouts | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$ttype" in
+        ""|null) ;;
+        object) ;;
+        *) die "runtime.timeouts: must be a mapping with single_run_sec/stall_sec/global_sec/max_retries keys (got $ttype)" ;;
+    esac
 
     local drm
     drm=$(jq -r '.runtime.default_run_mode // ""' "$CONFIG_JSON")
