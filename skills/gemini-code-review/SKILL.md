@@ -106,15 +106,28 @@ If no formal plan exists, use: `{PLAN_REFERENCE}` = "No formal plan - review for
 
 ### Step 3: Prepare Prompt
 
-Read template from `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` = the absolute base dir Claude Code prints at skill load; see "Locating plugin files" above).
+Render the template `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` = the absolute base dir Claude Code prints at skill load; see "Locating plugin files" above) via `render-template.py`, substituting the **actual values** (not variables) collected in Steps 1-2 — SINGLE Bash call:
 
-Replace placeholders with **actual values** (not variables):
-- `{BASE_SHA}` → actual base SHA (e.g., "abc1234")
-- `{HEAD_SHA}` → actual head SHA (e.g., "def5678")
-- `{DESCRIPTION}` → what was implemented
-- `{PLAN_REFERENCE}` → requirements or "No formal plan"
+```bash
+SKILL_BASE="<absolute base dir Claude Code prints at skill load>" && \
+PROMPT_FILE=$(mktemp) && \
+python3 "$SKILL_BASE/../shared/render-template.py" "$SKILL_BASE/../shared/code-review-prompt.md" \
+    BASE_SHA=<actual base SHA> \
+    HEAD_SHA=<actual head SHA> \
+    DESCRIPTION='<what was implemented>' \
+    PLAN_REFERENCE='<requirements or "No formal plan - review for general quality">' \
+    > "$PROMPT_FILE" && \
+echo "PROMPT_FILE=$PROMPT_FILE" && \
+cat "$PROMPT_FILE"
+```
 
-Store the formatted prompt text.
+Do NOT hand-assemble the prompt with bash `${var//find/replace}` substitution: on
+bash >= 5.2 (`patsub_replacement` on by default) an unquoted `&` in the replacement
+expands to the matched pattern, so a DESCRIPTION containing shell commands like
+`a && b` silently corrupts the prompt. `render-template.py` substitutes argv values
+literally on any bash version (tests: `shared/tests/test-render-template.sh`).
+
+The `cat` output is the formatted prompt text for Step 4.
 
 ### Step 4: Execute via gemini-exec Skill
 

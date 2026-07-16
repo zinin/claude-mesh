@@ -4,6 +4,23 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Review-prompt templating no longer corrupts CONTEXT on bash >= 5.2: the
+  `${PROMPT//\{DESCRIPTION\}/$DESC}` snippet in `ext-claude-code-review` relied
+  on a literal-replacement guarantee that bash 5.2 revoked — the
+  `patsub_replacement` shopt (on by default) expands an unquoted `&` in the
+  replacement to the matched pattern, so a CONTEXT carrying shell commands
+  (`cd test-server && python3 -m unittest ...`) rendered as `cd test-server
+  {DESCRIPTION}{DESCRIPTION} python3 ...` (2026-07-16 mesh-review incident;
+  wrappers recovered only when the reviewer model noticed the corruption
+  itself). All three review skills (`ext-claude-code-review`,
+  `codex-code-review`, `gemini-code-review`) now render
+  `shared/code-review-prompt.md` via the new `shared/render-template.py`:
+  argv values are substituted str-literally on any bash version, in a single
+  pass (placeholder-looking text inside a value is never re-substituted).
+  Covered by `shared/tests/test-render-template.sh`, including a dry run of
+  the real template with a hostile `&& & \&` CONTEXT.
+
 ## [0.4.0] - 2026-07-10
 
 ### Fixed
