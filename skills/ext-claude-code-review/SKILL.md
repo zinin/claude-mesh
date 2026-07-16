@@ -46,16 +46,25 @@ HEAD_SHA=$(git rev-parse HEAD)
 # NOT inline the diff: a real repo diff is hundreds of KB (it stalled the weaker
 # providers), and an agent that fetches its own diff needs only the SHA range. Fresh
 # alt-provider models (DeepSeek/Qwen/Kimi) drive Claude-Code tool_use fine.
-# ${var//find/replace} is LITERAL (non-regex) replacement, so an arbitrary CONTEXT value
-# cannot corrupt the prompt the way sed or an unquoted heredoc (premature EOF) could.
+# Rendering is delegated to render-template.py, NOT bash ${var//find/replace}: on
+# bash >= 5.2 the patsub_replacement shopt is ON by default, so an unquoted '&' in the
+# replacement expands to the matched pattern — a CONTEXT carrying shell commands like
+# `cd test-server && python3 -m unittest` rendered as `cd test-server
+# {DESCRIPTION}{DESCRIPTION} python3 -m unittest` (2026-07-16 incident). The renderer
+# substitutes argv values literally on ANY bash version, in a single pass (text
+# injected from a value is never re-scanned for placeholders). Tests:
+# shared/tests/test-render-template.sh.
+command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found - required by render-template.py"; exit 1; }
 DESC="${CONTEXT:-(no description provided)}"
-PROMPT=$(cat "$SHARED_DIR/code-review-prompt.md")
-PROMPT=${PROMPT//\{BASE_SHA\}/$BASE_SHA}
-PROMPT=${PROMPT//\{HEAD_SHA\}/$HEAD_SHA}
-PROMPT=${PROMPT//\{DESCRIPTION\}/$DESC}
-PROMPT=${PROMPT//\{PLAN_REFERENCE\}/No formal plan - review for general quality}
 PROMPT_FILE=$(mktemp)
-printf '%s\n' "$PROMPT" > "$PROMPT_FILE"
+python3 "$SHARED_DIR/render-template.py" "$SHARED_DIR/code-review-prompt.md" \
+    BASE_SHA="$BASE_SHA" \
+    HEAD_SHA="$HEAD_SHA" \
+    DESCRIPTION="$DESC" \
+    PLAN_REFERENCE="No formal plan - review for general quality" \
+    > "$PROMPT_FILE" \
+    || { echo "STOP: prompt render failed - see stderr above"; exit 1; }
+[ -s "$PROMPT_FILE" ] || { echo "STOP: rendered prompt is empty"; exit 1; }
 ```
 
 ### Step 2: Delegate to ext-claude-exec via Skill tool

@@ -62,6 +62,8 @@ SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 command -v codex >/dev/null 2>&1 || { echo "STOP: codex CLI not found - npm install -g @openai/codex"; exit 1; }
 echo "OK: codex found"
+command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found - required by shared/render-template.py (Step 3)"; exit 1; }
+echo "OK: python3 found"
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "STOP: Not a git repository"; exit 1; }
 echo "OK: git repo"
 # Soft gate: warn (don't STOP) if optional codex: block is unconfigured. NEVER test
@@ -106,15 +108,43 @@ If no formal plan exists, use: `{PLAN_REFERENCE}` = "No formal plan - review for
 
 ### Step 3: Prepare Prompt
 
-Read template from `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` = the absolute base dir Claude Code prints at skill load; see "Locating plugin files" above).
+Render the template `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` = the absolute base dir Claude Code prints at skill load; see "Locating plugin files" above) via `render-template.py`, substituting the **actual values** (not variables) collected in Steps 1-2 — SINGLE Bash call:
 
-Replace placeholders with **actual values** (not variables):
-- `{BASE_SHA}` → actual base SHA (e.g., "abc1234")
-- `{HEAD_SHA}` → actual head SHA (e.g., "def5678")
-- `{DESCRIPTION}` → what was implemented
-- `{PLAN_REFERENCE}` → requirements or "No formal plan"
+```bash
+SKILL_BASE="<absolute base dir Claude Code prints at skill load>" && \
+DESC=$(cat <<'MESH_DESC_EOF'
+<what was implemented — plain prose; apostrophes, quotes, &&, $(), backticks are all safe inside this quoted heredoc>
+MESH_DESC_EOF
+) && \
+PLAN_REF=$(cat <<'MESH_PLAN_EOF'
+<requirements, or: No formal plan - review for general quality>
+MESH_PLAN_EOF
+) && \
+PROMPT_FILE=$(mktemp) && \
+python3 "$SKILL_BASE/../shared/render-template.py" "$SKILL_BASE/../shared/code-review-prompt.md" \
+    BASE_SHA=<actual base SHA> \
+    HEAD_SHA=<actual head SHA> \
+    DESCRIPTION="$DESC" \
+    PLAN_REFERENCE="$PLAN_REF" \
+    > "$PROMPT_FILE" && \
+echo "PROMPT_FILE=$PROMPT_FILE" && \
+cat "$PROMPT_FILE"
+```
 
-Store the formatted prompt text.
+Quoting rules (mesh-review hardening, 2026-07-16):
+- Prose values go through quoted heredocs (`<<'MESH_DESC_EOF'`) and `"$VAR"` expansions —
+  NEVER inline them into single/double quotes on the command line: an apostrophe in a
+  commit-derived description breaks the quoting, and a crafted value (`x'; cmd; : '`)
+  would EXECUTE when the block is run verbatim.
+- Only constraint: the heredoc body must not contain a line consisting solely of the
+  delimiter — if it does, switch that heredoc to another unique delimiter.
+- Do NOT hand-assemble the prompt with bash `${var//find/replace}` substitution: on
+  bash >= 5.2 (`patsub_replacement` on by default) an unquoted `&` in the replacement
+  expands to the matched pattern, so a DESCRIPTION containing shell commands like
+  `a && b` silently corrupts the prompt. `render-template.py` substitutes argv values
+  literally on any bash version (tests: `shared/tests/test-render-template.sh`).
+
+The `cat` output is the formatted prompt text for Step 4.
 
 ### Step 4: Execute via codex-exec Skill
 
