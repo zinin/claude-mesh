@@ -170,6 +170,57 @@ assert_not_contains "no {BASE_SHA} left" '{BASE_SHA}' "$OUT"
 assert_not_contains "no {HEAD_SHA} left" '{HEAD_SHA}' "$OUT"
 assert_not_contains "no {PLAN_REFERENCE} left" '{PLAN_REFERENCE}' "$OUT"
 
+# === Test 14: SKILL.md calling convention — quoted heredoc keeps metacharacters literal ===
+echo "=== Test 14: heredoc calling convention, metacharacter zoo ==="
+TDIR=$(mktemp -d)
+printf '%s\n' 'D: {DESCRIPTION} :end' > "$TDIR/t.md"
+VAL=$(cat <<'ZOO_EOF'
+it's a "test" with `backticks`, $(touch /tmp/render-template-pwned), payload'; echo pwned; : ' and unicode: ключ → π
+ZOO_EOF
+)
+rm -f /tmp/render-template-pwned
+OUT=$(python3 "$RENDER" "$TDIR/t.md" DESCRIPTION="$VAL"); RC=$?
+assert_eq "exit 0" "0" "$RC"
+assert_eq "zoo arrives literally" "D: $VAL :end" "$OUT"
+if [ -e /tmp/render-template-pwned ]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: embedded \$(...) was EXECUTED"; rm -f /tmp/render-template-pwned
+else
+    PASS=$((PASS+1)); echo "  PASS: embedded \$(...) not executed"
+fi
+rm -rf "$TDIR"
+
+# === Test 15: non-ASCII value survives a non-UTF-8 caller locale ===
+echo "=== Test 15: LC_ALL=C round-trip ==="
+TDIR=$(mktemp -d)
+printf '%s\n' 'D: {DESCRIPTION}' > "$TDIR/t.md"
+OUT=$(LC_ALL=C python3 "$RENDER" "$TDIR/t.md" DESCRIPTION='ключ-значение → π'); RC=$?
+assert_eq "exit 0" "0" "$RC"
+assert_eq "non-ASCII preserved under LC_ALL=C" 'D: ключ-значение → π' "$OUT"
+rm -rf "$TDIR"
+
+# === Test 16: byte-exact output — trailing newline preserved (cmp, not $()) ===
+echo "=== Test 16: byte-exact rendering ==="
+TDIR=$(mktemp -d)
+printf 'A {X} B\nsecond line\n' > "$TDIR/t.md"
+printf 'A x B\nsecond line\n' > "$TDIR/expected"
+python3 "$RENDER" "$TDIR/t.md" X=x > "$TDIR/got"; RC=$?
+assert_eq "exit 0" "0" "$RC"
+if cmp -s "$TDIR/expected" "$TDIR/got"; then
+    PASS=$((PASS+1)); echo "  PASS: byte-exact incl. trailing newline"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: byte diff: $(cmp "$TDIR/expected" "$TDIR/got" 2>&1 | head -1)"
+fi
+rm -rf "$TDIR"
+
+# === Test 17: duplicate NAME=VALUE — last occurrence wins (documented contract) ===
+echo "=== Test 17: duplicate pair last-wins ==="
+TDIR=$(mktemp -d)
+printf '%s\n' 'V: {X}' > "$TDIR/t.md"
+OUT=$(python3 "$RENDER" "$TDIR/t.md" X=first X=second); RC=$?
+assert_eq "exit 0" "0" "$RC"
+assert_eq "last duplicate wins" "V: second" "$OUT"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

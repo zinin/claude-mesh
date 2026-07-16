@@ -54,6 +54,7 @@ HEAD_SHA=$(git rev-parse HEAD)
 # substitutes argv values literally on ANY bash version, in a single pass (text
 # injected from a value is never re-scanned for placeholders). Tests:
 # shared/tests/test-render-template.sh.
+command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found - required by render-template.py"; exit 1; }
 DESC="${CONTEXT:-(no description provided)}"
 PROMPT_FILE=$(mktemp)
 python3 "$SHARED_DIR/render-template.py" "$SHARED_DIR/code-review-prompt.md" \
@@ -61,7 +62,9 @@ python3 "$SHARED_DIR/render-template.py" "$SHARED_DIR/code-review-prompt.md" \
     HEAD_SHA="$HEAD_SHA" \
     DESCRIPTION="$DESC" \
     PLAN_REFERENCE="No formal plan - review for general quality" \
-    > "$PROMPT_FILE"
+    > "$PROMPT_FILE" \
+    || { echo "STOP: prompt render failed - see stderr above"; exit 1; }
+[ -s "$PROMPT_FILE" ] || { echo "STOP: rendered prompt is empty"; exit 1; }
 ```
 
 ### Step 2: Delegate to ext-claude-exec via Skill tool

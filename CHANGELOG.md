@@ -20,6 +20,22 @@ All notable changes to claude-mesh will be documented here.
   pass (placeholder-looking text inside a value is never re-substituted).
   Covered by `shared/tests/test-render-template.sh`, including a dry run of
   the real template with a hostile `&& & \&` CONTEXT.
+- Hardening pass on the templating fix after a 7-reviewer `/mesh-review`
+  (codex gpt-5.5, 5 ext-claude models, builtin claude): `codex-` /
+  `gemini-code-review` Step 3 now passes DESCRIPTION / PLAN_REFERENCE through
+  quoted heredocs into `"$VAR"` expansions instead of instructing the agent to
+  inline prose into single quotes — an apostrophe in commit-derived text broke
+  the command, and a crafted `x'; cmd; : '` value would have executed
+  (found by 6 of 7 reviewers, escalated to Critical by codex); `python3` is
+  now pre-flighted in all three review skills and its README Dependencies row
+  covers the shared renderer; `ext-claude-code-review` Step 1 fails loudly
+  when rendering fails or yields an empty prompt (previously an empty
+  `$PROMPT_FILE` would silently produce an empty review); the renderer
+  documents last-wins duplicate pairs and its byte-preserving surrogateescape
+  I/O contract, derives both name regexes from one charset and truncates bad
+  NAME=VALUE diagnostics to 64 chars; tests grew a metacharacter-zoo calling
+  convention case, an `LC_ALL=C` round-trip, a byte-exact `cmp` check and a
+  duplicate-pair contract case.
 
 ## [0.4.0] - 2026-07-10
 

@@ -16,8 +16,12 @@ Semantics:
   - every {NAME} whose NAME was supplied is replaced by its VALUE, verbatim;
   - single pass: placeholder-looking text INSIDE a value is never re-substituted;
   - {NAME}s not supplied stay as-is (tolerant to template evolution);
+  - duplicate NAME=VALUE pairs: the LAST occurrence wins;
   - NAME must match [A-Za-z_][A-Za-z0-9_]*; VALUE may contain anything,
-    including '=', newlines, '&', '\\', quotes and braces.
+    including '=', newlines, '&', '\\', quotes and braces;
+  - I/O is utf-8 with errors="surrogateescape" on BOTH read and write, so
+    template bytes (non-UTF-8 sequences, trailing newline) round-trip
+    unchanged outside the replaced spans, regardless of the caller's locale.
 
 Exit codes:
   0 — success (rendered template on stdout)
@@ -29,8 +33,9 @@ from __future__ import annotations
 import re
 import sys
 
-NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+NAME_RE = re.compile(_NAME + r"\Z")
+PLACEHOLDER_RE = re.compile(r"\{(" + _NAME + r")\}")
 
 
 def main(argv: list[str]) -> int:
@@ -42,7 +47,9 @@ def main(argv: list[str]) -> int:
     for pair in argv[2:]:
         name, eq, value = pair.partition("=")
         if not eq or not NAME_RE.match(name):
-            print(f"render-template: bad NAME=VALUE pair: {pair!r}", file=sys.stderr)
+            # Truncate: a mistyped pair may carry a long (or secret) VALUE payload.
+            shown = pair if len(pair) <= 64 else pair[:64] + "..."
+            print(f"render-template: bad NAME=VALUE pair: {shown!r}", file=sys.stderr)
             return 2
         values[name] = value
 
