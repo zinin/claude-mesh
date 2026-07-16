@@ -4,6 +4,8 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-16
+
 ### Fixed
 - Review-prompt templating no longer corrupts CONTEXT on bash >= 5.2: the
   `${PROMPT//\{DESCRIPTION\}/$DESC}` snippet in `ext-claude-code-review` relied
