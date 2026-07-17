@@ -1,8 +1,10 @@
 ---
 name: review-discussion
 description: |
-  Process design review issues from Codex. Compares with previous iterations,
-  auto-answers repeated issues, asks user about new ones, updates documents.
+  Parse design review issues from merged reviewer output. Compares with previous
+  iterations, auto-answers repeated issues, returns structured results with
+  solution options. Does NOT interact with the user or edit documents — the
+  orchestrator (skill) does that.
 color: green
 ---
 

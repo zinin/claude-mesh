@@ -39,13 +39,16 @@ Optional (caller can specify):
 
 These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so you catch yourself before drifting.
 
+> Sync note: rules 3–8 are mirrored in `commands/mesh-review.md` (Iron Rules / Step 6.4). When editing shared rule text, mirror the edit there (step numbers differ; mesh-review additionally has `default`-mode clauses — this skill is always interactive).
+
 1. **Phase order is fixed:** classify ALL issues first → apply auto-fixes → commit → discuss disputed one-by-one. Never interleave.
 2. **Auto-fixes are committed BEFORE disputed discussion starts.** The user gets a clean checkpoint with all the safe edits.
 3. **Disputed issues are processed ONE AT A TIME, in separate messages.** Never present a bulk list of disputed issues. Never dump all variants for all issues in one go.
 4. **Every disputed issue gets a structured analysis** (Суть → Анализ → Варианты → Рекомендация). Bullet-only one-liners are forbidden. Write enough that someone who hasn't read the review can follow.
 5. **Always evaluate the variants you propose.** Each variant gets pros/cons, and you explicitly recommend ONE with reasoning. Never list variants neutrally.
 6. **If only one variant is genuinely adequate, do not ask the user.** Announce the decision, briefly say why the others fail, apply, move on. Asking when there's no real choice is noise.
-7. **One disputed issue → one message → decide → apply → next.** Only then write the next disputed analysis.
+7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. Never batch.
+8. **When a choice remains, the analysis IS the question — never AskUserQuestion.** The structured write-up (variants with pros/cons + recommendation) is the turn-final message; the turn ends with no trailing tool call and the user answers in free text. A trailing AskUserQuestion duplicates your write-up in its own modal UI and makes the harness drop the analysis — the user then sees only a bare modal. This is the regression this rule prevents.
 
 ### Red Flags — STOP if you catch yourself doing this
 
@@ -55,6 +58,8 @@ These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so
 | Writing variants as "вариант A / B / C" without pros, cons, and a recommendation | Stop. For each variant write Плюсы / Минусы. Pick the best with 2–3 sentences why. |
 | Asking the user a question while three other disputed issues are still unprocessed | Stop. Resolve current → apply → THEN start next. |
 | Asking the user to pick when only one option actually works | Stop. Announce the decision and apply it. Asking is noise. |
+| About to call AskUserQuestion for a disputed choice | Stop. The analysis + variants + recommendation are the turn's FINAL message; end the turn there and take the answer as free text. A modal would swallow the analysis (that is the regression). |
+| Shrinking the analysis so a tool call can follow in the same turn | Stop. The analysis is the final message of the turn, as long as the issue needs. Don't trim it to precede a tool. |
 | Applying an auto-fix in the middle of disputed discussion | Stop. Auto-fixes must all happen before disputed phase starts (Step 10), and must be committed (Step 11) before Step 12 begins. |
 | Skipping the auto-fix commit because "I'll commit everything at the end" | Stop. The intermediate commit (Step 11) is the user's safe checkpoint. It is mandatory whenever auto-fixes were applied. |
 
@@ -540,24 +545,18 @@ Display intro:
   - Add to `answers`: `{issue, status: "new-auto-after-analysis", answer: "Вариант X (auto)", action: "<fix>"}`
   - Continue to next disputed issue
 
-- **If MULTIPLE options are genuinely reasonable**: ask the user via AskUserQuestion:
+- **If MULTIPLE options are genuinely reasonable — do NOT call AskUserQuestion or any other tool.** The structured analysis you just wrote already IS the question. Make it the **final message of the turn** and end the turn on it, closing with an explicit free-text prompt:
   ```
-  Question: "[TYPE-N] <Issue title>. Какой вариант выбрать? (моя рекомендация: Вариант X)"
-  Header: "Решение"
-  Options:
-    - "Вариант X — <one-line>"    ← put recommended first
-    - "Вариант Y — <one-line>"
-    - [Вариант Z if applicable]
-    - "Оставить как есть" (если применимо)
+  Выберите вариант: ответьте его буквой/названием или предложите свой.
+  Моя рекомендация — Вариант X.
   ```
-  - If user response contains "стоп" / "stop" / "достаточно": set `stop = true`, record answer for current issue, mark remaining disputed as deferred and exit the loop
-  - Apply the Edit(s) per user's choice
-  - Add to `answers`: `{issue, status: "new", answer: user_choice, action: "<fix>"}`
-  - Continue to next disputed issue
+  - The turn ENDS here. Emit **no tool call** after the analysis. A trailing AskUserQuestion (whose own question/options UI duplicates your write-up) makes the harness treat the analysis as skippable preamble, and the user sees only a bare modal; a turn-final text message is always shown in full.
+  - **On the user's next message — check for stop FIRST.** If the response contains "стоп" / "stop" / "достаточно": set `stop = true`, record the current issue as deferred/undecided (apply nothing), mark all remaining disputed as deferred, and exit the loop. Otherwise apply the Edit(s) for the chosen variant, add to `answers`: `{issue, status: "new", answer: user_choice, action: "<fix>"}`, then move to the next disputed issue.
+  - **If the turn is resumed by a background event** (e.g. a Step 6 watcher or task notification) rather than a user reply: handle the event, then end the turn again with a one-line reminder of the pending choice. A non-user event is never the user's answer.
 
-**12.c — Process ONE disputed issue at a time.** Present analysis → decide/ask → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
+**12.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
 
-After the loop, also add all `auto_fixes`, `repeated`, `dismissed` entries to `answers` with their statuses (`new-auto`, `repeat`, `new-dismissed` respectively) so Step 13 can render the iter file.
+After the loop, also add all `auto_fixes`, `repeated`, `dismissed` entries to `answers` with their statuses (`new-auto`, `repeat`, `new-dismissed` respectively), and every deferred disputed issue with status `deferred` (`answer: "отложено (стоп)"`, `action: "-"`, note your recommended variant if the analysis was already presented), so Step 13 can render the iter file without losing deferred issues.
 
 ### Step 13: Generate Iteration File
 
@@ -583,7 +582,7 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 > Issue text from review...
 
 **Источник:** [which agent(s) raised this issue]
-**Статус:** Автоисправлено | Обсуждено с пользователем | Отклонено | Повтор (iter-M, TYPE-K)
+**Статус:** Автоисправлено | Обсуждено с пользователем | Отклонено | Повтор (iter-M, TYPE-K) | Отложено (стоп)
 **Ответ:** Auto-fix description / User's answer / Dismissal reason / Previous answer
 **Действие:** What was changed in documents
 
@@ -605,6 +604,7 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 - Обсуждено с пользователем: B2
 - Отклонено: C
 - Повторов (автоответ): Z
+- Отложено (стоп): S
 - Пользователь сказал "стоп": Да/Нет
 - Агенты: [list of agents used]
 ```
@@ -633,12 +633,13 @@ Count from answers:
 - `discussed` = count where status == "new"
 - `dismissed` = count where status == "new-dismissed"
 - `repeated` = count where status == "repeat"
+- `deferred` = count where status == "deferred"
 
 **ALWAYS ask user what to do next** (iterations are always done in fresh sessions):
 
 Use **AskUserQuestion tool**:
 ```
-Question: "Итерация N завершена. Автоисправлено: {auto_fixed}, авто-после-анализа: {auto_after_analysis}, обсуждено: {discussed}, отклонено: {dismissed}, повторов: {repeated}. Что дальше?"
+Question: "Итерация N завершена. Автоисправлено: {auto_fixed}, авто-после-анализа: {auto_after_analysis}, обсуждено: {discussed}, отклонено: {dismissed}, повторов: {repeated}, отложено: {deferred}. Что дальше?"
 Header: "Iteration"
 Options:
   - label: "Новая итерация (fresh session)"
