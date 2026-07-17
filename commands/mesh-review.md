@@ -186,14 +186,16 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 ### Iron Rules
 
+> Sync note: rules 3–8 are mirrored in `skills/mesh-design-review/SKILL.md` (Iron Rules / Step 12). When editing shared rule text, mirror the edit there (step numbers differ; `default`-mode clauses are mesh-review-only).
+
 1. **Phase order is fixed:** dedupe + classify ALL issues → apply auto-fixes → commit auto-fixes → discuss disputed one-by-one → commit decisions.
 2. **Auto-fixes are committed BEFORE disputed discussion starts.** The user gets a clean checkpoint with the safe edits before any debate.
 3. **Disputed issues are processed ONE AT A TIME, in separate messages.** Never present a bulk list of disputed issues. Never dump all variants for all issues in one go.
 4. **Every disputed issue gets a structured analysis** (Суть → Анализ → Варианты → Рекомендация). Bullet-only one-liners are forbidden.
 5. **Always evaluate the variants you propose.** Each variant gets pros/cons; you explicitly recommend ONE with reasoning. Never list variants neutrally.
 6. **If only one variant is genuinely adequate, do not ask the user.** Announce the decision, briefly say why the others fail, apply, move on.
-7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. Never batch.
-8. **When a choice remains, the analysis IS the question — never AskUserQuestion.** The structured write-up (variants with pros/cons + recommendation) is the turn-final message; the turn ends with no trailing tool call and the user answers in free text. A trailing AskUserQuestion duplicates your write-up in its own modal UI and makes the harness drop the analysis — the user then sees only a bare modal. This is the regression this rule prevents.
+7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. In `default` (non-interactive) mode never wait — record the issue as deferred per Step 6.4.b and continue. Never batch.
+8. **When a choice remains, the analysis IS the question — never AskUserQuestion.** The structured write-up (variants with pros/cons + recommendation) is the turn-final message; the turn ends with no trailing tool call and the user answers in free text (in `default` mode nobody can answer — defer per Step 6.4.b). A trailing AskUserQuestion duplicates your write-up in its own modal UI and makes the harness drop the analysis — the user then sees only a bare modal. This is the regression this rule prevents.
 
 ### Step 6.0: Verify delegation (mechanical guard)
 
@@ -317,9 +319,14 @@ If no files were modified, skip this commit.
 
 If `D == 0`, finish (jump to Step 6.5 with a brief summary).
 
-Display intro:
+Display intro (interactive mode):
 ```
 Спорных вопросов: D. Обсуждаем по одному — для каждого приведу суть, анализ, варианты и обоснованную рекомендацию.
+```
+
+In `default` mode display instead:
+```
+Спорных вопросов: D. Режим default: для каждого приведу анализ с рекомендацией; вопросы с несколькими равноценными вариантами будут отложены (см. итог).
 ```
 
 **For EACH disputed issue, sequentially (NOT batched, NOT in parallel):**
@@ -369,16 +376,17 @@ Display intro:
   - Apply the Edit(s) to source files immediately
   - Continue to next disputed issue
 
-- **If MULTIPLE options are genuinely reasonable — do NOT call AskUserQuestion or any other tool.** The structured analysis you just wrote already IS the question. Make it the **final message of the turn** and end the turn on it, closing with an explicit free-text prompt:
+- **If MULTIPLE options are genuinely reasonable — do NOT call AskUserQuestion or any other tool** (interactive mode; in `default` mode see the last bullet — defer, don't wait). The structured analysis you just wrote already IS the question. Make it the **final message of the turn** and end the turn on it, closing with an explicit free-text prompt:
   ```
-  Choose a variant: reply with its number/name or propose your own.
-  My recommendation — Variant X.
+  Выберите вариант: ответьте его буквой/названием или предложите свой.
+  Моя рекомендация — Вариант X.
   ```
   - The turn ENDS here. Emit **no tool call** after the analysis. A trailing AskUserQuestion (whose own question/options UI duplicates your write-up) makes the harness treat the analysis as skippable preamble, and the user sees only a bare modal; a turn-final text message is always shown in full. This is the whole point of the fix — do not "help" by adding a modal.
-  - **On the user's next message:** apply the Edit(s) for the chosen variant, then move to the next disputed issue's analysis. If the answer is "стоп" / "достаточно": record the current issue as undecided, defer the remaining disputed issues, exit the loop.
-  - **In `default` (non-interactive) mode there is nobody to ask.** Do NOT wait. Record the issue as *deferred* with your recommended variant noted, do NOT apply it, and continue to the next. Deferred disputed issues are surfaced in the Step 6.6 summary; the user re-runs interactively to decide them.
+  - **On the user's next message — check for stop FIRST.** If the answer contains "стоп" / "stop" / "достаточно": record the current issue as undecided (apply nothing), defer it and the remaining disputed issues, exit the loop. Otherwise apply the Edit(s) for the chosen variant, then move to the next disputed issue's analysis.
+  - **If the turn is resumed by a background event** (e.g. a Step 5a watcher or task notification) rather than a user reply: handle the event, then end the turn again with a one-line reminder of the pending choice. A non-user event is never the user's answer.
+  - **In `default` (non-interactive) mode there is nobody to ask.** Do NOT wait. Record the issue as *deferred* with your recommended variant noted, do NOT apply it, and continue to the next. The full analysis above stays in the run output as the decision record. Deferred disputed issues are surfaced in the Step 6.6 summary; the user re-runs interactively to decide them.
 
-**6.4.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
+**6.4.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice; in `default` mode defer instead of waiting) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
 
 ### Step 6.5: Commit Decisions
 
@@ -392,6 +400,8 @@ Do NOT push. If no code changes resulted from Step 6.4 (e.g. all disputed → "�
 
 ### Step 6.6: Final Summary
 
+Track outcomes as a running tally while executing Step 6.4 (auto-applied after analysis / decided by the user / deferred on «стоп» / deferred in `default` mode) — the counts below come from that tally, not from reconstructing the transcript afterwards.
+
 Display a short summary:
 ```
 Итог:
@@ -399,7 +409,13 @@ Display a short summary:
   Авто-применено по анализу: B1
   Обсуждено с пользователем: B2  (закоммичено: <hash if any>)
   Отклонено как ложные:      X
-  Спорных отложено (стоп):   S
+  Отложено по «стоп»:        S1
+  Отложено (default-режим):  S2
+```
+
+For every deferred issue (S1 + S2) add one line so the interactive re-run has an anchor:
+```
+  - <Issue title> (`file:line`) — рекомендация: Вариант X
 ```
 
 ### Red Flags — STOP if you catch yourself doing this
