@@ -4,6 +4,34 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-17
+
+### Fixed
+- Disputed-issue discussion no longer loses the structured analysis behind an
+  `AskUserQuestion` modal (`/mesh-review` Step 6.4, `mesh-design-review`
+  Step 12). The model withholds prose emitted before a self-presenting tool
+  call, so users saw a bare modal without the Суть → Анализ → Варианты →
+  Рекомендация write-up. The analysis is now the turn-final message (no
+  trailing tool call) and the user answers in free text; `AskUserQuestion`
+  remains only at self-contained sites (reviewer/model selection,
+  design-review "what next"). `/mesh-review default` defers multi-variant
+  disputed issues instead of waiting for an absent user.
+- Hardening from the pre-merge max-effort review of that fix (12 findings,
+  5 confirmed): stop-token sets synced between the twin flows (`stop` is now
+  recognized by `/mesh-review` too) and the stop check runs BEFORE
+  apply/record, so a «стоп» reply can no longer produce a phantom answers
+  entry or an unintended edit; the turn-final closing prompt is Russian like
+  every other user-facing template; `default`-mode carve-outs added to Iron
+  Rules 7–8 and 6.4.c (the unconditional "wait" wording could hang an
+  unattended run); the Step 6.6 summary separates «стоп» deferrals from
+  `default`-mode ones and lists every deferred issue with its recommended
+  variant; `mesh-design-review` deferred issues now reach `answers`, the
+  iteration log and Step 15 counts (previously they silently vanished from
+  the committed iter file); a background watcher/task event resuming the
+  turn-final wait is never treated as the user's answer; `review-discussion`
+  agent description matched to reality (parses and returns results — never
+  talks to the user or edits documents).
+
 ## [0.4.1] - 2026-07-16
 
 ### Fixed
