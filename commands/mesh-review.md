@@ -192,7 +192,8 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 4. **Every disputed issue gets a structured analysis** (Суть → Анализ → Варианты → Рекомендация). Bullet-only one-liners are forbidden.
 5. **Always evaluate the variants you propose.** Each variant gets pros/cons; you explicitly recommend ONE with reasoning. Never list variants neutrally.
 6. **If only one variant is genuinely adequate, do not ask the user.** Announce the decision, briefly say why the others fail, apply, move on.
-7. **One disputed issue → one message → decide → apply → next.** Only then write the next disputed analysis.
+7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. Never batch.
+8. **When a choice remains, the analysis IS the question — never AskUserQuestion.** The structured write-up (variants with pros/cons + recommendation) is the turn-final message; the turn ends with no trailing tool call and the user answers in free text. A trailing AskUserQuestion duplicates your write-up in its own modal UI and makes the harness drop the analysis — the user then sees only a bare modal. This is the regression this rule prevents.
 
 ### Step 6.0: Verify delegation (mechanical guard)
 
@@ -289,7 +290,7 @@ Verdicts:
 
 **In `default` mode:** apply all AUTO fixes immediately without asking.
 
-**In interactive mode:** ask once before starting:
+**In interactive mode:** present the Step 6.1 classification table as its own turn-final message, then ask once — as free text, NOT via AskUserQuestion (a modal glued right after the table would drop it):
 ```
 Найдено A явных исправлений. Применять автоматически?
 ```
@@ -368,21 +369,16 @@ Display intro:
   - Apply the Edit(s) to source files immediately
   - Continue to next disputed issue
 
-- **If MULTIPLE options are genuinely reasonable**: ask the user via AskUserQuestion:
+- **If MULTIPLE options are genuinely reasonable — do NOT call AskUserQuestion or any other tool.** The structured analysis you just wrote already IS the question. Make it the **final message of the turn** and end the turn on it, closing with an explicit free-text prompt:
   ```
-  Question: "<Issue title>. Какой вариант выбрать? (моя рекомендация: Вариант X)"
-  Header: "Решение"
-  Options:
-    - "Вариант X — <one-line>"    ← put recommended first
-    - "Вариант Y — <one-line>"
-    - [Вариант Z if applicable]
-    - "Не исправлять" (если применимо)
+  Choose a variant: reply with its number/name or propose your own.
+  My recommendation — Variant X.
   ```
-  - If user says "стоп" / "достаточно" — record current answer, defer remaining disputed issues, exit loop.
-  - Apply the Edit(s) per user's choice.
-  - Continue to next disputed issue.
+  - The turn ENDS here. Emit **no tool call** after the analysis. A trailing AskUserQuestion (whose own question/options UI duplicates your write-up) makes the harness treat the analysis as skippable preamble, and the user sees only a bare modal; a turn-final text message is always shown in full. This is the whole point of the fix — do not "help" by adding a modal.
+  - **On the user's next message:** apply the Edit(s) for the chosen variant, then move to the next disputed issue's analysis. If the answer is "стоп" / "достаточно": record the current issue as undecided, defer the remaining disputed issues, exit the loop.
+  - **In `default` (non-interactive) mode there is nobody to ask.** Do NOT wait. Record the issue as *deferred* with your recommended variant noted, do NOT apply it, and continue to the next. Deferred disputed issues are surfaced in the Step 6.6 summary; the user re-runs interactively to decide them.
 
-**6.4.c — Process ONE disputed issue at a time.** Present analysis → decide/ask → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
+**6.4.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
 
 ### Step 6.5: Commit Decisions
 
@@ -414,5 +410,7 @@ Display a short summary:
 | Writing "вариант A / B / C" without pros, cons, and a recommendation | Stop. Add Плюсы / Минусы to each. Pick the best with 2–3 sentences why. |
 | Asking the user a question while other disputed issues are still unprocessed in the same message | Stop. Resolve current → apply → THEN start next. |
 | Asking the user to pick when only one option actually works | Stop. Announce the decision and apply it. Asking is noise. |
+| About to call AskUserQuestion for a disputed choice | Stop. The analysis + variants + recommendation are the turn's FINAL message; end the turn there and take the answer as free text. A modal would swallow the analysis (that is the regression). |
+| Shrinking the analysis so a tool call can follow in the same turn | Stop. The analysis is the final message of the turn, as long as the issue needs. Don't trim it to precede a tool. |
 | Applying an auto-fix in the middle of disputed discussion | Stop. Auto-fixes must all happen in Step 6.2 and be committed in Step 6.3 before Step 6.4 begins. |
 | Skipping the auto-fix commit ("I'll commit everything at the end") | Stop. The intermediate commit (Step 6.3) is the user's safe checkpoint. Mandatory when auto-fixes were applied. |
