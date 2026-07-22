@@ -236,7 +236,7 @@ Verdicts:
 - `REAL` (exit 0) — delegated, real review → **keep** for Step 6.1.
 - `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**.
 - `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps).
-- `BROKEN` (exit 4) — run dir but thinking-only / DSML grammar / `num_turns≤1` → **DROP, do NOT retry** (the engine itself is broken).
+- `BROKEN` (exit 4) — run dir but thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events) → **DROP, do NOT retry** (the engine itself is broken).
 
 **3. Show the delegation status table** so the user sees who really cross-validated:
 ```

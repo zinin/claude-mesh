@@ -39,7 +39,10 @@ assert_eq() {
 PRIMARY='LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"'
 FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
 
-# === Test 1: every command site uses the same two-line resolver ===
+# === Test 1: every command site uses the same resolver ===
+# The counts are a deliberate canary, not incidental. A new command that resolves the loader
+# SHOULD break this test — bump the numbers once you have checked the new site uses the same
+# two lines. Deleting the assertion instead is how the four copies silently drift apart.
 echo "=== Test 1: resolver present and in sync across command files ==="
 n_primary=$(grep -Fxh "$PRIMARY" "$CMD_DIR"/*.md 2>/dev/null | wc -l)
 n_fallback=$(grep -Fxh "$FALLBACK" "$CMD_DIR"/*.md 2>/dev/null | wc -l)
@@ -55,14 +58,17 @@ stale=$(grep -h "claude-mesh\*/skills/shared/config-loader.sh" "$CMD_DIR"/*.md 2
 assert_eq "0 occurrences of 'head -1' on the loader glob" "0" "$stale"
 
 # --- extract the live snippet for execution ---
-SNIPPET="$(grep -Fx -A1 -h "$PRIMARY" "$CMD_DIR/mesh-review.md" | grep -v '^--$' | head -2)"
+# Three lines, not two: the third is the `|| { echo …; exit 1; }` guard, and Test 5 below
+# only means anything if it actually runs. `run_snippet` assumes the extracted block is a
+# self-contained, well-formed bash fragment — it is concatenated into `bash -c`.
+SNIPPET="$(grep -Fx -A2 -h "$PRIMARY" "$CMD_DIR/mesh-review.md" | grep -v '^--$' | head -3)"
 echo "=== extraction ==="
-assert_eq "snippet extracted (2 lines)" "2" "$(printf '%s' "$SNIPPET" | grep -c '')"
+assert_eq "snippet extracted (3 lines)" "3" "$(printf '%s' "$SNIPPET" | grep -c '')"
 
 # Run the extracted snippet under a controlled HOME / plugin root. rc is asserted too:
 # an empty $GOT must mean "resolver found nothing", never "the snippet failed to run".
 run_snippet() {   # $1 = HOME, $2 = CLAUDE_PLUGIN_ROOT
-    GOT=$(HOME="$1" CLAUDE_PLUGIN_ROOT="$2" bash -c "$SNIPPET"$'\n''printf %s "$LOADER"'); RC=$?
+    GOT=$(HOME="$1" CLAUDE_PLUGIN_ROOT="$2" bash -c "$SNIPPET"$'\n''printf %s "$LOADER"' 2>/dev/null); RC=$?
 }
 
 # === Test 3: substituted ${CLAUDE_PLUGIN_ROOT} wins over anything installed ===
@@ -91,13 +97,15 @@ assert_eq "snippet ran cleanly" "0" "$RC"
 assert_eq "resolves to 0.10.0" "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.10.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
 
-# === Test 5: nothing installed and no substitution -> empty, so the caller can fail loudly ===
-echo "=== Test 5: nothing to find leaves LOADER empty ==="
+# === Test 5: nothing installed and no substitution -> the guard exits 1 ===
+# The point is that the call site FAILS LOUDLY rather than carrying an empty $LOADER into
+# `"$LOADER" get-flag …`, where the shell would report a confusing "not found".
+echo "=== Test 5: nothing to find makes the guard exit 1 ==="
 TDIR=$(mktemp -d)
 mkdir -p "$TDIR/home/.claude/plugins"
 run_snippet "$TDIR/home" ""
-assert_eq "snippet ran cleanly" "0" "$RC"
-assert_eq "LOADER empty" "" "$GOT"
+assert_eq "guard exits 1" "1" "$RC"
+assert_eq "nothing printed" "" "$GOT"
 rm -rf "$TDIR"
 
 echo ""

@@ -17,12 +17,19 @@
 #                 (the orchestrator stamps this just before dispatch)
 #     data-dir    optional; defaults to config-loader resolve_plugin_data()
 #
+# ext-claude runs are judged on NT = the maximum num_turns across the SUCCESSFUL result
+# events of raw.jsonl (a stream can carry several: a background subagent splits it into a
+# "started" segment and the resumed one that delivers the review). Errored events and
+# non-integer counts never enter that maximum — see the ext-claude branch for why.
+#
 # Verdict on stdout + exit code:
-#   REAL=0     finalized + agentic — ext-claude: num_turns>1 & non-empty output;
+#   REAL=0     finalized + agentic — ext-claude: NT>1 & output.txt has non-whitespace content;
 #                                     codex/gemini: watchdog rc=0 & non-empty output
-#   STALLED=2  killed mid-flight: no final / no result event / engine rc!=0 (retry helps)
+#   STALLED=2  killed mid-flight or delivered nothing usable: no final / no result event /
+#              no successful result event with an integer num_turns / final result event
+#              is_error:true / engine rc!=0 / agentic but blank output (retry helps)
 #   FLIP=3     no run dir for this engine in the dispatch window (self-reviewed on the session model)
-#   BROKEN=4   finalized but num_turns<=1 — thinking-only / DSML grammar / answered
+#   BROKEN=4   finalized but NT<=1 — thinking-only / DSML grammar / answered
 #              without reading code (retry futile; fix by swapping the model in config.yaml)
 set -u
 
@@ -93,24 +100,49 @@ case "$ENGINE" in
         # depends on neither sniffing output.txt for marker strings nor the thinking-fallback
         # that used to populate output.txt.
         #
-        # Take the MAXIMUM over ALL result events, not the last one: a run that dispatches a
-        # background subagent answers "started", then resumes and delivers the real review, and
-        # progress-monitor.sh appends both segments to the same raw.jsonl. The closing segment's
-        # num_turns counts only itself (1), so `tail -1` would call a genuine review BROKEN —
-        # the one verdict mesh-review never retries. max and not sum: summing two non-agentic
-        # segments (1+1) would fake a REAL. fromjson? skips a truncated line instead of
-        # aborting the scan on it.
+        # Take the MAXIMUM over all SUCCESSFUL result events, not the last one: a run that
+        # dispatches a background subagent answers "started", then resumes and delivers the real
+        # review, and progress-monitor.sh appends both segments to the same raw.jsonl. The
+        # closing segment's num_turns counts only itself (1), so `tail -1` would call a genuine
+        # review BROKEN — the one verdict mesh-review never retries. max and not sum: summing
+        # two non-agentic segments (1+1) would fake a REAL.
+        #
+        # Only successful events, and only integer counts, may enter that maximum:
+        #   - is_error:true carries a turn count that measured a FAILURE. Real streams do this —
+        #     five historical run dirs hold {"subtype":"success","is_error":true,"num_turns":95,
+        #     "result":"Prompt is too long"} (note subtype lies; is_error is the signal), and both
+        #     `tail -1` and a naive max elect 95, admitting that 18-character string as a REAL
+        #     cross-validation.
+        #   - a non-integer would reach `[ "$NT" -le 1 ]`, where `[` errors, the error is
+        #     swallowed by 2>/dev/null, the `if` reads false and the run falls through to REAL.
+        # Reading each line as a raw string (`jq -R`) is what keeps a truncated final line — the
+        # shape a killed, live-appended stream leaves — from aborting the scan.
         RAW="$RD/raw.jsonl"; [ -f "$RAW" ] || RAW="$RD/final/raw.jsonl"
-        NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null | jq -Rr 'fromjson? | .num_turns // empty' 2>/dev/null | sort -n | tail -1)"
+
+        # progress-monitor.sh:171-175 REWRITES output.txt from every result event, so the text
+        # actually delivered is the LAST segment's. If that segment failed, the run delivered no
+        # review however agentic the earlier ones were — and the lone "\n" it leaves behind would
+        # sail through a bare `[ -s ]`. Retry can help, so STALLED rather than BROKEN.
+        LAST_ERR="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
+            | jq -Rr 'fromjson? | objects | select(.type == "result") | .is_error' 2>/dev/null | tail -1)"
+        if [ "$LAST_ERR" = "true" ]; then
+            emit STALLED "final result event is_error:true — the delivered output is the failed segment, not a review" 2
+        fi
+
+        NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
+            | jq -Rr 'fromjson? | objects | select(.type == "result" and .is_error == false)
+                      | .num_turns | numbers | select(. == floor and . >= 0)' 2>/dev/null \
+            | sort -n | tail -1)"
         if [ -z "$NT" ]; then
-            # finalized dir but no result event carried a num_turns → run was cut off
+            # finalized dir but no successful result event carried an integer num_turns
             emit STALLED "no usable result event in raw.jsonl — killed mid-flight" 2
         fi
-        if [ "$NT" -le 1 ] 2>/dev/null; then
+        if [ "$NT" -le 1 ]; then
             emit BROKEN "num_turns=$NT: model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)" 4
         fi
-        # num_turns > 1: genuinely agentic — require non-empty output to call it REAL.
-        [ -s "$OUT" ] || emit STALLED "num_turns=$NT but output.txt empty — retry" 2
+        # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
+        grep -q '[^[:space:]]' "$OUT" 2>/dev/null \
+            || emit STALLED "num_turns=$NT but output.txt has no content — retry" 2
         emit REAL "delegated, agentic review (num_turns=$NT)" 0
         ;;
 esac

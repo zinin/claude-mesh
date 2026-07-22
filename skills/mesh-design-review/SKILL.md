@@ -681,7 +681,7 @@ When loop exits, display:
 | Error | Solution |
 |-------|----------|
 | No design doc found | Ask user to specify DESIGN_PATH |
-| `config.yaml` not found (loader rc=2) | Copy `config.example.yaml` to `${CLAUDE_PLUGIN_DATA}/config.yaml`, fill tokens, retry |
+| `config.yaml` not found (loader rc=2) | Copy `config.example.yaml` into the dir `"$LOADER" data-dir` prints, fill tokens, retry (a literal placeholder here is substituted by the harness and points at the wrong dir under a `--plugin-dir` load) |
 | `config.yaml` invalid (loader rc=1) | Surface the validator stderr to the user; the USER edits config.yaml (agents never modify it); retry after the user confirms |
 | `defaults.design_review` missing (with `default` arg) | Run without `default`, or add the preset to `config.yaml` |
 | One agent fails, others succeed | Continue with available results, note failure in merged output |
