@@ -87,16 +87,24 @@ case "$ENGINE" in
         emit REAL "delegated, non-empty review" 0
         ;;
     ext-claude)
-        # num_turns from the last type:result event is the authoritative signal that the
-        # model did agentic work (read code / ran tools). Classify on it directly — it is
-        # robust to HOW a non-review surfaces (empty output, thinking-only, or DSML tool-
-        # grammar leaked as literal text), so it depends on neither sniffing output.txt for
-        # marker strings nor the thinking-fallback that used to populate output.txt.
+        # num_turns is the authoritative signal that the model did agentic work (read code /
+        # ran tools). Classify on it directly — it is robust to HOW a non-review surfaces
+        # (empty output, thinking-only, or DSML tool-grammar leaked as literal text), so it
+        # depends on neither sniffing output.txt for marker strings nor the thinking-fallback
+        # that used to populate output.txt.
+        #
+        # Take the MAXIMUM over ALL result events, not the last one: a run that dispatches a
+        # background subagent answers "started", then resumes and delivers the real review, and
+        # progress-monitor.sh appends both segments to the same raw.jsonl. The closing segment's
+        # num_turns counts only itself (1), so `tail -1` would call a genuine review BROKEN —
+        # the one verdict mesh-review never retries. max and not sum: summing two non-agentic
+        # segments (1+1) would fake a REAL. fromjson? skips a truncated line instead of
+        # aborting the scan on it.
         RAW="$RD/raw.jsonl"; [ -f "$RAW" ] || RAW="$RD/final/raw.jsonl"
-        NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null | tail -1 | jq -r '.num_turns // empty' 2>/dev/null)"
+        NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null | jq -Rr 'fromjson? | .num_turns // empty' 2>/dev/null | sort -n | tail -1)"
         if [ -z "$NT" ]; then
-            # finalized dir but the stream never emitted a result event → run was cut off
-            emit STALLED "no result event in raw.jsonl — killed mid-flight" 2
+            # finalized dir but no result event carried a num_turns → run was cut off
+            emit STALLED "no usable result event in raw.jsonl — killed mid-flight" 2
         fi
         if [ "$NT" -le 1 ] 2>/dev/null; then
             emit BROKEN "num_turns=$NT: model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)" 4
