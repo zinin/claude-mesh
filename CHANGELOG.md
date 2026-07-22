@@ -4,6 +4,60 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-22
+
+### Fixed
+- Delegation guard no longer discards genuine external reviews whose stream
+  carries more than one `type:result` event. `verify-delegation.sh` read
+  `num_turns` from the LAST event (`tail -1`); when an external model
+  dispatches a background subagent it answers "work started", the session
+  resumes, and the final event describes only the short closing segment
+  (`num_turns:1`) — so a full agentic review (44 assistant events, 19
+  `tool_use`, 8933 bytes of findings whose cited line numbers checked out) was
+  stamped `BROKEN`, the one verdict `/mesh-review` never retries: findings
+  dropped, user told to swap the model in `config.yaml`. Classification now
+  takes the MAXIMUM `num_turns` over result events — max and not sum, since
+  summing two non-agentic segments (1+1) would fabricate a `REAL` out of a run
+  that read no code. `ext-claude-exec/generate-md.sh` keeps its `tail -1`:
+  there the last result legitimately carries the answer.
+- Hardening of that guard after a 7-reviewer `/mesh-review` (codex, zai/glm,
+  alibaba/qwen, deepseek/v4-pro, ollama/kimi, ollama/minimax, builtin claude —
+  all seven verified `REAL` by the guard under test): errored result events no
+  longer feed the maximum, because five historical runs carry
+  `{"subtype":"success","is_error":true,"num_turns":95,"result":"Prompt is too
+  long"}` — `subtype` lies, `is_error` is the signal — and both the old and the
+  new selection had been admitting that 18-character failure string as a real
+  cross-validation; a stream whose FINAL result event errored is `STALLED`,
+  since `progress-monitor.sh` REWRITES `output.txt` per result event, so the
+  delivered text is the last segment's and the lone `"\n"` it leaves sailed
+  through `[ -s ]`; `num_turns` must be a non-negative integer to reach
+  `[ "$NT" -le 1 ]` (`[` errors on anything else, the error was swallowed, the
+  `if` read false and the run fell through to `REAL`); `REAL` now requires
+  `output.txt` to hold non-whitespace, not merely bytes. Replaying the old and
+  the new logic over 228 historical run dirs gives 12 verdict changes, all
+  accounted for.
+- Slash commands no longer run a stale copy of the shared loader. All four
+  sites located `config-loader.sh` with `find … | head -1` — directory order,
+  not version order — which returned 0.4.0 while 0.4.2 was installed, and was
+  blind to `--plugin-dir` (command TEXT came from the working tree but SCRIPTS
+  from the installed cache, so a dogfood run never exercised the copy under
+  test). `CLAUDE_PLUGIN_ROOT` is empty as a shell variable in slash-command
+  Bash calls, but the harness substitutes the placeholder into command and
+  skill TEXT before the call, inside bash fences too (measured on CC 2.1.217);
+  it names the active copy, so it is tried first and the glob stays a fallback,
+  now `sort -V | tail -1`. The same substitution made the "config.yaml ещё не
+  создан" hint print the wrong data dir under a `--plugin-dir` load; both twins
+  now print `$("$LOADER" data-dir)`. New `shared/tests/test-loader-resolution.sh`
+  extracts the live snippet out of the markdown and executes it, so the four
+  duplicated copies cannot drift from the assertions.
+- `/do-plan` Step 2 no longer claims that the command and the `PostToolUse`
+  hook "converge on one absolute path". The hook takes the data dir from
+  `$CLAUDE_PLUGIN_DATA` while the command asks the loader; on a marketplace
+  install both land on `claude-mesh-zinin`, but under a `--plugin-dir` dev load
+  they diverge, the per-session config is written where the hook never looks,
+  and the STOP threshold silently never fires. Documented here; the hook itself
+  is a separate task.
+
 ## [0.4.2] - 2026-07-17
 
 ### Fixed
