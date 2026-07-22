@@ -26,10 +26,16 @@ If invoked as `/claude-mesh:mesh-review default` (Task 2.5: commands are namespa
 Use `config-loader.sh` instead of raw `yq` so validation runs the same way everywhere (CRITICAL-10):
 
 ```bash
-# Task 2.5 (CC 2.1.156): ${CLAUDE_PLUGIN_ROOT} is EMPTY in Bash-tool calls from slash
-# commands (no skill-load base line either) — locate the loader by globbing the install dir.
-LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | head -1)"
-[ -n "$LOADER" ] || { echo "config-loader.sh not found under ~/.claude/plugins (is claude-mesh installed?)" >&2; exit 1; }
+# CLAUDE_PLUGIN_ROOT is EMPTY as a shell VARIABLE here (Task 2.5, CC 2.1.156), but the
+# harness substitutes the placeholder into this command's TEXT — inside bash fences too —
+# before the Bash call, so the line below arrives as a literal path naming the ACTIVE plugin
+# copy, including a `--plugin-dir <repo>` dev load. (Which is why this comment spells the
+# name without the braces: it would be substituted here too.) Fallback for harnesses that do
+# not substitute: a VERSION-sorted glob — plain `find | head -1` is directory order and was
+# observed picking a stale cached 0.4.0 over the installed 0.4.2.
+LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || { echo "config-loader.sh not found under ~/.claude/plugins (is claude-mesh installed?)" >&2; exit 1; }
 # iter-3 CRITICAL-3: a bare $() swallows the loader exit code. Probe once with explicit rc
 # capture so rc=2 (config.yaml not created yet — fresh install) is NOT misreported as
 # rc=1 (config invalid). Distinct handling per design §6.6 / iter-2 CONCERN-11.
@@ -37,7 +43,9 @@ LOADER_ERR=$(mktemp)
 HAS_CODEX=$("$LOADER" get-flag has_codex 2>"$LOADER_ERR"); LRC=$?
 case "$LRC" in
   0) ;;
-  2) echo "config.yaml ещё не создан. Скопируйте config.example.yaml в \${CLAUDE_PLUGIN_DATA}/config.yaml, заполните токены и повторите /claude-mesh:mesh-review."; rm -f "$LOADER_ERR"; exit 0 ;;
+  # Name the dir the loader actually reads — a literal placeholder here would be substituted
+  # by the harness and, under a --plugin-dir load, would point at the wrong data dir.
+  2) echo "config.yaml ещё не создан. Скопируйте config.example.yaml в $("$LOADER" data-dir)/config.yaml, заполните токены и повторите /claude-mesh:mesh-review."; rm -f "$LOADER_ERR"; exit 0 ;;
   *) echo "config.yaml невалиден:" >&2; cat "$LOADER_ERR" >&2; rm -f "$LOADER_ERR"; exit 1 ;;
 esac
 rm -f "$LOADER_ERR"
@@ -205,8 +213,11 @@ The builtin `claude` / `general-purpose` reviewer is **skipped here** — it rev
 
 **1. Locate the loader, data dir, and guard:**
 ```bash
-LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | head -1)"
-[ -n "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
+# Same resolution as Step 1 — the guard MUST come from the plugin copy that is actually
+# running, otherwise a --plugin-dir dev load verifies with the installed cache's guard.
+LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
 VERIFY="$(dirname "$LOADER")/verify-delegation.sh"
 DATA_DIR="$("$LOADER" data-dir)"
 N="$("$LOADER" get-runtime | jq -r '.max_redispatch // 1')"; [[ "$N" =~ ^[0-9]+$ ]] || N=1
@@ -225,7 +236,7 @@ Verdicts:
 - `REAL` (exit 0) — delegated, real review → **keep** for Step 6.1.
 - `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**.
 - `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps).
-- `BROKEN` (exit 4) — run dir but thinking-only / DSML grammar / `num_turns≤1` → **DROP, do NOT retry** (the engine itself is broken).
+- `BROKEN` (exit 4) — run dir but thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events) → **DROP, do NOT retry** (the engine itself is broken).
 
 **3. Show the delegation status table** so the user sees who really cross-validated:
 ```
