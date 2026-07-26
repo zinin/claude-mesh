@@ -1064,6 +1064,50 @@ assert_stderr_contains "lists has_claude_models among valid features" "has_claud
 
 rm -rf "$TDIR" "$ERR"
 
+# === Test 50: get-defaults emits claude_models ===
+# The orchestrators read the preset through this single JSON object; a missing key would
+# make them fall back to "no claude models" and silently under-dispatch.
+echo "=== Test 50: get-defaults emits claude_models ==="
+TDIR=$(mktemp -d)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, sonnet, fable]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, fable]\n  design_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
+if [ "$GOT" = "opus,fable" ]; then PASS=$((PASS+1)); echo "  PASS: code_review claude_models=opus,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review claude_models (expected 'opus,fable', got '$GOT')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
+if [ "$GOT" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: design_review claude_models=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review claude_models (expected 'opus', got '$GOT')"; fi
+
+# Absent key → an empty list that is PRESENT in the object, never a missing key and never
+# null. Tested with has() on purpose: `null | length` is 0 in jq, so a length check would
+# pass even when the field is absent entirely.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r 'has("claude_models")')
+if [ "$GOT" = "true" ]; then PASS=$((PASS+1)); echo "  PASS: claude_models key always present"; else FAIL=$((FAIL+1)); echo "  FAIL: expected has(claude_models)=true, got '$GOT'"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | type')
+if [ "$GOT" = "array" ]; then PASS=$((PASS+1)); echo "  PASS: absent claude_models becomes []"; else FAIL=$((FAIL+1)); echo "  FAIL: expected an array, got '$GOT'"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.builtin | join(",")')
+if [ "$GOT" = "claude" ]; then PASS=$((PASS+1)); echo "  PASS: existing get-defaults fields intact"; else FAIL=$((FAIL+1)); echo "  FAIL: builtin (expected 'claude', got '$GOT')"; fi
+
+# The clean-death path. cmd_get_defaults is the only real consumer of the validate_claude
+# call inside validate_defaults: with a scalar `claude:` next to a `defaults:` section it
+# must die with the validator's message, not with raw jq indexing noise. Deleting that call
+# leaves the rest of the suite green (validate_all calls validate_claude itself one line
+# earlier), so the call is pinned here. Unpiped on purpose — rc through a pipe is the
+# pipeline's rc, not the loader's.
+ERR=$(mktemp)
+{ printf '%s\n' "$BASE"; printf 'claude: false\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-defaults dies cleanly on claude: false (no raw jq rc=5)" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
+if grep -q -- "Cannot index" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: raw jq indexing noise leaked to get-defaults stderr"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: get-defaults stderr free of raw jq indexing noise"
+fi
+
+rm -rf "$TDIR" "$ERR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

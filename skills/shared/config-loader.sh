@@ -896,9 +896,11 @@ cmd_get_defaults() {
     esac
     load_or_die
     validate_defaults
-    # iter-3 CONCERN-1: emit a JSON object so orchestrators get builtin + models + run_mode
-    # (run_mode meaningful only for code_review) through the loader instead of raw yq. -c = one line.
-    jq -c "{builtin: (.defaults.${category}.builtin // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null)}" "$CONFIG_JSON"
+    # iter-3 CONCERN-1: emit a JSON object so orchestrators get builtin + claude_models +
+    # models + run_mode (run_mode meaningful only for code_review) through the loader
+    # instead of raw yq. -c = one line. claude_models defaults to [] and never null —
+    # both orchestrators iterate it directly.
+    jq -c "{builtin: (.defaults.${category}.builtin // []), claude_models: (.defaults.${category}.claude_models // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null)}" "$CONFIG_JSON"
 }
 
 # iter-3 CONCERN-1: typed getter for runtime UI defaults (default_run_mode) + the do-plan
