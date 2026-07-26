@@ -11,12 +11,17 @@ Launch multiple external code review agents in parallel, collect and deduplicate
 
 If invoked as `/claude-mesh:mesh-review default` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
 - Skip Steps 1-3 entirely.
-- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
+- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
 - Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly; rc=1 ⇒ surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it).
 - If `defaults.code_review` not configured → STOP with error:
   `defaults.code_review not configured in config.yaml. Use /claude-mesh:mesh-review without argument or add the preset.`
 - Spawn all reviewers per preset:
-  - For each entry in `defaults.code_review.builtin` (claude/codex/gemini), spawn the corresponding agent.
+  - `claude` in `defaults.code_review.builtin` → expand over `defaults.code_review.claude_models`:
+    - list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`. This model **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
+    <!-- SYNC: the fallback rule in the next bullet is ONE rule living in four places — this file's Step 2.4 ("Empty selection is not an error"), and `skills/mesh-design-review/SKILL.md` Step 5.1 / Step 5.2.5. Change all four or none. -->
+    - list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the behaviour from before this feature and stays the default.
+  - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (it is `defaults.code_review.claude_models`, or empty in the fallback case). Step 5a and Step 5b both dispatch "one Task per entry of `SELECTED_CLAUDE_MODELS`" **unconditionally** — the interactive path fills it in Step 2.4, and without this line the variable would simply be undefined in `default` mode. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises, and `default` mode quietly dispatches one reviewer instead of N.
+  - `codex` / `gemini` in `defaults.code_review.builtin` → spawn the corresponding agent.
   - For each model id in `defaults.code_review.models`, spawn `ext-claude-code-reviewer` with `MODEL=<id>`.
 - Use `run_mode` from preset (default: `background`).
 - Dispatch via the Step 5a (background) / Step 5b (team) mechanics per that `run_mode`, then go to **Step 6: Process Results**.
@@ -57,6 +62,17 @@ DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
     || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
 rm -f "$DM_ERR"
 echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
+# Claude-model catalog (Step 2.4 gate). rc-aware like the dispatch_model read above:
+# these two subcommands validate the `claude:` section, so a malformed section must
+# fast-fail here with the validator's own message rather than surface as an empty list.
+CM_ERR=$(mktemp)
+HAS_CLAUDE_MODELS=$("$LOADER" get-flag has_claude_models 2>"$CM_ERR") \
+    || { echo "config.yaml невалиден (секция claude):" >&2; cat "$CM_ERR" >&2; rm -f "$CM_ERR"; exit 1; }
+CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
+    || { echo "config.yaml невалиден (claude.models):" >&2; cat "$CM_ERR" >&2; rm -f "$CM_ERR"; exit 1; }
+rm -f "$CM_ERR"
+echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
+echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
 ```
 
 rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it) (iter-3 CRITICAL-3).
@@ -79,16 +95,65 @@ options:
 
 If "external models" not selected → skip Step 3 entirely.
 
+## Step 2.4: Claude-model selection
+
+(No `Q1.x` label: this page runs *before* Step 2.5, so numbering it `Q1.6` ahead of Step 2.5's `Q1.5` reads as an ordering error. The step number alone is unambiguous.)
+
+Runs ONLY when Q1 selected `claude` **and** `HAS_CLAUDE_MODELS=1`.
+
+- `claude` NOT selected in Q1 → skip this step entirely; **no claude reviewer runs at all**, whatever the catalog holds.
+- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip this step; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty).
+
+Build `CLAUDE_DEFAULT_IDS` from the preset — **rc-aware, and never through a pipe**:
+
+```bash
+# Same resolution as Step 1 — Q1's AskUserQuestion sits between that fence and this one, so
+# this Bash call runs in a FRESH shell where $LOADER no longer exists. Without re-resolving
+# it, `$("" get-defaults …)` fails and the `||` below misreports a valid config as invalid.
+LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
+# This is the FIRST get-defaults call on the interactive path, so it is the first thing
+# that runs validate_defaults — which means a bad `claude_models` surfaces exactly here.
+# `"$LOADER" get-defaults … | jq …` would take its status from jq and swallow the new
+# fail-closed guard (rc=1) entirely, turning a hard error into an empty list.
+CD_ERR=$(mktemp)
+CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CD_ERR") \
+    || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CD_ERR" >&2; rm -f "$CD_ERR"; exit 1; }
+rm -f "$CD_ERR"
+CLAUDE_DEFAULT_IDS=$(echo "$CR_DEFAULTS" | jq -r '.claude_models[]?')
+```
+
+For each chunk of 4 entries from `CLAUDE_MODELS` (in config order) — same pagination mechanics as Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API):
+
+AskUserQuestion (multiSelect, max 4):
+```
+header: "Claude"
+question: "На каких Claude-моделях запустить ревью? (страница N/M, ★ = recommended)"
+options:
+  For each model in the chunk:
+    label:       "<model>"                     if NOT in CLAUDE_DEFAULT_IDS
+                 "★ <model> (recommended)"     if in CLAUDE_DEFAULT_IDS
+    description: "отдельный независимый ревьюер на этой модели"
+```
+
+Collect the selections across pages into `SELECTED_CLAUDE_MODELS`.
+
+<!-- SYNC: the fallback rule below is ONE rule living in four places — Step 0's "list absent/empty" bullet in this file, and `skills/mesh-design-review/SKILL.md` Step 5.1 / Step 5.2.5. Change all four or none. -->
+**Empty selection is not an error.** It falls back to exactly one reviewer named `claude` on `DISPATCH_MODEL`/session model — identical to the `HAS_CLAUDE_MODELS=0` case. Do not re-ask and do not STOP.
+
+Each selected model becomes an independent reviewer with the same diff and the same prompt — the point is model diversity, so never differentiate their prompts.
+
 ## Step 2.5 (Q1.5): Confirm reviewer-type selection
 
-Mirror Step 3.5 (model confirmation): after Q1 answer, show the full SELECTED_TYPES list (one per line) and ask:
+Mirror Step 3.5 (model confirmation): after Q1 (and Step 2.4, when it ran), show the full SELECTED_TYPES list (one per line) and ask. **Expand `claude` in that list into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case — the user must see how many Claude reviewers they are about to pay for.
 
 ```
 header: "Подтверди"
 question: "Использовать эти reviewer-типы? <bullet list of SELECTED_TYPES>"
 options:
   - "Да, использовать как выбрано"
-  - "Нет, выбрать заново" — re-runs Q1 (cap 3 attempts; on the 4th attempt, surface STOP "пользователь не подтвердил выбор reviewer-типов")
+  - "Нет, выбрать заново" — re-runs Q1 **and** Step 2.4, dropping the current SELECTED_CLAUDE_MODELS (cap 3 attempts; on the 4th attempt, surface STOP "пользователь не подтвердил выбор reviewer-типов")
   - "Отмена" — exits command cleanly (no executors dispatched)
 ```
 
@@ -144,21 +209,23 @@ Since AskUserQuestion lacks preSelected, the recommended choice gets a "(Recomme
 
 ## Step 5a: Background tasks mode
 
-**Before dispatch — stamp the delegation window (Step 6.0 guard needs it).** Via a Bash tool call, record `DISPATCH_EPOCH=$(date +%s)` and keep the number. Also remember the list of *wrapper* reviewers being dispatched as `engine:model` pairs: `codex`→`codex:-`, `gemini`→`gemini:-`, each selected model id→`ext-claude:<id>`. The builtin `claude` / `general-purpose` reviewer is NOT a wrapper (it reviews inline by design) — exclude it from this list.
+**Before dispatch — stamp the delegation window (Step 6.0 guard needs it).** Via a Bash tool call, record `DISPATCH_EPOCH=$(date +%s)` and keep the number. Also remember the list of *wrapper* reviewers being dispatched as `engine:model` pairs: `codex`→`codex:-`, `gemini`→`gemini:-`, each selected model id→`ext-claude:<id>`. The builtin `claude` / `general-purpose` reviewers — there may now be several, one per Claude model — are NOT wrappers (they review inline by design). Exclude all of them from this list.
 
 Launch all selected reviewers via Task tool, each `run_in_background: true`, in ONE message:
 
-**Dispatch model:** if `DISPATCH_MODEL` (resolved in Step 0 for `default` mode, or Step 1 for interactive) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch below. If it is empty, omit `model:` so each reviewer inherits this session's model. This applies to the builtin `claude` reviewer dispatch too.
+**Dispatch model:** if `DISPATCH_MODEL` (resolved in Step 0 for `default` mode, or Step 1 for interactive) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch below. If it is empty, omit `model:` so each reviewer inherits this session's model.
+
+**Exception — claude reviewers with an explicit model.** When Step 2.4 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL`. Running the review on a chosen model is the whole point; letting `DISPATCH_MODEL` win here would collapse every claude reviewer onto one model and fake the independence. `DISPATCH_MODEL` still governs the codex / gemini / ext-claude wrappers, and the single fallback `claude` reviewer.
 
 For each builtin reviewer:
-- claude: `subagent_type: "general-purpose"` (built-in — NOT namespaced), prompt invokes `superpowers:requesting-code-review` skill
+- claude: `subagent_type: "general-purpose"` (built-in — NOT namespaced), prompt invokes `superpowers:requesting-code-review` skill. **One Task per entry of `SELECTED_CLAUDE_MODELS`**, each carrying `model: "<entry>"`; in the fallback case exactly one Task per the Dispatch-model rule above. All of them get the same prompt — only the model differs.
 - codex: `subagent_type: "claude-mesh:codex-code-reviewer"`, prompt: `Review the changes for production readiness`
 - gemini: `subagent_type: "claude-mesh:gemini-code-reviewer"`, prompt: `Review the changes for production readiness`
 
 For each selected model id:
 - `subagent_type: "claude-mesh:ext-claude-code-reviewer"`, prompt: `MODEL=<id> Review the changes for production readiness`
 
-**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / ext-claude reviewers are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own Claude model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (Only the builtin `claude` / `general-purpose` reviewer reviews directly.)
+**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / ext-claude reviewers are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own Claude model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (Only the builtin `claude` / `general-purpose` reviewers review directly.)
 
 Display:
 ```
@@ -178,13 +245,13 @@ When each agent completes, read its output. After all agents finish (or the user
 3. **When a run is finalized but its wrapper has not delivered a report — SendMessage that wrapper:** `your external run finished — read its output.txt, extract the findings and send your report`. A pinged wrapper answers promptly. **Ping once per finalized run** — track who was already pinged and re-ping only if a wrapper is still silent after the next poll interval (~60–90 s), so a wrapper whose answer is already in flight is not spammed.
 4. **Repeat** until every dispatched wrapper has reported or the watch budget expires; whatever is still silent lands in Step 6.0, which classifies it mechanically. Never interpret wrapper silence as "no findings".
 
-The builtin `claude` reviewer is exempt: it reviews inline and completes on its own.
+The builtin `claude` reviewers are exempt: they review inline, create no `runs/<engine>/…` dir and complete on their own. Never wait for a run dir for them and never ping them.
 
 ## Step 5b: Team of reviewers mode
 
-1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewer) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
-2. Create one task per selected reviewer
-3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task. The Step 5a **Dispatch model** rule also applies here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it.
+1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewers — all of them) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
+2. Create one task per selected reviewer — with several Claude models selected that means one task per Claude model (`claude:opus`, `claude:fable`), not one shared `claude` task
+3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task. The Step 5a **Dispatch model** rule *and its claude exception* also apply here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it — except the claude teammates, which each carry their own `model:` from `SELECTED_CLAUDE_MODELS`.
 4. Wait for completion → Step 6. Teammate wrappers idle exactly like the Step 5a background ones — run the same disk-watch + ping loop from Step 5a to collect their reports
 5. Shut down team
 
@@ -209,7 +276,7 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 **Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned. The inverse failure also exists: a wrapper whose run is `REAL` on disk but which never sent a report is not a flip — it is idle (wrappers do not wake when their background run finishes); ping it per the Step 5a watch loop to collect the report before classifying.
 
-The builtin `claude` / `general-purpose` reviewer is **skipped here** — it reviews inline by design and is always accepted into Step 6.1.
+The builtin `claude` / `general-purpose` reviewers (one per selected Claude model, or a single fallback one) are **skipped by the guard** — they review inline by design and are always accepted into Step 6.1. `verify-delegation.sh` is never invoked for them.
 
 **1. Locate the loader, data dir, and guard:**
 ```bash
@@ -242,10 +309,23 @@ Verdicts:
 ```
 | Reviewer            | Verdict | Action          |
 |---------------------|---------|-----------------|
+| claude:opus         | INLINE  | ✅ по построению |
+| claude:fable        | INLINE  | ✅ по построению |
 | ext-claude/zai/glm  | REAL    | ✅ kept          |
 | codex               | FLIP    | ↻ re-dispatch   |
 | ext-claude/ollama/… | BROKEN  | ✗ dropped       |
 ```
+
+`INLINE` is a label **you** write, not a `verify-delegation.sh` verdict. Include one row per claude reviewer (a single row named `claude` in the fallback case) so the table is the complete roster of who actually reviewed — with several Claude models in play, a table that silently omits them understates the cross-validation.
+
+**`INLINE` is for a claude reviewer that actually returned a review.** If its Task errored — the overwhelmingly likely cause being a `claude_models` entry this Claude Code build does not accept — give it a `FAILED` row instead and contribute nothing from it to Step 6.1:
+
+| Reviewer     | Verdict | Action                          |
+|--------------|---------|---------------------------------|
+| claude:opus  | INLINE  | ✅ по построению                 |
+| claude:opuss | FAILED  | ✗ dispatch failed — no findings |
+
+Then continue with the remaining reviewers, per the existing rule "One agent fails, others succeed". Do **NOT** stop the whole review, and do **NOT** silently re-dispatch that reviewer on a different model: a failed dispatch is the *only* signal that a model name is wrong (design §13 — there is no way to verify after the fact which model a subagent really ran on), and quietly substituting another model destroys it. The user asked for N independent models and must be able to see they got N-1.
 
 **4. Auto-redispatch loop (max `N` rounds; `N` = `runtime.max_redispatch`, default 1):**
 
@@ -261,7 +341,7 @@ Verdicts:
 - `REAL` reviewers → their reviews enter Step 6.1 (dedupe/classify) as normal.
 - Reviewers still `FLIP`/`STALLED` after `N` rounds → **EXCLUDE from cross-validation** and record in the Step 6.6 summary: `⚠ <reviewer> did not delegate after N attempts — NOT counted as external review (self-review on the session model / killed mid-flight)`.
 - `BROKEN` reviewers → record: `⚠ <reviewer>: external engine produced no usable review (broken — ask the user to swap the model in config.yaml; agents never edit it)`.
-- The builtin `claude` reviewer's findings always enter Step 6.1.
+- The builtin `claude` reviewers' findings always enter Step 6.1 — every one of them, one entry per selected Claude model (or the single fallback reviewer).
 
 **Do NOT silently accept a FLIP as an external review.** A flipped wrapper is the session's model reviewing its own work; counting it as independent cross-validation is the exact failure this guard exists to prevent.
 
@@ -269,7 +349,7 @@ Verdicts:
 
 ### Step 6.1: Deduplicate, Verify, and Classify
 
-1. **Deduplicate:** If multiple agents found the same issue (same file, same problem), merge into one entry. Note all agents that found it.
+1. **Deduplicate:** If multiple agents found the same issue (same file, same problem), merge into one entry. Note all agents that found it. Claude reviewers are attributed as `claude:<model>` (`claude:opus`, `claude:fable`); a single fallback reviewer is just `claude`. Two different Claude models reporting the same issue is corroboration — exactly like codex and ext-claude agreeing — so merge them into one entry that lists both, never collapse them into a nameless "claude".
 
 2. **Verify each issue against the codebase:** read the code at the reported location.
    - Is the issue real?
