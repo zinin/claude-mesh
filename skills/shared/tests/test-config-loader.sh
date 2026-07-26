@@ -942,6 +942,82 @@ assert_exit "treats 'claude: {}' as no catalog, not as an error" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
 
+# === Test 48: defaults.<preset>.claude_models validation ===
+# Membership mirrors defaults.*.models ⊂ models[].id. The "claude missing from builtin"
+# rule is fail-closed on purpose: a silently ignored claude_models list is exactly the
+# bug this feature fixes in mesh-design-review, so it must never be introduced here.
+echo "=== Test 48: defaults.claude_models validation ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+CATALOG=$(printf 'claude:\n  models: [opus, fable]\n')
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: opus\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a scalar claude_models" "1" "$RC"
+assert_stderr_contains "explains the list requirement" "claude_models: must be a list" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, sonnet]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a model absent from the catalog" "1" "$RC"
+assert_stderr_contains "names the unknown model" 'unknown claude model "sonnet"' "$ERR"
+
+# No catalog at all: every entry is "unknown", and the message must point at the catalog.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects claude_models with no claude.models catalog" "1" "$RC"
+assert_stderr_contains "points at the catalog" "claude.models catalog" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [codex]\n    claude_models: [opus]\ncodex:\n  model: gpt-5.5\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects claude_models without claude in builtin" "1" "$RC"
+assert_stderr_contains "names the missing builtin entry" 'is missing from defaults.code_review.builtin' "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate claude_models entry" "1" "$RC"
+assert_stderr_contains "names the duplicate" 'duplicate model "opus"' "$ERR"
+
+# Element type gate. Without it `jq -r` stringifies the value and the membership test
+# compares that string, so a catalog of ["5","true"] would accept a preset of [5, true].
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: ["5", "true"]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [5, true]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects non-string claude_models entries" "1" "$RC"
+assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
+
+# The empty-string entry is the sharp one: `tr '\n' ' '` makes $claude_catalog a single
+# space when there is no catalog, so " $claude_catalog " is "  " and the glob *"  "*
+# MATCHES an empty $cmv — the entry sails through membership with no catalog at all.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [""]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects an empty claude_models entry (no catalog)" "1" "$RC"
+assert_stderr_contains "names it as empty, not as unknown" "empty value" "$ERR"
+
+# design_review is validated by the same loop.
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  design_review:\n    builtin: [claude]\n    claude_models: [sonnet]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "applies the same rules to design_review" "1" "$RC"
+assert_stderr_contains "names the design_review preset" "defaults.design_review.claude_models" "$ERR"
+
+# Happy path: catalog wider than the presets, presets differing from each other.
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, sonnet, fable]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, fable]\n  design_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts differing per-preset subsets of a wider catalog" "0" "$RC"
+# The double call is now real: validate_all calls validate_claude directly and
+# validate_defaults calls it again. A `warn` added inside it would print twice with
+# nothing catching it, so pin the silence.
+if [ ! -s "$ERR" ]; then
+    PASS=$((PASS+1)); echo "  PASS: a valid catalog + presets produce no stderr (validate_claude stays side-effect-free under its double call)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: expected empty stderr, got:"; sed 's/^/      /' "$ERR"
+fi
+
+# Back-compat: claude in builtin with NO claude_models stays valid (fallback = 1 reviewer).
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts builtin claude with no claude_models" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

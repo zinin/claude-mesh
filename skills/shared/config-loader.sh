@@ -395,6 +395,22 @@ validate_defaults() {
         return 0
     fi
 
+    # claude_models entries are checked against the claude.models catalog below, so the
+    # catalog must be a well-formed list FIRST. validate_claude is cheap and idempotent
+    # (validate_all calls it directly too, and it MUST stay side-effect-free for that
+    # reason — see its own header).
+    #
+    # It also guards the VERY NEXT LINE: on a scalar section such as `claude: false`,
+    # `jq -r '(.claude.models // [])[]'` dies with "Cannot index boolean with string",
+    # and cmd_get_defaults — which runs ONLY this validator, per the typed-getter
+    # principle — would surface that raw jq noise instead of a clean message. (Note the
+    # protection stops there: cmd_get_defaults itself only ever indexes
+    # `.defaults.<category>.*` and never touches `.claude`.)
+    validate_claude
+
+    local claude_catalog
+    claude_catalog=$(jq -r '(.claude.models // [])[]' "$CONFIG_JSON" | tr '\n' ' ')
+
     local has_codex has_gemini
     has_codex=$(jq -e '.codex' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0)
     has_gemini=$(jq -e '.gemini' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0)
@@ -459,6 +475,66 @@ validate_defaults() {
                 *) die "defaults.$preset.models[$m]: unknown model \"$mid\"" ;;
             esac
             m=$((m+1))
+        done
+
+        # claude_models entries — the built-in claude reviewer fanned out over several
+        # Claude models. Same shape as the models[] check above: type gate, membership in
+        # the catalog, no duplicates.
+        local cmtype
+        cmtype=$(jq -r ".defaults.$preset.claude_models | type" "$CONFIG_JSON")
+        case "$cmtype" in
+            array|null) ;;
+            *) die "defaults.$preset.claude_models: must be a list, got $cmtype" ;;
+        esac
+
+        local cm_count
+        # No `|| echo 0` fallback: the type gate above already rejects everything except
+        # array and null, and `null | length` is 0 in jq with rc=0 — not an error. A
+        # fallback here would be dead code suggesting a failure mode that cannot occur.
+        cm_count=$(jq ".defaults.$preset.claude_models | length" "$CONFIG_JSON")
+        if [ "$cm_count" -gt 0 ]; then
+            # Fail closed: a claude_models list with no "claude" in builtin is almost
+            # certainly a typo, and a SILENTLY IGNORED list is exactly the bug this
+            # feature fixes in mesh-design-review. Never repeat it here.
+            local claude_in_builtin
+            claude_in_builtin=$(jq "[(.defaults.$preset.builtin // [])[] | select(. == \"claude\")] | length" "$CONFIG_JSON")
+            [ "$claude_in_builtin" -gt 0 ] \
+                || die "defaults.$preset.claude_models is set but \"claude\" is missing from defaults.$preset.builtin (add \"claude\" to builtin, or drop claude_models)"
+        fi
+
+        local c=0
+        local seen_cm=""
+        while [ "$c" -lt "$cm_count" ]; do
+            local cmetype cmv
+            # Element type gate — same check validate_claude does on the catalog. Without
+            # it `jq -r` stringifies a number/boolean/null and the membership test below
+            # compares that string, so a catalog of ["5","true"] would accept a preset of
+            # [5, true]. Unquoted `[true]`/`[false]` DO parse as booleans and land here;
+            # `[yes]`/`[no]`/`[on]`/`[off]` do NOT — under kislyuk-yq those are the STRINGS
+            # "yes"/"no"/"on"/"off", so the membership check below is what reports them.
+            # Same behaviour the note at validate_codex records, empirically locked by Test 45.
+            cmetype=$(jq -r ".defaults.$preset.claude_models[$c] | type" "$CONFIG_JSON")
+            [ "$cmetype" = "string" ] \
+                || die "defaults.$preset.claude_models[$c]: must be a string (got $cmetype) — quote it, e.g. - \"opus\""
+            cmv=$(jq -r ".defaults.$preset.claude_models[$c]" "$CONFIG_JSON")
+            # MUST precede the membership test. `tr '\n' ' '` leaves $claude_catalog
+            # holding a single space when there is no catalog, so " $claude_catalog "
+            # is "  " — and an empty $cmv makes the glob *"  "* match, silently
+            # ACCEPTING an empty entry even with no catalog at all. validate_models has
+            # the same guard for the same reason (`[ -n "$id" ] || die`, :215).
+            [ -n "$cmv" ] || die "defaults.$preset.claude_models[$c]: empty value"
+            # Quoted case-membership (glob/word-split safe), same idiom as the models[]
+            # check above. An absent catalog makes $claude_catalog empty, so every entry
+            # lands here — hence the "add it to the claude.models catalog" hint.
+            case " $claude_catalog " in
+                *" $cmv "*) ;;
+                *) die "defaults.$preset.claude_models[$c]: unknown claude model \"$cmv\" (add it to the claude.models catalog)" ;;
+            esac
+            case " $seen_cm " in
+                *" $cmv "*) die "defaults.$preset.claude_models[$c]: duplicate model \"$cmv\"" ;;
+            esac
+            seen_cm="$seen_cm $cmv"
+            c=$((c+1))
         done
 
         # run_mode (only for code_review)
