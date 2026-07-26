@@ -4,7 +4,7 @@
 
 **Goal:** Allow `/claude-mesh:mesh-review` and `/claude-mesh:mesh-design-review` to launch several independent built-in Claude reviewers, each on a different Claude model (e.g. `opus` and `fable`), instead of exactly one reviewer pinned to the global `runtime.dispatch_model`.
 
-**Architecture:** A new optional `claude:` config section holds a catalog of Claude model aliases; a new per-preset key `defaults.<preset>.claude_models` holds the default selection. `config-loader.sh` validates both and exposes them through two new subcommands plus one extended getter. The two orchestrators (`commands/mesh-review.md`, `skills/mesh-design-review/SKILL.md`) read the catalog, offer a selection page in the interactive UI, and dispatch one `general-purpose` subagent per selected model with an explicit `model:` override. When no Claude models are configured or selected, behaviour is byte-for-byte what it is today: one reviewer on `dispatch_model` (or on the session model).
+**Architecture:** A new optional `claude:` config section holds a catalog of Claude model aliases; a new per-preset key `defaults.<preset>.claude_models` holds the default selection. `config-loader.sh` validates both and exposes them through two new subcommands plus one extended getter. The two orchestrators (`commands/mesh-review.md`, `skills/mesh-design-review/SKILL.md`) read the catalog, offer a selection page in the interactive UI, and dispatch one `general-purpose` subagent per selected model with an explicit `model:` override. When no Claude models are configured or selected, the *review behaviour* is what it is today: one reviewer on `dispatch_model` (or on the session model). "Byte-for-byte" would be too strong a claim — the `get-defaults` JSON gains a `claude_models` key, the Step 1 / Step 5.0 shell transcripts gain two echoed variables, the Step 6.0 roster gains a row, and `config.example.yaml` changes `design_review.builtin` (that last one is the intended bug fix, and it only affects users who re-copy the example). What is guaranteed is narrower and is the part that matters: **an existing `config.yaml` with no `claude:` section dispatches the same number of claude reviewers, on the same model, as before.**
 
 **Tech Stack:** bash 4+ (`config-loader.sh`, test harness), `jq`, Python-yq (`kislyuk/yq`), Claude Code plugin markdown (commands and skills are prompts, not code).
 
@@ -19,10 +19,17 @@
 - **Agents never edit `config.yaml`.** Validation errors are surfaced to the user verbatim.
 - **`skills/shared/verify-delegation.sh` is not modified** and is never called for a Claude reviewer.
 - **`runtime.dispatch_model` keeps its current meaning** for codex/gemini/ext-claude wrappers, the `review-discussion` agent and `/do-plan` subagents.
-- **Full test suite must end green after every task:** `bash skills/shared/tests/test-config-loader.sh` → last line `=== Summary: N passed, 0 failed ===`, exit 0.
+- **Full test suite must end green after every task:** `bash skills/shared/tests/test-config-loader.sh` → last line `=== Summary: N passed, 0 failed ===`, exit 0. Baseline before this change: `180 passed, 0 failed`.
+- **Never assert an exit code through a pipe.** `bash …test-config-loader.sh | tail -20` returns *tail's* status, so "exit 0" / "the script exits 1" is unobservable that way — `( exit 1 ) | tail -1; echo $?` prints `0`. Where a step below pipes the suite into `sed`/`tail` for readability, that is a *display* convenience only. When the exit code is the thing being checked, run it unpiped and capture rc, or prefix `set -o pipefail`.
 - **One commit per task. Never push.** Branch is `feature/multi-model-claude-reviewers` (already created, spec committed as `782ebd0`).
 - **`subagent_type: "general-purpose"` is a BUILT-IN agent type — not `claude-mesh:`-namespaced.** Plugin agent types are namespaced; this one is not.
 - Line numbers in this plan are as of commit `782ebd0`. If an anchor moved, locate it by the quoted text, not by the number.
+- **The fallback rule is written four times — keep the four texts word-identical.** It appears in `commands/mesh-review.md` Step 0 and Step 2.4, and in `skills/mesh-design-review/SKILL.md` Step 5.1 and Step 5.2.5. The canonical wording is the Step 0 one:
+
+  > list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`, which **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
+  > list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model).
+
+  Three lexical variants of one rule is a real hazard here: these files are instructions for an LLM, which has no way to tell "differently worded" from "deliberately different". Above each of the four blocks put a marker naming its siblings, e.g. `<!-- SYNC: same rule in skills/mesh-design-review/SKILL.md Step 5.1 / 5.2.5 -->`, so the next editor changes all four or none.
 
 ---
 
@@ -90,6 +97,14 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a leading-dash catalog entry" "1" "$RC"
 assert_stderr_contains "names the charset rule" "claude.models\[0\]: must start with" "$ERR"
 
+# A space INSIDE the value. Unquoted YAML flow style makes this easy to write by accident
+# (`models: [opus, claude fable]` is two entries, the second with a space), and an entry
+# with a space would be word-split by the membership globs downstream.
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, "claude fable"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a catalog entry containing a space" "1" "$RC"
+assert_stderr_contains "names the charset rule for the space" "claude.models\[1\]" "$ERR"
+
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable, opus]\n'; } > "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate catalog entry" "1" "$RC"
@@ -109,6 +124,14 @@ assert_exit "validate exits zero on empty 'claude:' key (null = absent)" "0" "$R
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on an empty claude.models list" "0" "$RC"
 
+# A mapping with no models key at all. `.claude.models | type` is "null" here, so this is
+# deliberately equivalent to "no section" — UNLIKE codex:/gemini:, where a section missing
+# its `model:` key is a hard error. Pinned by a test so a future maintainer does not
+# "restore" the missing check.
+{ printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "treats 'claude: {}' as no catalog, not as an error" "0" "$RC"
+
 rm -rf "$TDIR" "$ERR"
 ```
 
@@ -124,6 +147,12 @@ In `skills/shared/config-loader.sh`, insert this function between the closing `}
 
 ```bash
 validate_claude() {
+    # MAY BE CALLED SEVERAL TIMES per loader invocation — validate_all calls it directly,
+    # and validate_defaults calls it again before its catalog membership check. It must
+    # therefore stay SIDE-EFFECT-FREE: no warn to stderr, no state, nothing a user would
+    # see twice. (validate_codex does warn about reasoning_level; do not copy that here
+    # without first making the call sites idempotent.)
+    #
     # Type-dispatch gate, same class as validate_codex/validate_gemini (fix wave 5):
     # a scalar `claude:` section must die cleanly instead of crashing the getters with
     # a raw jq "Cannot index boolean" (rc=5). null — key absent or an explicitly empty
@@ -272,6 +301,21 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate claude_models entry" "1" "$RC"
 assert_stderr_contains "names the duplicate" 'duplicate model "opus"' "$ERR"
 
+# Element type gate. Without it `jq -r` stringifies the value and the membership test
+# compares that string, so a catalog of ["5","true"] would accept a preset of [5, true].
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: ["5", "true"]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [5, true]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects non-string claude_models entries" "1" "$RC"
+assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
+
+# The empty-string entry is the sharp one: `tr '\n' ' '` makes $claude_catalog a single
+# space when there is no catalog, so " $claude_catalog " is "  " and the glob *"  "*
+# MATCHES an empty $cmv — the entry sails through membership with no catalog at all.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [""]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects an empty claude_models entry (no catalog)" "1" "$RC"
+assert_stderr_contains "names it as empty, not as unknown" "empty value" "$ERR"
+
 # design_review is validated by the same loop.
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  design_review:\n    builtin: [claude]\n    claude_models: [sonnet]\n'; } > "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
@@ -319,9 +363,15 @@ validate_defaults() {
 
     # claude_models entries are checked against the claude.models catalog below, so the
     # catalog must be a well-formed list FIRST. validate_claude is cheap and idempotent
-    # (validate_all calls it directly too); calling it here is what keeps cmd_get_defaults
-    # — which runs ONLY this validator, per the typed-getter principle (iter-2
-    # CONCERN-2/3) — from indexing a scalar `claude:` section with raw jq.
+    # (validate_all calls it directly too, and it MUST stay side-effect-free for that
+    # reason — see its own header).
+    #
+    # It also guards the VERY NEXT LINE: on a scalar section such as `claude: false`,
+    # `jq -r '(.claude.models // [])[]'` dies with "Cannot index boolean with string",
+    # and cmd_get_defaults — which runs ONLY this validator, per the typed-getter
+    # principle — would surface that raw jq noise instead of a clean message. (Note the
+    # protection stops there: cmd_get_defaults itself only ever indexes
+    # `.defaults.<category>.*` and never touches `.claude`.)
     validate_claude
 
     local claude_catalog
@@ -356,7 +406,10 @@ and replace it with:
         esac
 
         local cm_count
-        cm_count=$(jq ".defaults.$preset.claude_models | length" "$CONFIG_JSON" 2>/dev/null || echo 0)
+        # No `|| echo 0` fallback: the type gate above already rejects everything except
+        # array and null, and `null | length` is 0 in jq with rc=0 — not an error. A
+        # fallback here would be dead code suggesting a failure mode that cannot occur.
+        cm_count=$(jq ".defaults.$preset.claude_models | length" "$CONFIG_JSON")
         if [ "$cm_count" -gt 0 ]; then
             # Fail closed: a claude_models list with no "claude" in builtin is almost
             # certainly a typo, and a SILENTLY IGNORED list is exactly the bug this
@@ -364,14 +417,28 @@ and replace it with:
             local claude_in_builtin
             claude_in_builtin=$(jq "[(.defaults.$preset.builtin // [])[] | select(. == \"claude\")] | length" "$CONFIG_JSON")
             [ "$claude_in_builtin" -gt 0 ] \
-                || die "defaults.$preset.claude_models is set but \"claude\" is missing from defaults.$preset.builtin"
+                || die "defaults.$preset.claude_models is set but \"claude\" is missing from defaults.$preset.builtin (add \"claude\" to builtin, or drop claude_models)"
         fi
 
         local c=0
         local seen_cm=""
         while [ "$c" -lt "$cm_count" ]; do
-            local cmv
+            local cmetype cmv
+            # Element type gate — same check validate_claude does on the catalog. Without
+            # it `jq -r` stringifies a number/boolean/null and the membership test below
+            # compares that string, so a catalog of ["5","true"] would accept a preset of
+            # [5, true]. It also catches the YAML 1.1 trap: an unquoted `[yes]` parses as
+            # a boolean, and the resulting `unknown claude model "true"` is baffling.
+            cmetype=$(jq -r ".defaults.$preset.claude_models[$c] | type" "$CONFIG_JSON")
+            [ "$cmetype" = "string" ] \
+                || die "defaults.$preset.claude_models[$c]: must be a string (got $cmetype) — quote it, e.g. - \"opus\""
             cmv=$(jq -r ".defaults.$preset.claude_models[$c]" "$CONFIG_JSON")
+            # MUST precede the membership test. `tr '\n' ' '` leaves $claude_catalog
+            # holding a single space when there is no catalog, so " $claude_catalog "
+            # is "  " — and an empty $cmv makes the glob *"  "* match, silently
+            # ACCEPTING an empty entry even with no catalog at all. validate_models has
+            # the same guard for the same reason (`[ -n "$id" ] || die`, :215).
+            [ -n "$cmv" ] || die "defaults.$preset.claude_models[$c]: empty value"
             # Quoted case-membership (glob/word-split safe), same idiom as the models[]
             # check above. An absent catalog makes $claude_catalog empty, so every entry
             # lands here — hence the "add it to the claude.models catalog" hint.
@@ -446,6 +513,13 @@ if [ ! -s "$TDIR/out" ]; then PASS=$((PASS+1)); echo "  PASS: list-claude-models
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: []\n'; } > "$TDIR/config.yaml"
 GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
 if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 on an empty list"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+
+# A mapping with no models key — same "no catalog" semantics as an absent section.
+{ printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 for 'claude: {}'"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
+assert_exit "list-claude-models exits 0 for 'claude: {}'" "0" "$RC"
 
 { printf '%s\n' "$BASE"; printf 'claude: false\n'; } > "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models >/dev/null 2>"$ERR"; RC=$?
@@ -840,14 +914,28 @@ echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
 Insert this whole section immediately BEFORE the `## Step 2.5 (Q1.5): Confirm reviewer-type selection` heading:
 
 ```markdown
-## Step 2.4 (Q1.6): Claude-model selection
+## Step 2.4: Claude-model selection
+
+(No `Q1.x` label: this page runs *before* Step 2.5, so numbering it `Q1.6` ahead of Step 2.5's `Q1.5` reads as an ordering error. The step number alone is unambiguous.)
 
 Runs ONLY when Q1 selected `claude` **and** `HAS_CLAUDE_MODELS=1`.
 
 - `claude` NOT selected in Q1 → skip this step entirely; **no claude reviewer runs at all**, whatever the catalog holds.
 - `claude` selected but `HAS_CLAUDE_MODELS=0` → skip this step; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty).
 
-Build `CLAUDE_DEFAULT_IDS` from the preset: `"$LOADER" get-defaults code_review | jq -r '.claude_models[]?'`.
+Build `CLAUDE_DEFAULT_IDS` from the preset — **rc-aware, and never through a pipe**:
+
+```bash
+# This is the FIRST get-defaults call on the interactive path, so it is the first thing
+# that runs validate_defaults — which means a bad `claude_models` surfaces exactly here.
+# `"$LOADER" get-defaults … | jq …` would take its status from jq and swallow the new
+# fail-closed guard (rc=1) entirely, turning a hard error into an empty list.
+CD_ERR=$(mktemp)
+CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CD_ERR") \
+    || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CD_ERR" >&2; rm -f "$CD_ERR"; exit 1; }
+rm -f "$CD_ERR"
+CLAUDE_DEFAULT_IDS=$(echo "$CR_DEFAULTS" | jq -r '.claude_models[]?')
+```
 
 For each chunk of 4 entries from `CLAUDE_MODELS` (in config order) — same pagination mechanics as Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API):
 
@@ -880,7 +968,7 @@ with:
 Mirror Step 3.5 (model confirmation): after Q1 (and Step 2.4, when it ran), show the full SELECTED_TYPES list (one per line) and ask. **Expand `claude` in that list into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case — the user must see how many Claude reviewers they are about to pay for.
 ```
 
-and, in the same block, change the "Нет, выбрать заново" option description from `re-runs Q1` to `re-runs Q1 **and** Step 2.4`.
+and, in the same block, change the "Нет, выбрать заново" option description from `re-runs Q1` to `re-runs Q1 **and** Step 2.4, dropping the current SELECTED_CLAUDE_MODELS`. The explicit drop matters: the neighbouring model-confirmation step already spells out "drops current SELECTED_IDS", and without the same wording here a stale Claude selection can survive a re-select and get dispatched after the user thought they had cleared it.
 
 - [ ] **Step 5: Fan out the dispatch (Step 5a) and keep the wrapper list correct**
 
@@ -958,6 +1046,14 @@ with:
 The Step 5a **Dispatch model** rule *and its claude exception* also apply here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it — except the claude teammates, which each carry their own `model:` from `SELECTED_CLAUDE_MODELS`.
 ```
 
+**5g.** Still in Step 5b, item **1** carries the same singular and Step 5f does NOT touch it. Replace
+
+`**Keep \`DISPATCH_EPOCH\`** and the same \`engine:model\` wrapper list as Step 5a (excluding the builtin \`claude\` reviewer) — Step 6.0's guard needs both.`
+
+with
+
+`**Keep \`DISPATCH_EPOCH\`** and the same \`engine:model\` wrapper list as Step 5a (excluding the builtin \`claude\` reviewers — all of them) — Step 6.0's guard needs both.`
+
 - [ ] **Step 6: Put the claude reviewers into the Step 6.0 roster**
 
 **6a.** Replace the exemption sentence at `:212`:
@@ -990,6 +1086,14 @@ and add below it:
 `INLINE` is a label **you** write, not a `verify-delegation.sh` verdict. Include one row per claude reviewer (a single row named `claude` in the fallback case) so the table is the complete roster of who actually reviewed — with several Claude models in play, a table that silently omits them understates the cross-validation.
 ```
 
+**6c.** Further down Step 6.0 ("Finalize") the same singular survives and no other edit reaches it. Replace
+
+`- The builtin \`claude\` reviewer's findings always enter Step 6.1.`
+
+with
+
+`- The builtin \`claude\` reviewers' findings always enter Step 6.1 — every one of them, one entry per selected Claude model (or the single fallback reviewer).`
+
 - [ ] **Step 7: Attribute findings per Claude model (Step 6.1)**
 
 In Step 6.1, replace point 1:
@@ -1013,12 +1117,22 @@ grep -c 'claude_models\|SELECTED_CLAUDE_MODELS\|HAS_CLAUDE_MODELS\|claude:<model
 grep -n 'Step 2.4' commands/mesh-review.md
 grep -n 'This applies to the builtin `claude` reviewer dispatch too' commands/mesh-review.md
 grep -n 'is exempt: it reviews inline' commands/mesh-review.md
+grep -n 'excluding the builtin `claude` reviewer)' commands/mesh-review.md
+grep -n "builtin \`claude\` reviewer's findings" commands/mesh-review.md
 ```
 
 Expected:
 - first command prints a count `>= 12`
 - second prints at least 3 hits (the section heading plus the references from Steps 2.5 and 5a)
-- third and fourth print **nothing** (both stale singular sentences are gone)
+- third through sixth print **nothing** — all four stale singular sentences are gone. The last two greps exist because the earlier pattern set matched neither `:185` nor `:264`, which is exactly how both were missed in the first place: a checklist that cannot fail on a defect is not a checklist.
+
+Belt-and-braces — this catches any singular the four patterns above still miss:
+
+```bash
+grep -n 'builtin `claude`' commands/mesh-review.md | grep -v 'reviewers'
+```
+
+Expected: **nothing**. Every surviving mention must be plural (or explicitly scoped to the single fallback reviewer).
 
 Then read the file once end-to-end and confirm the checklist:
 1. Step 0 expands `claude` over `.claude_models` with the documented fallback.
@@ -1034,7 +1148,7 @@ Then read the file once end-to-end and confirm the checklist:
 - [ ] **Step 9: Run the loader suite (regression guard) and commit**
 
 ```bash
-bash skills/shared/tests/test-config-loader.sh | tail -3
+bash skills/shared/tests/test-config-loader.sh > /tmp/suite.out 2>&1; RC=$?; tail -3 /tmp/suite.out; echo "rc=$RC"
 git add commands/mesh-review.md
 git commit -m "feat(mesh-review): fan the builtin claude reviewer out over several models"
 ```
@@ -1056,7 +1170,27 @@ Expected: the suite still ends `=== Summary: N passed, 0 failed ===`.
 
 - [ ] **Step 1: Read the catalog (Step 5.0)**
 
-In the Step 5.0 bash fence, after
+**1a. Make the existing `DEFAULTS_JSON` read rc-aware first.** In the Step 5.0 fence, replace
+
+```bash
+DEFAULTS_JSON=$("$LOADER" get-defaults design_review)   # {"builtin":[...],"models":[...],"run_mode":null}
+```
+
+with
+
+```bash
+# rc-aware, like the dispatch_model read below. A bare $() swallows the loader exit code
+# (the fence says so 14 lines above, for has_codex) — and get-defaults is what runs
+# validate_defaults, so the new fail-closed claude_models guard reports through THIS call.
+# Swallowed, it leaves DEFAULTS_JSON empty and Step 5.1 then STOPs with the misleading
+# "defaults.design_review not configured" instead of the real validation error.
+DJ_ERR=$(mktemp)
+DEFAULTS_JSON=$("$LOADER" get-defaults design_review 2>"$DJ_ERR") \
+    || { echo "config.yaml невалиден (defaults.design_review):" >&2; cat "$DJ_ERR" >&2; rm -f "$DJ_ERR"; exit 1; }
+rm -f "$DJ_ERR"   # {"builtin":[...],"claude_models":[...],"models":[...],"run_mode":null}
+```
+
+**1b.** In the Step 5.0 bash fence, after
 
 ```bash
 rm -f "$DM_ERR"
@@ -1139,7 +1273,7 @@ and replace the parenthetical paragraph below it:
 with:
 
 ```markdown
-(Show the codex / gemini / external-models options only when their gating flag is `1`. The `claude` option is shown unconditionally — the built-in claude reviewer is your own Claude Code and needs no config section, so the old "нет доступных reviewer-типов" STOP is unreachable and has been removed.) If "external models" is not selected → skip Step 5.3 entirely. If `claude` is not selected → skip Step 5.2.5 and run no claude reviewer at all.
+(Show the codex / gemini / external-models options only when their gating flag is `1`. The `claude` option is shown unconditionally — the built-in claude reviewer is your own Claude Code and needs no config section, so the old no-reviewer-types-available STOP is unreachable and has been removed.) If "external models" is not selected → skip Step 5.3 entirely. If `claude` is not selected → skip Step 5.2.5 and run no claude reviewer at all.
 ```
 
 - [ ] **Step 4: Insert the new Step 5.2.5 selection page**
@@ -1206,6 +1340,9 @@ Task tool:
   subagent_type: "general-purpose"     # built-in agent type — NOT claude-mesh:-namespaced
   model: "<claude model>"              # omit ONLY in the fallback case with an empty DISPATCH_MODEL
   description: "Design review via claude:<model> (iter N)"
+                                       # fallback case: plain "Design review via claude (iter N)" —
+                                       # per design §9 the single fallback reviewer is named just
+                                       # `claude`, with no model suffix anywhere.
   prompt: "[composed prompt with PREVIOUS_DECISIONS]"
 ```
 
@@ -1219,6 +1356,22 @@ Task tool:
 to
 
 `treat a still-silent executor as failed per Error Handling ("One agent fails, others succeed") — never interpret silence as "no findings". This loop covers the codex / gemini / ext-claude executors only; claude reviewers are not part of it.`
+
+**6c.** The general namespacing rule at the top of Step 6 now sits next to a deliberately bare `subagent_type`. Replace
+
+`For each selected agent, use Task tool (plugin \`subagent_type\`s are \`claude-mesh:\`-namespaced — verified on CC 2.1.156; bare names do not resolve).`
+
+with
+
+`For each selected agent, use Task tool (plugin \`subagent_type\`s are \`claude-mesh:\`-namespaced — verified on CC 2.1.156; bare names do not resolve). **Exception: \`general-purpose\` is a BUILT-IN agent type and is correctly bare** — never prefix it with \`claude-mesh:\`. The rule above is about *plugin* agents.`
+
+**6d.** The collection sentence promises artifacts the claude reviewers never produce. Replace
+
+`Collect output paths from every agent — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports.`
+
+with
+
+`Collect output paths from every **executor** (codex / gemini / ext-claude) — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports. Claude reviewers have no output path to collect: they create no \`runs/<engine>/…\` dir and return their review as the Task result.`
 
 - [ ] **Step 7: Name the merged sections (Step 7)**
 
@@ -1266,7 +1419,7 @@ Then read the file end-to-end and confirm:
 - [ ] **Step 9: Run the loader suite (regression guard) and commit**
 
 ```bash
-bash skills/shared/tests/test-config-loader.sh | tail -3
+bash skills/shared/tests/test-config-loader.sh > /tmp/suite.out 2>&1; RC=$?; tail -3 /tmp/suite.out; echo "rc=$RC"
 git add skills/mesh-design-review/SKILL.md
 git commit -m "feat(mesh-design-review): run built-in claude reviewers, one per Claude model
 
@@ -1300,7 +1453,7 @@ with:
 
 ```markdown
 - `claude` CLI (this plugin runs on top of Claude Code). Mesh agents pin no model — subagents inherit your session model by default. To force a specific tier (e.g. `opus`, `fable`), set `runtime.dispatch_model` in config.yaml; if you name a model your Claude Code build does not support, dispatch fails at runtime — pick a supported alias/id.
-  - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once), and those reviewers ignore `dispatch_model`. Leave the section out and you get exactly one claude reviewer on `dispatch_model`, as before.
+  - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once), and those reviewers ignore `dispatch_model`. Leave the section out and — whenever `claude` is selected at all (interactively, or via the preset's `builtin`) — you get exactly one claude reviewer on `dispatch_model`, as before. Without `claude` in play no claude reviewer runs, catalog or no catalog. **Cost scales linearly:** N Claude models = N full reviews of the same diff, on top of codex/gemini and every external model — three Claude models plus codex plus five external models is nine reviewers for one `/mesh-review`.
 ```
 
 - [ ] **Step 2: Add the CHANGELOG entry**
@@ -1399,8 +1552,15 @@ Expected:
 
 - [ ] **Step 3: Smoke the fallback path**
 
-Ask the user to temporarily comment out the `claude:` section, then run `/claude-mesh:mesh-review` again and select `claude`.
+Ask the user to comment out the `claude:` section **together with both `claude_models:` keys**. Commenting out only the catalog leaves the preset lists orphaned, and the fail-closed guard added in Task 2 then makes the config invalid — every command fast-fails on validation and the fallback path never runs at all. That failure would look like a regression while actually being the new validator working correctly.
+
+Then run `/claude-mesh:mesh-review` again and select `claude`.
 Expected: no Claude-model page; exactly one reviewer named `claude` on `dispatch_model` (`opus` in the user's config). This is the back-compat guarantee — if it regresses, every existing config changes behaviour on upgrade.
+
+- [ ] **Step 3b: Restore the config before continuing**
+
+Ask the user to uncomment everything they commented out in Step 3, then confirm with `bash skills/shared/config-loader.sh validate && bash skills/shared/config-loader.sh list-claude-models`.
+Expected: exit 0 and the catalog printed again. **Step 4 below asserts a `## claude:opus` section, which cannot appear while the catalog is still commented out** — skipping this restore makes Step 4 fail for the wrong reason.
 
 - [ ] **Step 4: Smoke `/mesh-design-review default`**
 
