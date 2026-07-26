@@ -332,6 +332,64 @@ validate_gemini() {
     [ -n "$model" ] || die "gemini.model: required when gemini: section present"
 }
 
+validate_claude() {
+    # MAY BE CALLED SEVERAL TIMES per loader invocation — validate_all calls it directly,
+    # and validate_defaults calls it again before its catalog membership check. It must
+    # therefore stay SIDE-EFFECT-FREE: no warn to stderr, no state, nothing a user would
+    # see twice. (validate_codex does warn about reasoning_level; do not copy that here
+    # without first making the call sites idempotent.)
+    #
+    # Type-dispatch gate, same class as validate_codex/validate_gemini (fix wave 5):
+    # a scalar `claude:` section must die cleanly instead of crashing the getters with
+    # a raw jq "Cannot index boolean" (rc=5). null — key absent or an explicitly empty
+    # key — keeps the absent semantics.
+    #
+    # DELIBERATE ASYMMETRY with codex:/gemini:: those sections are GATES (no section ⇒
+    # `builtin: [codex]` is a hard error). `claude:` is NOT a gate — the builtin claude
+    # reviewer has no external dependency and works with no section at all. This section
+    # only widens it to several models.
+    local stype
+    stype=$(jq -r '.claude | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$stype" in
+        ""|null) return 0 ;;
+        object) ;;
+        *) die "claude: must be a mapping with a models key (got $stype)" ;;
+    esac
+
+    local mtype
+    mtype=$(jq -r '.claude.models | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$mtype" in
+        null) return 0 ;;
+        array) ;;
+        *) die "claude.models: must be a list of Claude model aliases, got $mtype" ;;
+    esac
+
+    local count
+    count=$(jq '.claude.models | length' "$CONFIG_JSON")
+    local i=0
+    local seen=""   # line-based accumulator (no bash-4 associative arrays)
+    while [ "$i" -lt "$count" ]; do
+        local etype v
+        etype=$(jq -r ".claude.models[$i] | type" "$CONFIG_JSON")
+        [ "$etype" = "string" ] \
+            || die "claude.models[$i]: must be a string (got $etype) — quote it, e.g. - \"opus\""
+        v=$(jq -r ".claude.models[$i]" "$CONFIG_JSON")
+        [ -n "$v" ] || die "claude.models[$i]: empty value"
+        # Same forward-compatible charset as runtime.dispatch_model — no enum, a new
+        # Claude model must never require a validator change. The leading-alnum anchor
+        # rejects flag-injection (-opus/.foo).
+        [[ "$v" =~ $IDENT_RE ]] \
+            || die "claude.models[$i]: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$v\""
+        # Duplicates would produce two reviewers with the same name — indistinguishable
+        # in the dedup/attribution tables of both orchestrators.
+        case " $seen " in
+            *" $v "*) die "claude.models[$i]: duplicate model \"$v\" (two reviewers would be indistinguishable)" ;;
+        esac
+        seen="$seen $v"
+        i=$((i+1))
+    done
+}
+
 validate_defaults() {
     if ! jq -e '.defaults' "$CONFIG_JSON" >/dev/null 2>&1; then
         return 0
@@ -490,12 +548,14 @@ validate_runtime() {
 
 validate_all() {
     # Single source of truth for the full validation pipeline.
-    # Order matters: providers first (models reference providers),
-    # then models, then sections that reference models (defaults), then runtime.
+    # Order matters: providers first (models reference providers), then models, then
+    # the per-engine sections, then sections that reference BOTH models and the claude
+    # catalog (defaults), then runtime.
     validate_providers
     validate_models
     validate_codex
     validate_gemini
+    validate_claude
     validate_defaults
     validate_runtime
 }

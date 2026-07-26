@@ -869,6 +869,79 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on empty 'timeouts:' key (null = absent)" "0" "$RC"
 rm -rf "$TDIR" "$ERR"
 
+# === Test 47: claude: catalog — type gate, charset, duplicates ===
+# Same class of gate as Test 41 (codex:/gemini:): a scalar `claude:` section must die
+# cleanly instead of crashing the getters with a raw jq "Cannot index boolean" (rc=5).
+# The catalog is charset-validated with IDENT_RE (no enum — forward-compat), and
+# duplicates are rejected because two reviewers under one name are indistinguishable
+# in the dedup tables.
+echo "=== Test 47: claude: catalog validation ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+
+{ printf '%s\n' "$BASE"; printf 'claude: false\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on claude: false" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
+if grep -q -- "Cannot index" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: raw jq indexing noise leaked to validate stderr"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: validate stderr free of raw jq indexing noise"
+fi
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: opus\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a scalar claude.models" "1" "$RC"
+assert_stderr_contains "explains the list requirement" "claude.models: must be a list" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models:\n    - 5\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a non-string catalog entry" "1" "$RC"
+assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models:\n    - "-opus"\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a leading-dash catalog entry" "1" "$RC"
+assert_stderr_contains "names the charset rule" "claude.models\[0\]: must start with" "$ERR"
+
+# A space INSIDE the value. Unquoted YAML flow style makes this easy to write by accident
+# (`models: [opus, claude fable]` is two entries, the second with a space), and an entry
+# with a space would be word-split by the membership globs downstream.
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, "claude fable"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a catalog entry containing a space" "1" "$RC"
+assert_stderr_contains "names the charset rule for the space" "claude.models\[1\]" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable, opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate catalog entry" "1" "$RC"
+assert_stderr_contains "names the duplicate" "duplicate model" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable, "claude-fable-5", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts aliases and full ids (dashes, dots, colon)" "0" "$RC"
+
+# An explicitly EMPTY key (`claude:` → null) keeps the absent semantics, like codex:.
+{ printf '%s\n' "$BASE"; printf 'claude:\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on empty 'claude:' key (null = absent)" "0" "$RC"
+
+# An empty list is legal and simply means "no catalog" (mirrors defaults.*.models).
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: []\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on an empty claude.models list" "0" "$RC"
+
+# A mapping with no models key at all. `.claude.models | type` is "null" here, so this is
+# deliberately equivalent to "no section" — UNLIKE codex:/gemini:, where a section missing
+# its `model:` key is a hard error. Pinned by a test so a future maintainer does not
+# "restore" the missing check.
+{ printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "treats 'claude: {}' as no catalog, not as an error" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
