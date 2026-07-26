@@ -1108,6 +1108,33 @@ fi
 
 rm -rf "$TDIR" "$ERR"
 
+# === Test 51: config.example.yaml documents the claude catalog end-to-end ===
+# Guards the worked example itself: the catalog must be wider than the presets (so the
+# ★-recommended vs available distinction is demonstrable) and the two presets must differ
+# (so the per-preset capability is demonstrable). A doc-only example that silently loses
+# these properties would mis-teach every new user.
+echo "=== Test 51: config.example.yaml claude catalog round-trip ==="
+TDIR=$(mktemp -d)
+cp "$TESTS_DIR/../../../config.example.yaml" "$TDIR/config.yaml"
+CATALOG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
+if [ "$CATALOG" = "opus,sonnet,fable," ]; then PASS=$((PASS+1)); echo "  PASS: example catalog is opus,sonnet,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: example catalog (expected 'opus,sonnet,fable,', got '$CATALOG')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=1 for the example"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 1, got '$GOT')"; fi
+CR=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
+DR=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
+if [ "$CR" = "opus,fable" ]; then PASS=$((PASS+1)); echo "  PASS: example code_review claude_models=opus,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review claude_models (expected 'opus,fable', got '$CR')"; fi
+if [ "$DR" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review claude_models=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review claude_models (expected 'opus', got '$DR')"; fi
+if [ "$CR" != "$DR" ]; then PASS=$((PASS+1)); echo "  PASS: example presets demonstrate differing sets"; else FAIL=$((FAIL+1)); echo "  FAIL: example presets must differ to demonstrate the feature"; fi
+# Task 4 rewrote cmd_get_defaults as one jq object literal, leaving `models` and `run_mode`
+# with no regression coverage anywhere in this suite. Pin both here, on the example: run_mode
+# must stay `background` for code_review and keep defaulting to null for design_review (which
+# has no run_mode field at all), and neither preset's models list may be lost.
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
+if [ "$GOT" = "background,4" ]; then PASS=$((PASS+1)); echo "  PASS: example code_review keeps run_mode=background + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review run_mode/models count (expected 'background,4', got '$GOT')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
+if [ "$GOT" = "null,4" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review keeps run_mode=null + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review run_mode/models count (expected 'null,4', got '$GOT')"; fi
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

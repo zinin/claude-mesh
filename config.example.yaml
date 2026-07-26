@@ -135,11 +135,37 @@ models:
 
 
 # ============================================================================
-# (3) External CLI tools                                          [optional]
+# (3) Built-in reviewers                                          [optional]
 # ============================================================================
-# These are NOT Anthropic-API endpoints — they shell out to the codex / gemini
-# CLIs. Omit a section entirely to remove that tool from the UI and from any
-# `defaults.*.builtin` list (referencing it in builtin then becomes a hard error).
+# Configuration for the three built-in reviewer types selectable in
+# `defaults.*.builtin`: claude, codex, gemini.
+#
+#   * codex: / gemini: are GATES — they shell out to the codex / gemini CLIs and
+#     are NOT Anthropic-API endpoints. Omit a section entirely to remove that tool
+#     from the UI and from any `defaults.*.builtin` list (referencing it in builtin
+#     then becomes a hard error).
+#   * claude: is NOT a gate — the built-in claude reviewer is your own Claude Code
+#     and has no external dependency, so `builtin: [claude]` works with no section
+#     here at all. The section only WIDENS it to several Claude models.
+claude:
+  # Catalog of Claude models offered when you pick the built-in `claude` reviewer.
+  # Each entry becomes ONE independent reviewer: same diff, same prompt, different
+  # model — so `[opus, fable]` gives you two genuinely independent cross-checks that
+  # your main session then aggregates.
+  #
+  # Values are what the Task tool's `model:` parameter accepts in YOUR Claude Code
+  # build — practically the aliases `opus | sonnet | haiku | fable`. No enum is
+  # enforced (a new model must never require a plugin release), so a name your build
+  # does not support is not caught here: the dispatch fails at runtime instead.
+  #
+  # COST: N models = N full reviews. Three Claude models plus codex plus five
+  # external models is nine reviewers for one /mesh-review.
+  #
+  # Omit this section (or leave the list empty) and the built-in claude reviewer
+  # behaves exactly as before: exactly ONE reviewer, on runtime.dispatch_model, or
+  # on your current session model when that is unset.
+  models: [opus, sonnet, fable]                # [optional] list of Claude model aliases
+
 codex:
   model: gpt-5.5                               # [required when codex: present]
   # [optional] known levels as of 2026-07: none | minimal | low | medium | high | xhigh | ultra.
@@ -161,9 +187,19 @@ defaults:
   code_review:                                 # used by: /mesh-review default
     builtin: [claude, codex, gemini]           # [optional] list; subset of { claude, codex, gemini }.
                                                #   claude  — your own Claude Code via superpowers:requesting-code-review
-                                               #             (needs NO config section).
+                                               #             (needs NO config section; see claude: above to fan it
+                                               #             out over several models).
                                                #   codex   — requires the codex: section above.
                                                #   gemini  — requires the gemini: section above.
+    claude_models: [opus, fable]               # [optional] list; each entry must be in the claude.models
+                                               #   catalog above, and "claude" must be present in builtin.
+                                               #   In `default` mode: one reviewer per entry, each overriding
+                                               #   runtime.dispatch_model.
+                                               #   In the interactive UI: these get the ★ recommended marker,
+                                               #   while the rest of the catalog is merely offered.
+                                               #   Omit it and `default` mode runs exactly ONE claude reviewer,
+                                               #   on runtime.dispatch_model — or on your current session model
+                                               #   when that is unset — i.e. the behaviour from before this feature.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # [optional] list; each entry must be a model id from section 2.
     run_mode: background                       # [optional] valid: background | team
@@ -175,7 +211,9 @@ defaults:
                                                #         works poorly — prefer 'background' (the default).
 
   design_review:                               # used by: /mesh-design-review default
-    builtin: [codex, gemini]                   # [optional] same valid set { claude, codex, gemini }.
+    builtin: [claude, codex, gemini]           # [optional] same valid set { claude, codex, gemini }.
+    claude_models: [opus]                      # [optional] deliberately narrower than code_review's —
+                                               #   the two presets are independent.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # NOTE: design_review has NO run_mode field (ignored if present).
 
