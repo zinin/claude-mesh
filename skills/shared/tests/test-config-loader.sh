@@ -1018,6 +1018,52 @@ assert_exit "accepts builtin claude with no claude_models" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
 
+# === Test 49: get-flag has_claude_models + list-claude-models ===
+# Unlike has_codex/has_gemini (plain section-existence probes) these read INSIDE the
+# section, so they must validate first — a raw jq read on `claude: false` would exit 5
+# with "Cannot index boolean" and the orchestrators would surface that as garbage.
+echo "=== Test 49: has_claude_models / list-claude-models ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable]\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=1 with a catalog"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 1, got '$GOT')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
+if [ "$GOT" = "opus,fable," ]; then PASS=$((PASS+1)); echo "  PASS: list-claude-models keeps config order"; else FAIL=$((FAIL+1)); echo "  FAIL: list-claude-models (expected 'opus,fable,', got '$GOT')"; fi
+
+{ printf '%s\n' "$BASE"; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 with no section"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
+assert_exit "list-claude-models exits 0 with no catalog" "0" "$RC"
+if [ ! -s "$TDIR/out" ]; then PASS=$((PASS+1)); echo "  PASS: list-claude-models prints nothing with no catalog"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty output, got '$(cat "$TDIR/out")'"; fi
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: []\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 on an empty list"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+
+# A mapping with no models key — same "no catalog" semantics as an absent section.
+{ printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 for 'claude: {}'"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
+assert_exit "list-claude-models exits 0 for 'claude: {}'" "0" "$RC"
+
+{ printf '%s\n' "$BASE"; printf 'claude: false\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-flag dies cleanly on claude: false (no raw jq rc=5)" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >/dev/null 2>"$ERR"; RC=$?
+assert_exit "list-claude-models dies cleanly on claude: false" "1" "$RC"
+
+{ printf '%s\n' "$BASE"; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag no_such_flag >/dev/null 2>"$ERR"; RC=$?
+assert_exit "unknown get-flag feature still dies" "1" "$RC"
+assert_stderr_contains "lists has_claude_models among valid features" "has_claude_models" "$ERR"
+
+rm -rf "$TDIR" "$ERR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

@@ -777,8 +777,12 @@ cmd_get_flag() {
     #
     # Output: "1"/"0" for has_* boolean flags, scalar value (string/integer) for
     #         documented getters. The exact contract is per-case.
-    # Exit:   0 always (the answer is the stdout, not the exit code). die() fires
-    #         only for unknown feature names.
+    # Exit:   0 for every documented feature once the config loads — load_or_die
+    #         still owns rc=2 ("no config.yaml"). die() fires (rc=1) on an unknown
+    #         feature name AND from the three validator-backed cases
+    #         (has_claude_models, do_plan_default_stop_tokens, dispatch_model),
+    #         which surface the validator's own message on a malformed section:
+    #         a consumer telling "absent" from "broken" must check rc, not stdout.
     local feature="${1:-}"
     load_or_die
     case "$feature" in
@@ -790,6 +794,15 @@ cmd_get_flag() {
             ;;
         has_models)
             jq -e '.models[0]' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
+            ;;
+        has_claude_models)
+            # Non-empty claude.models catalog? Gates the Claude-model selection page in
+            # /mesh-review and /mesh-design-review. Unlike has_codex/has_gemini (plain
+            # section-existence probes) this reads INSIDE the section, so it must
+            # validate first: a raw jq read on `claude: false` exits 5 with
+            # "Cannot index boolean". Mirrors the typed-getter cases below.
+            validate_claude
+            jq -e '.claude.models[0]' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
         has_defaults_code_review)
             jq -e '.defaults.code_review' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
@@ -803,9 +816,11 @@ cmd_get_flag() {
             # values. Pattern mirrors cmd_get_codex/cmd_get_gemini/cmd_get_defaults
             # (each typed getter calls only the validator that owns its section,
             # NOT the full validate_all — see iter-2 CONCERN-2/3).
-            # has_* cases above are existence checks of the section only, so they
-            # intentionally skip validation (validators run later, in the typed
-            # getter that actually reads field values).
+            # The bare-probe has_* cases above (has_codex / has_gemini / has_models /
+            # has_defaults_code_review) are existence checks of the section only, so
+            # they intentionally skip validation (validators run later, in the typed
+            # getter that actually reads field values). has_claude_models is not one
+            # of them: it reads inside its section, so it validates like this case.
             validate_runtime
             jq -r '.runtime.do_plan_default_stop_tokens // 250000' "$CONFIG_JSON"
             ;;
@@ -818,7 +833,7 @@ cmd_get_flag() {
             jq -r '.runtime.dispatch_model // empty' "$CONFIG_JSON"
             ;;
         *)
-            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
+            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_claude_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
             ;;
     esac
 }
@@ -830,6 +845,17 @@ cmd_list_models() {
     validate_providers
     validate_models
     jq -r '.models[]? | .id + "|" + (.label // .id)' "$CONFIG_JSON"
+}
+
+cmd_list_claude_models() {
+    # Emit one Claude model alias per line, in config order. Unlike cmd_list_models there
+    # is NO "<id>|<label>" pair: a Claude alias (opus / fable / …) is self-describing, so
+    # the catalog is a flat list of strings. If labels are ever needed, the catalog can be
+    # widened to {id, label} objects without breaking this line-per-entry contract.
+    # Prints nothing (exit 0) when there is no catalog.
+    load_or_die
+    validate_claude
+    jq -r '(.claude.models // [])[]' "$CONFIG_JSON"
 }
 
 cmd_list_providers() {
@@ -911,6 +937,9 @@ case "${1:-}" in
     list-models)
         cmd_list_models
         ;;
+    list-claude-models)
+        cmd_list_claude_models
+        ;;
     list-providers)
         cmd_list_providers
         ;;
@@ -928,7 +957,7 @@ case "${1:-}" in
         cmd_get_gemini
         ;;
     *)
-        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini}" >&2
+        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini}" >&2
         exit 2
         ;;
 esac
