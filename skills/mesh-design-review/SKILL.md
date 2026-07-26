@@ -202,7 +202,7 @@ This composed prompt is self-contained and gets passed to each executor agent in
 
 ### Step 5: Select Review Agents (first iteration only)
 
-Reviewer selection is **config-driven** — there are no hardcoded provider/model lists. Read the available executors and models from `config.yaml` via the loader, then either honor the `defaults.design_review` preset (`default` argument) or run the paginated selection UI. **Selection is made on the FIRST iteration only and reused for every subsequent iteration in the loop** — remember the resulting agent set (built-ins + model ids).
+Reviewer selection is **config-driven** — there are no hardcoded provider/model lists. Read the available executors and models from `config.yaml` via the loader, then either honor the `defaults.design_review` preset (`default` argument) or run the paginated selection UI. **Selection is made on the FIRST iteration only and reused for every subsequent iteration in the loop** — remember the resulting agent set (built-ins + Claude models + ext-claude model ids).
 
 #### Step 5.0: Read available reviewers from config
 
@@ -233,16 +233,34 @@ rm -f "$LOADER_ERR"
 HAS_GEMINI=$("$LOADER" get-flag has_gemini)
 HAS_MODELS=$("$LOADER" get-flag has_models)
 MODELS=$("$LOADER" list-models)            # `<id>|<label>` per line, ready for pagination
-DEFAULTS_JSON=$("$LOADER" get-defaults design_review)   # {"builtin":[...],"models":[...],"run_mode":null}
+# rc-aware, like the dispatch_model read below. A bare $() swallows the loader exit code
+# (the fence says so 14 lines above, for has_codex) — and get-defaults is what runs
+# validate_defaults, so the new fail-closed claude_models guard reports through THIS call.
+# Swallowed, it leaves DEFAULTS_JSON empty and Step 5.1 then STOPs with the misleading
+# "defaults.design_review not configured" instead of the real validation error.
+DJ_ERR=$(mktemp)
+DEFAULTS_JSON=$("$LOADER" get-defaults design_review 2>"$DJ_ERR") \
+    || { echo "config.yaml невалиден (defaults.design_review):" >&2; cat "$DJ_ERR" >&2; rm -f "$DJ_ERR"; exit 1; }
+rm -f "$DJ_ERR"   # {"builtin":[...],"claude_models":[...],"models":[...],"run_mode":null}
 echo "$DEFAULTS_JSON"
 DM_ERR=$(mktemp)
 DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
     || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
 rm -f "$DM_ERR"
 echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
+# Claude-model catalog (Step 5.2.5 gate). rc-aware like the dispatch_model read above:
+# both subcommands validate the `claude:` section, so a malformed section fast-fails here.
+CM_ERR=$(mktemp)
+HAS_CLAUDE_MODELS=$("$LOADER" get-flag has_claude_models 2>"$CM_ERR") \
+    || { echo "config.yaml невалиден (секция claude):" >&2; cat "$CM_ERR" >&2; rm -f "$CM_ERR"; exit 1; }
+CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
+    || { echo "config.yaml невалиден (claude.models):" >&2; cat "$CM_ERR" >&2; rm -f "$CM_ERR"; exit 1; }
+rm -f "$CM_ERR"
+echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
+echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
 ```
 
-rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.models`) to build `DEFAULT_IDS` (the recommended model ids) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
+rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.models`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
 
 #### Step 5.1: `default` argument → use the preset
 
@@ -251,6 +269,11 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
 - If `defaults.design_review` is missing/empty (`.builtin` empty AND `.models` empty) → STOP with a clear error:
   `defaults.design_review not configured in config.yaml. Run /claude-mesh:mesh-design-review without "default" or add the preset.`
 - For each entry in `.builtin`:
+  - `claude` → expand over `.claude_models` (this branch was MISSING before this feature, which is why `claude` in `defaults.design_review.builtin` used to be silently dropped):
+    - list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`, which **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
+    <!-- SYNC: the fallback rule in the next bullet is ONE rule living in four places — this file's Step 5.2.5 ("Empty selection is not an error"), and `commands/mesh-review.md` Step 0 / Step 2.4. Change all four or none. -->
+    - list absent/empty → exactly **one** reviewer named `claude`, with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise no `model:` at all (inherits the session model).
+  - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (`.claude_models`, or empty in the fallback case), exactly as `/mesh-review` Step 0 does. Step 5.4 remembers `SELECTED_CLAUDE_MODELS` for iterations 2..N, so in `default` mode it must actually hold something by then.
   - `codex` → spawn `claude-mesh:codex-executor`
   - `gemini` → spawn `claude-mesh:gemini-executor`
 - For each model id in `.models` → spawn `claude-mesh:ext-claude-executor` with `MODEL=<id>`.
@@ -267,12 +290,40 @@ Use AskUserQuestion (multiSelect: true, max 4, header: "Reviewers"):
 ```
 question: "Какие типы reviewers запустить? (★ = recommended, в defaults.design_review)"
 options:
+  - "claude ★ default (свой Claude Code)"          — show ALWAYS; ★ if "claude" in defaults.builtin
   - "codex CLI ★ default"                          — show only if HAS_CODEX=1; ★ if "codex" in defaults.builtin
   - "gemini CLI ★ default"                         — show only if HAS_GEMINI=1; ★ if "gemini" in defaults.builtin
   - "external models (Anthropic-API) ★ default"    — show only if HAS_MODELS=1; ★ if defaults.models is non-empty
 ```
 
-(Show only the options whose gating flag is `1`. If none are available — no codex, no gemini, no models — STOP with "нет доступных reviewer-типов в config.yaml".) If "external models" is not selected → skip Step 5.3 entirely (only built-in executors run).
+(Show the codex / gemini / external-models options only when their gating flag is `1`. The `claude` option is shown unconditionally — the built-in claude reviewer is your own Claude Code and needs no config section, so the old no-reviewer-types-available STOP is unreachable and has been removed.) If "external models" is not selected → skip Step 5.3 entirely. If `claude` is not selected → skip Step 5.2.5 and run no claude reviewer at all.
+
+#### Step 5.2.5: Claude-model selection
+
+Runs ONLY when Q1 selected `claude` **and** `HAS_CLAUDE_MODELS=1`.
+
+- `claude` NOT selected in Q1 → skip; no claude reviewer runs at all, whatever the catalog holds.
+- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty).
+
+For each chunk of 4 entries from `CLAUDE_MODELS` (config order) — same pagination and the same ★ convention as Step 5.3, because AskUserQuestion has no `preSelected` API:
+
+AskUserQuestion (multiSelect, max 4):
+```
+header: "Claude"
+question: "На каких Claude-моделях запустить design review? (страница N/M, ★ = recommended)"
+options:
+  For each model in the chunk:
+    label:       "<model>"                     if NOT in CLAUDE_DEFAULT_IDS
+                 "★ <model> (recommended)"     if in CLAUDE_DEFAULT_IDS
+    description: "отдельный независимый ревьюер на этой модели"
+```
+
+Collect the selections into `SELECTED_CLAUDE_MODELS`.
+
+<!-- SYNC: the fallback rule below is ONE rule living in four places — Step 5.1's "list absent/empty" bullet in this file, and `commands/mesh-review.md` Step 0 / Step 2.4. Change all four or none. -->
+**Empty selection is not an error** — it falls back to exactly one reviewer named `claude`, as in the `HAS_CLAUDE_MODELS=0` case. Do not re-ask, do not STOP.
+
+Every selected model gets the SAME composed prompt — model diversity is the point, so never differentiate their prompts.
 
 #### Step 5.3 (Q2..Qn): Paginated model selection
 
@@ -294,20 +345,20 @@ Collect all selected model ids across pages into `SELECTED_IDS`.
 
 #### Step 5.4: Confirm selection
 
-After Q1 (and pagination if it ran), show the full selected set — built-in TYPES plus `SELECTED_IDS` (one per line) — and confirm (mirrors mesh-review Step 3.5):
+After Q1 (and Steps 5.2.5 / 5.3 if they ran), show the full selected set — built-in TYPES plus `SELECTED_IDS` (one per line) — and confirm (mirrors mesh-review Step 3.5). **Expand `claude` into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case, so the user sees how many Claude reviewers they are about to pay for.
 
 ```
 header: "Confirm"
 question: "Запустить ревью с этим набором? <bullet list: selected built-ins + SELECTED_IDS>"
 options:
   - "Запустить (Recommended)"  — proceeds to Step 6
-  - "Перевыбрать"              — restarts Step 5.2 from Q1 with the same DEFAULT_IDS
+  - "Перевыбрать"              — restarts Step 5.2 from Q1 with the same DEFAULT_IDS / CLAUDE_DEFAULT_IDS (Step 5.2.5 re-runs too)
   - "Отмена"                   — exit the skill without dispatching
 ```
 
 On "Перевыбрать": clear the selection and restart from Step 5.2. Loop guard: cap re-selects at 3; on the 4th, message "Слишком много перевыборов; запустите /claude-mesh:mesh-design-review заново" and exit. If the user deselected everything (no built-ins AND no models) → STOP with "ничего не выбрано для ревью".
 
-Remember the confirmed set (built-in TYPES + `SELECTED_IDS`) for all subsequent iterations in the loop.
+Remember the confirmed set (built-in TYPES + `SELECTED_CLAUDE_MODELS` + `SELECTED_IDS`) for all subsequent iterations in the loop.
 
 ### Step 6: Execute Review via Selected Agents
 
@@ -317,9 +368,28 @@ Before dispatch — via a Bash call, stamp `DISPATCH_EPOCH=$(date +%s)` and keep
 
 Launch **all selected** agents **in parallel** in a single message:
 
-For each selected agent, use Task tool (plugin `subagent_type`s are `claude-mesh:`-namespaced — verified on CC 2.1.156; bare names do not resolve).
+For each selected agent, use Task tool (plugin `subagent_type`s are `claude-mesh:`-namespaced — verified on CC 2.1.156; bare names do not resolve). **Exception: `general-purpose` is a BUILT-IN agent type and is correctly bare** — never prefix it with `claude-mesh:`. The rule above is about *plugin* agents.
 
 **Dispatch model:** if `DISPATCH_MODEL` (from Step 5.0) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch in this step. If it is empty, omit `model:` so each executor inherits this session's model.
+
+**Exception — claude reviewers with an explicit model.** When Step 5.2.5 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL` — otherwise every claude reviewer would collapse onto one model and the independence would be fake. `DISPATCH_MODEL` still governs the codex / gemini / ext-claude executors and the `review-discussion` agent in Step 8.
+
+**built-in `claude` reviewer(s)** — dispatch the composed Step 4 prompt **directly**. That prompt is already self-contained (task, documents, project + session context, PREVIOUS DECISIONS, review focus, output format), so there is no `Execute this prompt via…` wrapper and no skill to invoke:
+
+```
+Task tool:
+  subagent_type: "general-purpose"     # built-in agent type — NOT claude-mesh:-namespaced
+  model: "<claude model>"              # omit ONLY in the fallback case with an empty DISPATCH_MODEL
+  description: "Design review via claude:<model> (iter N)"
+                                       # fallback case: plain "Design review via claude (iter N)" —
+                                       # per design §9 the single fallback reviewer is named just
+                                       # `claude`, with no model suffix anywhere.
+  prompt: "[composed prompt with PREVIOUS_DECISIONS]"
+```
+
+**Claude reviewers are excluded from the disk-watch / ping loop below.** They create no `runs/<engine>/…` dir and finish on their own. Waiting for a run dir that will never appear — or pinging an agent that has already answered — is a bug, not diligence.
+
+**If a claude reviewer's Task errors** — most likely a `claude_models` entry this Claude Code build does not accept — treat it exactly like a failed executor per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Never silently re-dispatch it on a different model: a failed dispatch is the only signal that a model name is wrong (design §13), and substituting another model hides it while pretending the cross-check happened.
 
 **codex / gemini executors** parse `PROMPT` / `MODEL` / `REASONING_LEVEL` as named params (any line), so use the wrapped form:
 ```
@@ -348,14 +418,14 @@ Agent-specific parameters:
 - **`claude-mesh:gemini-executor`** (built-in selected: `gemini`): default settings
 - **`claude-mesh:ext-claude-executor`** (one per selected model id): `MODEL=<id>` on line 1 (e.g. `MODEL=zai/glm`, `MODEL=alibaba/qwen`, `MODEL=ollama/kimi`) — the model id comes from the config (`SELECTED_IDS`, or `defaults.design_review.models` in `default` mode), NOT a hardcoded provider profile.
 
-Collect output paths from every agent — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports.
+Collect output paths from every **executor** (codex / gemini / ext-claude) — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports. Claude reviewers have no output path to collect: they create no `runs/<engine>/…` dir and return their review as the Task result.
 
 **CRITICAL — an executor's report does NOT arrive on its own: disk-watch the runs and ping idle executors.** Each executor launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…` under the plugin data dir), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits, so the report stalls until pinged (same mechanics verified 2026-07-10 on the mesh-review wrappers: 0 notifications in 5/5 transcripts, reports stalled 8–12 min over a finished `output.txt`). After dispatch:
 
 1. Capture each executor's run dir from its interim status. Fallback when a status names none: the newest dir under `$PLUGIN_DATA/runs/<engine>/[<provider>/<model>/]` (`PLUGIN_DATA` = `"$LOADER" data-dir`) created after `DISPATCH_EPOCH`.
 2. Poll the disk via Bash — as a background Bash task (a background watcher that exits on each state change re-invokes the orchestrator per event; a foreground poll loop would block the session). ~30–60 s cadence; bound the whole watch by `runtime.timeouts.global_sec` (read it via `"$LOADER" get-runtime | jq -r '.timeouts.global_sec'`, default 3600) plus a margin. A run is finalized when: root `output.txt` is present and non-empty (gemini-exec pre-creates a zero-byte `output.txt` at launch — an empty file is NOT finalization), or a `final` symlink exists, or the run's `watchdog.log` has a `cleanup` event.
 3. When a run is finalized but its executor has not delivered its review — SendMessage that agent: `your external run finished — read its output.txt, extract the findings and send your report`. Ping once per finalized run — re-ping only if the executor is still silent after the next poll interval (~60–90 s).
-4. Repeat until every dispatched executor has reported or the watch budget expires; treat a still-silent executor as failed per Error Handling ("One agent fails, others succeed") — never interpret silence as "no findings".
+4. Repeat until every dispatched executor has reported or the watch budget expires; treat a still-silent executor as failed per Error Handling ("One agent fails, others succeed") — never interpret silence as "no findings". This loop covers the codex / gemini / ext-claude executors only; claude reviewers are not part of it.
 
 ### Step 7: Merge Review Results
 
@@ -366,6 +436,13 @@ After all agents complete:
 
 ```markdown
 # Merged Design Review — Iteration N
+
+## claude:opus
+
+[full output from the built-in claude reviewer on opus — one section per selected Claude model;
+ a single fallback reviewer is titled just `claude`]
+
+---
 
 ## codex-executor
 
