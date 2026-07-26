@@ -1,6 +1,6 @@
 ---
 name: mesh-review
-description: Launch external code review agents (claude-self, codex, gemini, ext-claude on N models) with selection UI and result deduplication.
+description: Launch code review agents (built-in claude on N models, codex, gemini, ext-claude on N models) with selection UI and result deduplication.
 ---
 
 # /mesh-review
@@ -101,8 +101,10 @@ If "external models" not selected → skip Step 3 entirely.
 
 Runs ONLY when Q1 selected `claude` **and** `HAS_CLAUDE_MODELS=1`.
 
-- `claude` NOT selected in Q1 → skip this step entirely; **no claude reviewer runs at all**, whatever the catalog holds.
-- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip this step; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty).
+- `claude` NOT selected in Q1 → skip this step entirely; **no claude reviewer runs at all**, whatever the catalog holds. **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
+- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip this step; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty). **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
+
+Both bindings are mandatory, for the same reason Step 0 binds it in `default` mode: this step holds the ONLY other assignment to `SELECTED_CLAUDE_MODELS`, and Step 2.5 / Step 5a / Step 5b consume it unconditionally. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises.
 
 Build `CLAUDE_DEFAULT_IDS` from the preset — **rc-aware, and never through a pipe**:
 
@@ -122,6 +124,7 @@ CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CD_ERR") \
     || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CD_ERR" >&2; rm -f "$CD_ERR"; exit 1; }
 rm -f "$CD_ERR"
 CLAUDE_DEFAULT_IDS=$(echo "$CR_DEFAULTS" | jq -r '.claude_models[]?')
+echo "CLAUDE_DEFAULT_IDS=[$(echo "$CLAUDE_DEFAULT_IDS" | tr '\n' ' ')]"   # empty = no ★ markers below
 ```
 
 For each chunk of 4 entries from `CLAUDE_MODELS` (in config order) — same pagination mechanics as Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API):
@@ -251,7 +254,7 @@ The builtin `claude` reviewers are exempt: they review inline, create no `runs/<
 
 1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewers — all of them) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
 2. Create one task per selected reviewer — with several Claude models selected that means one task per Claude model (`claude:opus`, `claude:fable`), not one shared `claude` task
-3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task. The Step 5a **Dispatch model** rule *and its claude exception* also apply here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it — except the claude teammates, which each carry their own `model:` from `SELECTED_CLAUDE_MODELS`.
+3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task. The Step 5a **Dispatch model** rule *and its claude exception* also apply here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it — except claude teammates that carry an explicit model, which each use their own entry from `SELECTED_CLAUDE_MODELS`. When that list is empty, `DISPATCH_MODEL` governs the single fallback claude teammate like any other.
 4. Wait for completion → Step 6. Teammate wrappers idle exactly like the Step 5a background ones — run the same disk-watch + ping loop from Step 5a to collect their reports
 5. Shut down team
 
@@ -276,7 +279,7 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 **Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned. The inverse failure also exists: a wrapper whose run is `REAL` on disk but which never sent a report is not a flip — it is idle (wrappers do not wake when their background run finishes); ping it per the Step 5a watch loop to collect the report before classifying.
 
-The builtin `claude` / `general-purpose` reviewers (one per selected Claude model, or a single fallback one) are **skipped by the guard** — they review inline by design and are always accepted into Step 6.1. `verify-delegation.sh` is never invoked for them.
+The builtin `claude` / `general-purpose` reviewers (one per selected Claude model, or a single fallback one) are **skipped by the guard** — they review inline by design, so every one of them whose Task actually completed is accepted into Step 6.1. `verify-delegation.sh` is never invoked for them. (A claude reviewer whose Task errored is the exception — see the `FAILED` rule below.)
 
 **1. Locate the loader, data dir, and guard:**
 ```bash
@@ -341,7 +344,7 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 - `REAL` reviewers → their reviews enter Step 6.1 (dedupe/classify) as normal.
 - Reviewers still `FLIP`/`STALLED` after `N` rounds → **EXCLUDE from cross-validation** and record in the Step 6.6 summary: `⚠ <reviewer> did not delegate after N attempts — NOT counted as external review (self-review on the session model / killed mid-flight)`.
 - `BROKEN` reviewers → record: `⚠ <reviewer>: external engine produced no usable review (broken — ask the user to swap the model in config.yaml; agents never edit it)`.
-- The builtin `claude` reviewers' findings always enter Step 6.1 — every one of them, one entry per selected Claude model (or the single fallback reviewer).
+- The builtin `claude` reviewers' findings always enter Step 6.1 — every one of them whose Task completed, one entry per selected Claude model (or the single fallback reviewer). The ones marked `FAILED` above contribute nothing; they are never re-dispatched on a substitute model.
 
 **Do NOT silently accept a FLIP as an external review.** A flipped wrapper is the session's model reviewing its own work; counting it as independent cross-validation is the exact failure this guard exists to prevent.
 

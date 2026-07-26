@@ -17,7 +17,7 @@ When this skill loads, Claude Code prints a line `Base directory for this skill:
 - sibling shared scripts = `$SKILL_BASE/../shared/<x>`
 - data dir = `"$LOADER" data-dir` (the loader self-discovers `~/.claude/plugins/data/claude-mesh-*`); build any state paths under `$PLUGIN_DATA/state/`
 
-Config reads in this skill go through the loader subcommands (`get-flag`, `get-defaults design_review`, `list-models`) — never raw `yq`. `get-flag` returns `1`/`0`; compare to `1`, never to `"true"`.
+Config reads in this skill go through the loader subcommands (`get-flag`, `get-defaults design_review`, `list-models`, `list-claude-models`) — never raw `yq`. `get-flag` returns `1`/`0`; compare to `1`, never to `"true"`.
 
 ## When to Use
 
@@ -33,7 +33,7 @@ Optional (caller can specify):
 - **TOPIC** — topic name for file naming
 - **CODEX_MODEL** — Codex model. Default: resolved from `config.yaml` (`codex.model`) by the codex executor itself; final fallback "gpt-5.5". Set only when the user explicitly overrides.
 - **CODEX_REASONING_LEVEL** — reasoning level (`none|minimal|low|medium|high|xhigh|ultra`, known set as of 2026-07; unknown values pass through to codex). Default: resolved from `config.yaml` (`codex.reasoning_level`) by the executor; final fallback "xhigh". Set only when the user explicitly overrides.
-- **DEFAULT** — if `default` argument is passed, skip the Step 5 selection UI and use the `defaults.design_review` preset from `config.yaml` (each `builtin` entry → its executor; each `models` id → `claude-mesh:ext-claude-executor MODEL=<id>`). See Step 5.
+- **DEFAULT** — if `default` argument is passed, skip the Step 5 selection UI and use the `defaults.design_review` preset from `config.yaml` (`codex` / `gemini` in `builtin` → their executor; `claude` in `builtin` → one built-in `general-purpose` reviewer per entry of `claude_models`, no executor agent involved, or a single one in the fallback case; each `models` id → `claude-mesh:ext-claude-executor MODEL=<id>`). See Step 5.
 
 ## Iron Rules for Processing Issues
 
@@ -260,7 +260,7 @@ echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
 echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
 ```
 
-rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.models`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
+rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.models`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_MODELS` / `HAS_CLAUDE_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
 
 #### Step 5.1: `default` argument → use the preset
 
@@ -302,8 +302,10 @@ options:
 
 Runs ONLY when Q1 selected `claude` **and** `HAS_CLAUDE_MODELS=1`.
 
-- `claude` NOT selected in Q1 → skip; no claude reviewer runs at all, whatever the catalog holds.
-- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty).
+- `claude` NOT selected in Q1 → skip; no claude reviewer runs at all, whatever the catalog holds. **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
+- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty). **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
+
+Both bindings are mandatory, for the same reason Step 5.1 binds it in `default` mode: this step holds the ONLY other assignment to `SELECTED_CLAUDE_MODELS`, and Step 5.4 and the Step 6 dispatch consume it unconditionally. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises.
 
 For each chunk of 4 entries from `CLAUDE_MODELS` (config order) — same pagination and the same ★ convention as Step 5.3, because AskUserQuestion has no `preSelected` API:
 
@@ -374,7 +376,7 @@ For each selected agent, use Task tool (plugin `subagent_type`s are `claude-mesh
 
 **Exception — claude reviewers with an explicit model.** When Step 5.2.5 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL` — otherwise every claude reviewer would collapse onto one model and the independence would be fake. `DISPATCH_MODEL` still governs the codex / gemini / ext-claude executors and the `review-discussion` agent in Step 8.
 
-**built-in `claude` reviewer(s)** — dispatch the composed Step 4 prompt **directly**. That prompt is already self-contained (task, documents, project + session context, PREVIOUS DECISIONS, review focus, output format), so there is no `Execute this prompt via…` wrapper and no skill to invoke:
+**built-in `claude` reviewer(s)** — dispatch the composed Step 4 prompt **directly**. That prompt is already self-contained (task, documents, project + session context, PREVIOUS DECISIONS, review focus, output format), so there is no `Execute this prompt via…` wrapper and no skill to invoke. **One Task per entry of `SELECTED_CLAUDE_MODELS`**, each carrying `model: "<entry>"`; in the fallback case (that list empty) exactly one Task per the Dispatch-model rule above. The template below is ONE such Task — all of them get the same prompt, only the model differs:
 
 ```
 Task tool:

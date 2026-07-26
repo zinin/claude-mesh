@@ -54,7 +54,7 @@ warn() {
 # both sets exclude `|` (the model|level pipe protocol) and anything unsafe for
 # shell substitution in the executor skills. No enum — a new model or level must
 # never require a validator change.
-IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, runtime.dispatch_model
+IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, claude.models, runtime.dispatch_model
 MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'   # engine models: adds "/" for provider-qualified ids
 
 require_yq() {
@@ -518,11 +518,22 @@ validate_defaults() {
                 || die "defaults.$preset.claude_models[$c]: must be a string (got $cmetype) — quote it, e.g. - \"opus\""
             cmv=$(jq -r ".defaults.$preset.claude_models[$c]" "$CONFIG_JSON")
             # MUST precede the membership test. `tr '\n' ' '` leaves $claude_catalog
-            # holding a single space when there is no catalog, so " $claude_catalog "
-            # is "  " — and an empty $cmv makes the glob *"  "* match, silently
-            # ACCEPTING an empty entry even with no catalog at all. validate_models has
-            # the same guard for the same reason (`[ -n "$id" ] || die`, :215).
+            # EMPTY when there is no catalog (jq emits an empty stream), so
+            # " $claude_catalog " is "  " — and an empty $cmv makes the glob *"  "*
+            # match, silently ACCEPTING an empty entry even with no catalog at all.
+            # validate_models has the same guard for the same reason
+            # (`[ -n "$id" ] || die`, :215).
             [ -n "$cmv" ] || die "defaults.$preset.claude_models[$c]: empty value"
+            # Charset gate — the SAME check validate_claude runs on the catalog (:381), and
+            # the reason the membership test below cannot be spanned. Membership is a
+            # substring match against the space-joined catalog, so without this a
+            # multi-token value whose words happen to be ADJACENT catalog members
+            # false-accepts: catalog [opus, fable] + `claude_models: ["opus fable"]` (a
+            # missing comma — YAML flow yields ONE string) matched " opus fable " and
+            # validated clean. Rejecting the space here makes the span impossible, and
+            # keeps both sides of the catalog⊇preset relation validated identically.
+            [[ "$cmv" =~ $IDENT_RE ]] \
+                || die "defaults.$preset.claude_models[$c]: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$cmv\""
             # Quoted case-membership (glob/word-split safe), same idiom as the models[]
             # check above. An absent catalog makes $claude_catalog empty, so every entry
             # lands here — hence the "add it to the claude.models catalog" hint.
@@ -797,10 +808,13 @@ cmd_get_flag() {
             ;;
         has_claude_models)
             # Non-empty claude.models catalog? Gates the Claude-model selection page in
-            # /mesh-review and /mesh-design-review. Unlike has_codex/has_gemini (plain
-            # section-existence probes) this reads INSIDE the section, so it must
-            # validate first: a raw jq read on `claude: false` exits 5 with
-            # "Cannot index boolean". Mirrors the typed-getter cases below.
+            # /mesh-review and /mesh-design-review. Unlike the bare-probe has_* cases
+            # above, this VALIDATES BEFORE READING, so a malformed `claude:` section
+            # fails loudly with the validator's own message instead of a raw jq read on
+            # `claude: false` exiting 5 ("Cannot index boolean") and that rc being
+            # swallowed by `|| echo 0` into a bogus "no catalog". (Indexing depth is NOT
+            # the distinction — has_models probes `.models[0]`, inside its section too,
+            # and deliberately does not validate.) Mirrors the typed-getter cases below.
             validate_claude
             jq -e '.claude.models[0]' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
@@ -817,10 +831,14 @@ cmd_get_flag() {
             # (each typed getter calls only the validator that owns its section,
             # NOT the full validate_all — see iter-2 CONCERN-2/3).
             # The bare-probe has_* cases above (has_codex / has_gemini / has_models /
-            # has_defaults_code_review) are existence checks of the section only, so
-            # they intentionally skip validation (validators run later, in the typed
-            # getter that actually reads field values). has_claude_models is not one
-            # of them: it reads inside its section, so it validates like this case.
+            # has_defaults_code_review) skip validation on purpose: each is a single
+            # `jq -e` probe whose rc IS the answer, so a malformed section simply reads
+            # as "absent" and the validator runs later, in the typed getter that actually
+            # reads field values. has_claude_models is not one of them — it VALIDATES
+            # BEFORE READING, so a malformed `claude:` section fails loudly (rc=1, the
+            # validator's own message) instead of jq's rc=5 being swallowed by `|| echo 0`
+            # and reported as a missing catalog. (Indexing depth is not the distinction:
+            # has_models probes `.models[0]`, inside its section too.)
             validate_runtime
             jq -r '.runtime.do_plan_default_stop_tokens // 250000' "$CONFIG_JSON"
             ;;

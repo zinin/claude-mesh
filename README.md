@@ -85,6 +85,7 @@ See `config.example.yaml` for the canonical example. Sections:
 |---|---|---|
 | `providers:` | yes | API endpoint + auth + kind (anthropic-api / ollama-daemon) |
 | `models:` | yes | id = `<provider>/<short>`, model name, optional alias overrides |
+| `claude:` | no | `models:` — catalog of Claude model aliases offered for the built-in `claude` reviewer; each selected entry becomes one independent reviewer. Omit it (together with any `defaults.*.claude_models`) for the previous single-reviewer behaviour |
 | `codex:` | no | model + reasoning_level for codex CLI — the default for `/codex-*` skills and reviews unless the caller overrides; unknown levels pass through with a WARN (known set as of 2026-07 is listed in `config.example.yaml`) |
 | `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
 | `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |

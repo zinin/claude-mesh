@@ -164,6 +164,11 @@ claude:
   # Omit this section (or leave the list empty) and the built-in claude reviewer
   # behaves exactly as before: exactly ONE reviewer, on runtime.dispatch_model, or
   # on your current session model when that is unset.
+  #
+  # BUT: `defaults.*.claude_models` entries must be members of this catalog, so
+  # dropping the catalog ALONE makes the config INVALID — every preset entry below
+  # then reports as an unknown claude model. Remove (or empty) BOTH `claude_models`
+  # keys under `defaults:` together with this section.
   models: [opus, sonnet, fable]                # [optional] list of Claude model aliases
 
 codex:
@@ -239,7 +244,9 @@ runtime:
   max_redispatch: 1                            # [optional] positive integer. default 1
 
   # Model for subagents dispatched by /do-plan, /mesh-review, /mesh-design-review.
-  # [optional] If set, those commands pass `model: "<value>"` on every dispatch.
+  # [optional] If set, those commands pass `model: "<value>"` on nearly every dispatch —
+  # the exception is built-in claude reviewers running on an explicitly selected Claude
+  # model (see `claude:` above), which carry that model instead and ignore this value.
   # If absent (or config.yaml absent), subagents inherit your current session model
   # (your /model). Set this to FORCE a specific tier regardless of the session.
   # Accepts any Claude Code Agent model alias or id — incl. full cloud-provider ids

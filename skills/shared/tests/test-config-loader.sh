@@ -984,13 +984,23 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects non-string claude_models entries" "1" "$RC"
 assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
 
-# The empty-string entry is the sharp one: `tr '\n' ' '` makes $claude_catalog a single
-# space when there is no catalog, so " $claude_catalog " is "  " and the glob *"  "*
+# The empty-string entry is the sharp one: `tr '\n' ' '` leaves $claude_catalog EMPTY
+# when there is no catalog, so " $claude_catalog " is "  " and the glob *"  "*
 # MATCHES an empty $cmv — the entry sails through membership with no catalog at all.
 { printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [""]\n'; } > "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects an empty claude_models entry (no catalog)" "1" "$RC"
 assert_stderr_contains "names it as empty, not as unknown" "empty value" "$ERR"
+
+# Charset gate. Membership is a substring match against the space-joined catalog, so a
+# multi-token value whose words are ADJACENT catalog members would span it: a missing
+# comma in `["opus fable"]` is ONE string, it matched " opus fable " inside " opus fable "
+# and validated clean (get-defaults then emitted the bogus entry verbatim). The catalog
+# side already rejects the identical string via IDENT_RE (Test 47) — both sides now do.
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: ["opus fable"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a space-spanning claude_models entry (missing comma)" "1" "$RC"
+assert_stderr_contains "reports it as a charset violation, not as unknown" 'must start with a letter/digit' "$ERR"
 
 # design_review is validated by the same loop.
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  design_review:\n    builtin: [claude]\n    claude_models: [sonnet]\n'; } > "$TDIR/config.yaml"

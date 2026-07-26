@@ -32,6 +32,12 @@ All notable changes to claude-mesh will be documented here.
   its cost, on upgrade with no config change. The related fail-closed guard is new too:
   `claude_models` set without `claude` in the same preset's `builtin` is now a validation
   error rather than another silently ignored list.
+- `/mesh-design-review` swallowed the validator's exit code when reading its preset. Its
+  Step 5.0 fence ran `DEFAULTS_JSON=$("$LOADER" get-defaults design_review)` bare, so a
+  config.yaml that failed validation left `DEFAULTS_JSON` empty and Step 5.1 then STOPped
+  with the misleading "defaults.design_review not configured" instead of the real error.
+  The read is now rc-aware and surfaces the validator's stderr verbatim, matching the
+  `dispatch_model` read directly below it and `/mesh-review` Step 1.
 
 ## [0.4.3] - 2026-07-22
 
