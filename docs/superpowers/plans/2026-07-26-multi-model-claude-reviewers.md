@@ -880,6 +880,7 @@ with:
   - `claude` in `defaults.code_review.builtin` → expand over `defaults.code_review.claude_models`:
     - list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`. This model **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
     - list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the pre-0.5 behaviour and stays the default.
+  - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (it is `defaults.code_review.claude_models`, or empty in the fallback case). Step 5a and Step 5b both dispatch "one Task per entry of `SELECTED_CLAUDE_MODELS`" **unconditionally** — the interactive path fills it in Step 2.4, and without this line the variable would simply be undefined in `default` mode. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises, and `default` mode quietly dispatches one reviewer instead of N.
   - `codex` / `gemini` in `defaults.code_review.builtin` → spawn the corresponding agent.
   - For each model id in `defaults.code_review.models`, spawn `ext-claude-code-reviewer` with `MODEL=<id>`.
 ```
@@ -1084,6 +1085,15 @@ and add below it:
 
 ```markdown
 `INLINE` is a label **you** write, not a `verify-delegation.sh` verdict. Include one row per claude reviewer (a single row named `claude` in the fallback case) so the table is the complete roster of who actually reviewed — with several Claude models in play, a table that silently omits them understates the cross-validation.
+
+**`INLINE` is for a claude reviewer that actually returned a review.** If its Task errored — the overwhelmingly likely cause being a `claude_models` entry this Claude Code build does not accept — give it a `FAILED` row instead and contribute nothing from it to Step 6.1:
+
+| Reviewer     | Verdict | Action                          |
+|--------------|---------|---------------------------------|
+| claude:opus  | INLINE  | ✅ по построению                 |
+| claude:opuss | FAILED  | ✗ dispatch failed — no findings |
+
+Then continue with the remaining reviewers, per the existing rule "One agent fails, others succeed". Do **NOT** stop the whole review, and do **NOT** silently re-dispatch that reviewer on a different model: a failed dispatch is the *only* signal that a model name is wrong (design §13 — there is no way to verify after the fact which model a subagent really ran on), and quietly substituting another model destroys it. The user asked for N independent models and must be able to see they got N-1.
 ```
 
 **6c.** Further down Step 6.0 ("Finalize") the same singular survives and no other edit reaches it. Replace
@@ -1238,6 +1248,7 @@ with:
   - `claude` → expand over `.claude_models` (this branch was MISSING before 0.5, which is why `claude` in `defaults.design_review.builtin` used to be silently dropped):
     - list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`, which **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
     - list absent/empty → exactly **one** reviewer named `claude`, with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise no `model:` at all (inherits the session model).
+  - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (`.claude_models`, or empty in the fallback case), exactly as `/mesh-review` Step 0 does. Step 5.4 remembers `SELECTED_CLAUDE_MODELS` for iterations 2..N, so in `default` mode it must actually hold something by then.
   - `codex` → spawn `claude-mesh:codex-executor`
   - `gemini` → spawn `claude-mesh:gemini-executor`
 - For each model id in `.models` → spawn `claude-mesh:ext-claude-executor` with `MODEL=<id>`.
@@ -1321,7 +1332,9 @@ After Q1 (and Steps 5.2.5 / 5.3 if they ran), show the full selected set — bui
 
 and in the same block change the "Перевыбрать" description from `restarts Step 5.2 from Q1 with the same DEFAULT_IDS` to `restarts Step 5.2 from Q1 with the same DEFAULT_IDS / CLAUDE_DEFAULT_IDS (Step 5.2.5 re-runs too)`.
 
-**The selection is reused across iterations, so the Claude models must be remembered too** — otherwise iteration 2 silently drops back to a single reviewer. Two more edits:
+**Within one session's iteration loop the selection is reused, so the Claude models must be remembered alongside the rest of the set** — otherwise a second iteration in the same session drops back to a single reviewer. Two more edits:
+
+**Scope of that guarantee — state it accurately, do not overpromise.** It holds *within a session*. It does **not** survive into a fresh session: Step 5 is explicitly "first iteration only", Step 15 states that iterations are always done in fresh sessions, and Step 16 hands off through `continue-plan-fresh-session` without serialising the reviewer set anywhere. A fresh-session iteration therefore re-runs the selection UI — exactly as it already does today for `SELECTED_IDS`. That is pre-existing behaviour shared by every reviewer type, not something this change introduces or worsens, and deliberately not fixed here: persisting the set belongs in a separate task that can cover built-ins, Claude models and ext-claude ids uniformly (and decide whether a fresh session should restore silently at all, which is not obvious — after a run where reviewers failed, re-picking is often what the user wants).
 
 - last line of Step 5.4: replace `Remember the confirmed set (built-in TYPES + \`SELECTED_IDS\`) for all subsequent iterations in the loop.` with `Remember the confirmed set (built-in TYPES + \`SELECTED_CLAUDE_MODELS\` + \`SELECTED_IDS\`) for all subsequent iterations in the loop.`
 - Step 5 preamble (`### Step 5: Select Review Agents (first iteration only)`): replace `remember the resulting agent set (built-ins + model ids)` with `remember the resulting agent set (built-ins + Claude models + ext-claude model ids)`.
@@ -1347,6 +1360,8 @@ Task tool:
 ```
 
 **Claude reviewers are excluded from the disk-watch / ping loop below.** They create no `runs/<engine>/…` dir and finish on their own. Waiting for a run dir that will never appear — or pinging an agent that has already answered — is a bug, not diligence.
+
+**If a claude reviewer's Task errors** — most likely a `claude_models` entry this Claude Code build does not accept — treat it exactly like a failed executor per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Never silently re-dispatch it on a different model: a failed dispatch is the only signal that a model name is wrong (design §13), and substituting another model hides it while pretending the cross-check happened.
 ```
 
 **6b.** In the numbered watch-loop list further down the same step, change item 4's closing sentence
@@ -1414,7 +1429,7 @@ Then read the file end-to-end and confirm:
 4. Step 6 dispatches `general-purpose` with the composed prompt directly and no wrapper line.
 5. Step 6 states that claude reviewers are outside the watch/ping loop.
 6. Step 7 shows the `claude:<model>` section naming.
-7. Steps 5 and 5.4 remember `SELECTED_CLAUDE_MODELS` across iterations — iteration 2 must not fall back to one reviewer.
+7. Steps 5 and 5.4 remember `SELECTED_CLAUDE_MODELS` alongside the rest of the set, so a second iteration **in the same session** does not fall back to one reviewer. The text must scope that claim to the session and must not promise it across fresh sessions — nothing serialises the set, and `SELECTED_IDS` already behaves the same way.
 
 - [ ] **Step 9: Run the loader suite (regression guard) and commit**
 
