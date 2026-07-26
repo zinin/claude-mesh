@@ -42,13 +42,17 @@ FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'
 # === Test 1: every command site uses the same resolver ===
 # The counts are a deliberate canary, not incidental. A new command that resolves the loader
 # SHOULD break this test — bump the numbers once you have checked the new site uses the same
-# two lines. Deleting the assertion instead is how the four copies silently drift apart.
+# two lines. Deleting the assertion instead is how the five copies silently drift apart.
+#
+# mesh-review.md went 2 -> 3 with the multi-model claude reviewers: Step 2.4 (the Claude-model
+# selection page) re-resolves the loader because Q1's AskUserQuestion sits between it and
+# Step 1, so its Bash call runs in a fresh shell where $LOADER no longer exists.
 echo "=== Test 1: resolver present and in sync across command files ==="
 n_primary=$(grep -Fxh "$PRIMARY" "$CMD_DIR"/*.md 2>/dev/null | wc -l)
 n_fallback=$(grep -Fxh "$FALLBACK" "$CMD_DIR"/*.md 2>/dev/null | wc -l)
-assert_eq "4 primary lines across commands/" "4" "$n_primary"
-assert_eq "4 fallback lines across commands/" "4" "$n_fallback"
-assert_eq "mesh-review.md carries 2" "2" "$(grep -Fxc "$PRIMARY" "$CMD_DIR/mesh-review.md")"
+assert_eq "5 primary lines across commands/" "5" "$n_primary"
+assert_eq "5 fallback lines across commands/" "5" "$n_fallback"
+assert_eq "mesh-review.md carries 3" "3" "$(grep -Fxc "$PRIMARY" "$CMD_DIR/mesh-review.md")"
 assert_eq "do-plan.md carries 2" "2" "$(grep -Fxc "$PRIMARY" "$CMD_DIR/do-plan.md")"
 
 # === Test 2: the version-blind glob is gone ===
