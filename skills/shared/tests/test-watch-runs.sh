@@ -367,14 +367,17 @@ REASON="$(printf '%s\n' "$OUT" | head -1)"
 assert_eq "reason names the death" "CHANGED ext-claude/ollama/kimi RUN→SILENT" "$REASON"
 assert_eq "exit 0" "0" "$RC"
 assert_match "codex row still RUN" "RUN" "$(row codex)"
-assert_between "it waited for the change" 1 20 "$ELAPSED"
+assert_between "it waited for the change" 2 20 "$ELAPSED"
 rm -rf "$TDIR"
 
 # === Test 26: an expired budget reports DEADLINE ===
 echo "=== Test 26: an expired budget reports DEADLINE ==="
 TDIR=$(mktemp -d)
 a=$(mk_run "$TDIR" codex -60); : > "$a/raw.jsonl"
-run --since "$(( NOW - GS - MARGIN - 100 ))" --stall-sec 600 --poll-sec 1 --data-dir "$TDIR" codex
+OUT="$(timeout 15 bash "$SCRIPT" --since "$(( NOW - GS - MARGIN - 100 ))" --stall-sec 600 \
+        --poll-sec 1 --data-dir "$TDIR" codex 2>"$ERRF")"
+RC=$?
+REASON="$(printf '%s\n' "$OUT" | head -1)"
 assert_eq "reason DEADLINE" "DEADLINE" "$REASON"
 assert_eq "exit 0" "0" "$RC"
 rm -rf "$TDIR"
