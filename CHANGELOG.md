@@ -16,11 +16,13 @@ All notable changes to claude-mesh will be documented here.
   self-retries into a new directory is followed instead of being reported dead. Freshness
   is the newest mtime across `raw.jsonl`, `log.jsonl`, `watchdog.log` and
   `attempt-*/raw.jsonl`, so a supervised run between watchdog retries reads as `RUN` on
-  its heartbeat. Recovery is reported too — `SILENT → RUN` is a transition like any other.
-  Both prompts now call the script instead of describing a poll loop in prose; the
-  improvised implementation exited only when the finished count grew, which death never
-  does. An executor's unprompted message is now spent on a `--once` liveness check rather
-  than on an acknowledgement.
+  its heartbeat. Recovery is deliberately not signalled: the baseline is virtual — every
+  roster entry is assumed `RUN`, so an already-dead run is caught on the first tick after
+  every restart, and an executor that recovers on its own produces no event. Both prompts
+  now call the script instead of describing a poll loop in prose; the improvised
+  implementation exited only when the finished count grew, which death never does. An
+  executor's unprompted message is now spent on a `--once` liveness check rather than on
+  an acknowledgement.
 - `/mesh-design-review` never passed `SUPERVISED_MODE`, so its executors ran unsupervised
   by default: no `shared/watchdog.sh`, no stall detection, no restart on a torn provider
   stream, and no `watchdog.log`. Whether a run got a watchdog was luck — 42 of 223 archived
