@@ -4,6 +4,41 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+### Added
+- Multi-model built-in Claude reviewers. A new optional `claude:` section holds a
+  catalog of Claude model aliases (`claude.models: [opus, sonnet, fable]`), and a new
+  per-preset key `defaults.<preset>.claude_models` picks the default subset. Both
+  `/mesh-review` and `/mesh-design-review` now run **one independent reviewer per
+  selected Claude model** — same input, same prompt, different model — so a session on
+  `opus` can be cross-checked by `opus` and `fable` at once, with your session
+  aggregating both. The interactive UI gains a Claude-model page (★ marks the preset's
+  picks); `default` mode reads the preset. Reviewers are attributed as `claude:<model>`
+  in the dedup table, the delegation roster (as `INLINE`, never passed to
+  `verify-delegation.sh`) and the merged design-review file. Loader support:
+  `get-flag has_claude_models`, `list-claude-models`, and a `claude_models` field in
+  `get-defaults`.
+  `runtime.dispatch_model` is unchanged and still governs the codex / gemini / ext-claude
+  wrappers, `review-discussion` and `/do-plan`; claude reviewers with an explicit model
+  ignore it. Configs without a `claude:` section — or with a catalog but no models
+  selected — keep the old `/mesh-review` behaviour exactly: one claude reviewer on
+  `dispatch_model`, or on the session model when that is unset.
+
+### Fixed
+- `claude` in `defaults.design_review.builtin` was silently dropped. The loader accepted
+  the value, but `/mesh-design-review` expanded only `codex` and `gemini` in `default`
+  mode and offered no `claude` option in its interactive reviewer-type question —
+  so design review had never once run a built-in Claude reviewer. Both paths now expand
+  it — so a `design_review` preset that already lists `claude` gains one reviewer, and
+  its cost, on upgrade with no config change. The related fail-closed guard is new too:
+  `claude_models` set without `claude` in the same preset's `builtin` is now a validation
+  error rather than another silently ignored list.
+- `/mesh-design-review` swallowed the validator's exit code when reading its preset. Its
+  Step 5.0 fence ran `DEFAULTS_JSON=$("$LOADER" get-defaults design_review)` bare, so a
+  config.yaml that failed validation left `DEFAULTS_JSON` empty and Step 5.1 then STOPped
+  with the misleading "defaults.design_review not configured" instead of the real error.
+  The read is now rc-aware and surfaces the validator's stderr verbatim, matching the
+  `dispatch_model` read directly below it and `/mesh-review` Step 1.
+
 ## [0.4.3] - 2026-07-22
 
 ### Fixed

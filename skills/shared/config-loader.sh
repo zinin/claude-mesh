@@ -54,7 +54,7 @@ warn() {
 # both sets exclude `|` (the model|level pipe protocol) and anything unsafe for
 # shell substitution in the executor skills. No enum — a new model or level must
 # never require a validator change.
-IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, runtime.dispatch_model
+IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, claude.models, runtime.dispatch_model
 MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'   # engine models: adds "/" for provider-qualified ids
 
 require_yq() {
@@ -332,10 +332,84 @@ validate_gemini() {
     [ -n "$model" ] || die "gemini.model: required when gemini: section present"
 }
 
+validate_claude() {
+    # MAY BE CALLED SEVERAL TIMES per loader invocation — validate_all calls it directly,
+    # and validate_defaults calls it again before its catalog membership check. It must
+    # therefore stay SIDE-EFFECT-FREE: no warn to stderr, no state, nothing a user would
+    # see twice. (validate_codex does warn about reasoning_level; do not copy that here
+    # without first making the call sites idempotent.)
+    #
+    # Type-dispatch gate, same class as validate_codex/validate_gemini (fix wave 5):
+    # a scalar `claude:` section must die cleanly instead of crashing the getters with
+    # a raw jq "Cannot index boolean" (rc=5). null — key absent or an explicitly empty
+    # key — keeps the absent semantics.
+    #
+    # DELIBERATE ASYMMETRY with codex:/gemini:: those sections are GATES (no section ⇒
+    # `builtin: [codex]` is a hard error). `claude:` is NOT a gate — the builtin claude
+    # reviewer has no external dependency and works with no section at all. This section
+    # only widens it to several models.
+    local stype
+    stype=$(jq -r '.claude | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$stype" in
+        ""|null) return 0 ;;
+        object) ;;
+        *) die "claude: must be a mapping with a models key (got $stype)" ;;
+    esac
+
+    local mtype
+    mtype=$(jq -r '.claude.models | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$mtype" in
+        null) return 0 ;;
+        array) ;;
+        *) die "claude.models: must be a list of Claude model aliases, got $mtype" ;;
+    esac
+
+    local count
+    count=$(jq '.claude.models | length' "$CONFIG_JSON")
+    local i=0
+    local seen=""   # line-based accumulator (no bash-4 associative arrays)
+    while [ "$i" -lt "$count" ]; do
+        local etype v
+        etype=$(jq -r ".claude.models[$i] | type" "$CONFIG_JSON")
+        [ "$etype" = "string" ] \
+            || die "claude.models[$i]: must be a string (got $etype) — quote it, e.g. - \"opus\""
+        v=$(jq -r ".claude.models[$i]" "$CONFIG_JSON")
+        [ -n "$v" ] || die "claude.models[$i]: empty value"
+        # Same forward-compatible charset as runtime.dispatch_model — no enum, a new
+        # Claude model must never require a validator change. The leading-alnum anchor
+        # rejects flag-injection (-opus/.foo).
+        [[ "$v" =~ $IDENT_RE ]] \
+            || die "claude.models[$i]: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$v\""
+        # Duplicates would produce two reviewers with the same name — indistinguishable
+        # in the dedup/attribution tables of both orchestrators.
+        case " $seen " in
+            *" $v "*) die "claude.models[$i]: duplicate model \"$v\" (two reviewers would be indistinguishable)" ;;
+        esac
+        seen="$seen $v"
+        i=$((i+1))
+    done
+}
+
 validate_defaults() {
     if ! jq -e '.defaults' "$CONFIG_JSON" >/dev/null 2>&1; then
         return 0
     fi
+
+    # claude_models entries are checked against the claude.models catalog below, so the
+    # catalog must be a well-formed list FIRST. validate_claude is cheap and idempotent
+    # (validate_all calls it directly too, and it MUST stay side-effect-free for that
+    # reason — see its own header).
+    #
+    # It also guards the VERY NEXT LINE: on a scalar section such as `claude: false`,
+    # `jq -r '(.claude.models // [])[]'` dies with "Cannot index boolean with string",
+    # and cmd_get_defaults — which runs ONLY this validator, per the typed-getter
+    # principle — would surface that raw jq noise instead of a clean message. (Note the
+    # protection stops there: cmd_get_defaults itself only ever indexes
+    # `.defaults.<category>.*` and never touches `.claude`.)
+    validate_claude
+
+    local claude_catalog
+    claude_catalog=$(jq -r '(.claude.models // [])[]' "$CONFIG_JSON" | tr '\n' ' ')
 
     local has_codex has_gemini
     has_codex=$(jq -e '.codex' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0)
@@ -401,6 +475,77 @@ validate_defaults() {
                 *) die "defaults.$preset.models[$m]: unknown model \"$mid\"" ;;
             esac
             m=$((m+1))
+        done
+
+        # claude_models entries — the built-in claude reviewer fanned out over several
+        # Claude models. Same shape as the models[] check above: type gate, membership in
+        # the catalog, no duplicates.
+        local cmtype
+        cmtype=$(jq -r ".defaults.$preset.claude_models | type" "$CONFIG_JSON")
+        case "$cmtype" in
+            array|null) ;;
+            *) die "defaults.$preset.claude_models: must be a list, got $cmtype" ;;
+        esac
+
+        local cm_count
+        # No `|| echo 0` fallback: the type gate above already rejects everything except
+        # array and null, and `null | length` is 0 in jq with rc=0 — not an error. A
+        # fallback here would be dead code suggesting a failure mode that cannot occur.
+        cm_count=$(jq ".defaults.$preset.claude_models | length" "$CONFIG_JSON")
+        if [ "$cm_count" -gt 0 ]; then
+            # Fail closed: a claude_models list with no "claude" in builtin is almost
+            # certainly a typo, and a SILENTLY IGNORED list is exactly the bug this
+            # feature fixes in mesh-design-review. Never repeat it here.
+            local claude_in_builtin
+            claude_in_builtin=$(jq "[(.defaults.$preset.builtin // [])[] | select(. == \"claude\")] | length" "$CONFIG_JSON")
+            [ "$claude_in_builtin" -gt 0 ] \
+                || die "defaults.$preset.claude_models is set but \"claude\" is missing from defaults.$preset.builtin (add \"claude\" to builtin, or drop claude_models)"
+        fi
+
+        local c=0
+        local seen_cm=""
+        while [ "$c" -lt "$cm_count" ]; do
+            local cmetype cmv
+            # Element type gate — same check validate_claude does on the catalog. Without
+            # it `jq -r` stringifies a number/boolean/null and the membership test below
+            # compares that string, so a catalog of ["5","true"] would accept a preset of
+            # [5, true]. Unquoted `[true]`/`[false]` DO parse as booleans and land here;
+            # `[yes]`/`[no]`/`[on]`/`[off]` do NOT — under kislyuk-yq those are the STRINGS
+            # "yes"/"no"/"on"/"off", so the membership check below is what reports them.
+            # Same behaviour the note at validate_codex records, empirically locked by Test 45.
+            cmetype=$(jq -r ".defaults.$preset.claude_models[$c] | type" "$CONFIG_JSON")
+            [ "$cmetype" = "string" ] \
+                || die "defaults.$preset.claude_models[$c]: must be a string (got $cmetype) — quote it, e.g. - \"opus\""
+            cmv=$(jq -r ".defaults.$preset.claude_models[$c]" "$CONFIG_JSON")
+            # MUST precede the membership test. `tr '\n' ' '` leaves $claude_catalog
+            # EMPTY when there is no catalog (jq emits an empty stream), so
+            # " $claude_catalog " is "  " — and an empty $cmv makes the glob *"  "*
+            # match, silently ACCEPTING an empty entry even with no catalog at all.
+            # validate_models has the same guard for the same reason
+            # (`[ -n "$id" ] || die`, :215).
+            [ -n "$cmv" ] || die "defaults.$preset.claude_models[$c]: empty value"
+            # Charset gate — the SAME check validate_claude runs on the catalog (:381), and
+            # the reason the membership test below cannot be spanned. Membership is a
+            # substring match against the space-joined catalog, so without this a
+            # multi-token value whose words happen to be ADJACENT catalog members
+            # false-accepts: catalog [opus, fable] + `claude_models: ["opus fable"]` (a
+            # missing comma — YAML flow yields ONE string) matched " opus fable " and
+            # validated clean. Rejecting the space here makes the span impossible, and
+            # keeps both sides of the catalog⊇preset relation validated identically.
+            [[ "$cmv" =~ $IDENT_RE ]] \
+                || die "defaults.$preset.claude_models[$c]: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$cmv\""
+            # Quoted case-membership (glob/word-split safe), same idiom as the models[]
+            # check above. An absent catalog makes $claude_catalog empty, so every entry
+            # lands here — hence the "add it to the claude.models catalog" hint.
+            case " $claude_catalog " in
+                *" $cmv "*) ;;
+                *) die "defaults.$preset.claude_models[$c]: unknown claude model \"$cmv\" (add it to the claude.models catalog)" ;;
+            esac
+            case " $seen_cm " in
+                *" $cmv "*) die "defaults.$preset.claude_models[$c]: duplicate model \"$cmv\"" ;;
+            esac
+            seen_cm="$seen_cm $cmv"
+            c=$((c+1))
         done
 
         # run_mode (only for code_review)
@@ -490,12 +635,14 @@ validate_runtime() {
 
 validate_all() {
     # Single source of truth for the full validation pipeline.
-    # Order matters: providers first (models reference providers),
-    # then models, then sections that reference models (defaults), then runtime.
+    # Order matters: providers first (models reference providers), then models, then
+    # the per-engine sections, then sections that reference BOTH models and the claude
+    # catalog (defaults), then runtime.
     validate_providers
     validate_models
     validate_codex
     validate_gemini
+    validate_claude
     validate_defaults
     validate_runtime
 }
@@ -641,8 +788,12 @@ cmd_get_flag() {
     #
     # Output: "1"/"0" for has_* boolean flags, scalar value (string/integer) for
     #         documented getters. The exact contract is per-case.
-    # Exit:   0 always (the answer is the stdout, not the exit code). die() fires
-    #         only for unknown feature names.
+    # Exit:   0 for every documented feature once the config loads — load_or_die
+    #         still owns rc=2 ("no config.yaml"). die() fires (rc=1) on an unknown
+    #         feature name AND from the three validator-backed cases
+    #         (has_claude_models, do_plan_default_stop_tokens, dispatch_model),
+    #         which surface the validator's own message on a malformed section:
+    #         a consumer telling "absent" from "broken" must check rc, not stdout.
     local feature="${1:-}"
     load_or_die
     case "$feature" in
@@ -654,6 +805,18 @@ cmd_get_flag() {
             ;;
         has_models)
             jq -e '.models[0]' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
+            ;;
+        has_claude_models)
+            # Non-empty claude.models catalog? Gates the Claude-model selection page in
+            # /mesh-review and /mesh-design-review. Unlike the bare-probe has_* cases
+            # above, this VALIDATES BEFORE READING, so a malformed `claude:` section
+            # fails loudly with the validator's own message instead of a raw jq read on
+            # `claude: false` exiting 5 ("Cannot index boolean") and that rc being
+            # swallowed by `|| echo 0` into a bogus "no catalog". (Indexing depth is NOT
+            # the distinction — has_models probes `.models[0]`, inside its section too,
+            # and deliberately does not validate.) Mirrors the typed-getter cases below.
+            validate_claude
+            jq -e '.claude.models[0]' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
         has_defaults_code_review)
             jq -e '.defaults.code_review' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
@@ -667,9 +830,15 @@ cmd_get_flag() {
             # values. Pattern mirrors cmd_get_codex/cmd_get_gemini/cmd_get_defaults
             # (each typed getter calls only the validator that owns its section,
             # NOT the full validate_all — see iter-2 CONCERN-2/3).
-            # has_* cases above are existence checks of the section only, so they
-            # intentionally skip validation (validators run later, in the typed
-            # getter that actually reads field values).
+            # The bare-probe has_* cases above (has_codex / has_gemini / has_models /
+            # has_defaults_code_review) skip validation on purpose: each is a single
+            # `jq -e` probe whose rc IS the answer, so a malformed section simply reads
+            # as "absent" and the validator runs later, in the typed getter that actually
+            # reads field values. has_claude_models is not one of them — it VALIDATES
+            # BEFORE READING, so a malformed `claude:` section fails loudly (rc=1, the
+            # validator's own message) instead of jq's rc=5 being swallowed by `|| echo 0`
+            # and reported as a missing catalog. (Indexing depth is not the distinction:
+            # has_models probes `.models[0]`, inside its section too.)
             validate_runtime
             jq -r '.runtime.do_plan_default_stop_tokens // 250000' "$CONFIG_JSON"
             ;;
@@ -682,7 +851,7 @@ cmd_get_flag() {
             jq -r '.runtime.dispatch_model // empty' "$CONFIG_JSON"
             ;;
         *)
-            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
+            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_claude_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
             ;;
     esac
 }
@@ -694,6 +863,17 @@ cmd_list_models() {
     validate_providers
     validate_models
     jq -r '.models[]? | .id + "|" + (.label // .id)' "$CONFIG_JSON"
+}
+
+cmd_list_claude_models() {
+    # Emit one Claude model alias per line, in config order. Unlike cmd_list_models there
+    # is NO "<id>|<label>" pair: a Claude alias (opus / fable / …) is self-describing, so
+    # the catalog is a flat list of strings. If labels are ever needed, the catalog can be
+    # widened to {id, label} objects without breaking this line-per-entry contract.
+    # Prints nothing (exit 0) when there is no catalog.
+    load_or_die
+    validate_claude
+    jq -r '(.claude.models // [])[]' "$CONFIG_JSON"
 }
 
 cmd_list_providers() {
@@ -734,9 +914,11 @@ cmd_get_defaults() {
     esac
     load_or_die
     validate_defaults
-    # iter-3 CONCERN-1: emit a JSON object so orchestrators get builtin + models + run_mode
-    # (run_mode meaningful only for code_review) through the loader instead of raw yq. -c = one line.
-    jq -c "{builtin: (.defaults.${category}.builtin // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null)}" "$CONFIG_JSON"
+    # iter-3 CONCERN-1: emit a JSON object so orchestrators get builtin + claude_models +
+    # models + run_mode (run_mode meaningful only for code_review) through the loader
+    # instead of raw yq. -c = one line. claude_models defaults to [] and never null —
+    # both orchestrators iterate it directly.
+    jq -c "{builtin: (.defaults.${category}.builtin // []), claude_models: (.defaults.${category}.claude_models // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null)}" "$CONFIG_JSON"
 }
 
 # iter-3 CONCERN-1: typed getter for runtime UI defaults (default_run_mode) + the do-plan
@@ -775,6 +957,9 @@ case "${1:-}" in
     list-models)
         cmd_list_models
         ;;
+    list-claude-models)
+        cmd_list_claude_models
+        ;;
     list-providers)
         cmd_list_providers
         ;;
@@ -792,7 +977,7 @@ case "${1:-}" in
         cmd_get_gemini
         ;;
     *)
-        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini}" >&2
+        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini}" >&2
         exit 2
         ;;
 esac

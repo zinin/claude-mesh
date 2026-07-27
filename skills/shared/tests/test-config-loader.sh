@@ -869,6 +869,282 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on empty 'timeouts:' key (null = absent)" "0" "$RC"
 rm -rf "$TDIR" "$ERR"
 
+# === Test 47: claude: catalog — type gate, charset, duplicates ===
+# Same class of gate as Test 41 (codex:/gemini:): a scalar `claude:` section must die
+# cleanly instead of crashing the getters with a raw jq "Cannot index boolean" (rc=5).
+# The catalog is charset-validated with IDENT_RE (no enum — forward-compat), and
+# duplicates are rejected because two reviewers under one name are indistinguishable
+# in the dedup tables.
+echo "=== Test 47: claude: catalog validation ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+
+{ printf '%s\n' "$BASE"; printf 'claude: false\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on claude: false" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
+if grep -q -- "Cannot index" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: raw jq indexing noise leaked to validate stderr"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: validate stderr free of raw jq indexing noise"
+fi
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: opus\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a scalar claude.models" "1" "$RC"
+assert_stderr_contains "explains the list requirement" "claude.models: must be a list" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models:\n    - 5\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a non-string catalog entry" "1" "$RC"
+assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models:\n    - "-opus"\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a leading-dash catalog entry" "1" "$RC"
+assert_stderr_contains "names the charset rule" "claude.models\[0\]: must start with" "$ERR"
+
+# A space INSIDE the value. Unquoted YAML flow style makes this easy to write by accident
+# (`models: [opus, claude fable]` is two entries, the second with a space), and an entry
+# with a space would be word-split by the membership globs downstream.
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, "claude fable"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a catalog entry containing a space" "1" "$RC"
+assert_stderr_contains "names the charset rule for the space" "claude.models\[1\]" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable, opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate catalog entry" "1" "$RC"
+assert_stderr_contains "names the duplicate" "duplicate model" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable, "claude-fable-5", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts aliases and full ids (dashes, dots, colon)" "0" "$RC"
+
+# An explicitly EMPTY key (`claude:` → null) keeps the absent semantics, like codex:.
+{ printf '%s\n' "$BASE"; printf 'claude:\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on empty 'claude:' key (null = absent)" "0" "$RC"
+
+# An empty list is legal and simply means "no catalog" (mirrors defaults.*.models).
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: []\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero on an empty claude.models list" "0" "$RC"
+
+# A mapping with no models key at all. `.claude.models | type` is "null" here, so this is
+# deliberately equivalent to "no section" — UNLIKE codex:/gemini:, where a section missing
+# its `model:` key is a hard error. Pinned by a test so a future maintainer does not
+# "restore" the missing check.
+{ printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "treats 'claude: {}' as no catalog, not as an error" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 48: defaults.<preset>.claude_models validation ===
+# Membership mirrors defaults.*.models ⊂ models[].id. The "claude missing from builtin"
+# rule is fail-closed on purpose: a silently ignored claude_models list is exactly the
+# bug this feature fixes in mesh-design-review, so it must never be introduced here.
+echo "=== Test 48: defaults.claude_models validation ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+CATALOG=$(printf 'claude:\n  models: [opus, fable]\n')
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: opus\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a scalar claude_models" "1" "$RC"
+assert_stderr_contains "explains the list requirement" "claude_models: must be a list" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, sonnet]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a model absent from the catalog" "1" "$RC"
+assert_stderr_contains "names the unknown model" 'unknown claude model "sonnet"' "$ERR"
+
+# No catalog at all: every entry is "unknown", and the message must point at the catalog.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects claude_models with no claude.models catalog" "1" "$RC"
+assert_stderr_contains "points at the catalog" "claude.models catalog" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [codex]\n    claude_models: [opus]\ncodex:\n  model: gpt-5.5\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects claude_models without claude in builtin" "1" "$RC"
+assert_stderr_contains "names the missing builtin entry" 'is missing from defaults.code_review.builtin' "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate claude_models entry" "1" "$RC"
+assert_stderr_contains "names the duplicate" 'duplicate model "opus"' "$ERR"
+
+# Element type gate. Without it `jq -r` stringifies the value and the membership test
+# compares that string, so a catalog of ["5","true"] would accept a preset of [5, true].
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: ["5", "true"]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [5, true]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects non-string claude_models entries" "1" "$RC"
+assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
+
+# The empty-string entry is the sharp one: `tr '\n' ' '` leaves $claude_catalog EMPTY
+# when there is no catalog, so " $claude_catalog " is "  " and the glob *"  "*
+# MATCHES an empty $cmv — the entry sails through membership with no catalog at all.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [""]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects an empty claude_models entry (no catalog)" "1" "$RC"
+assert_stderr_contains "names it as empty, not as unknown" "empty value" "$ERR"
+
+# Charset gate. Membership is a substring match against the space-joined catalog, so a
+# multi-token value whose words are ADJACENT catalog members would span it: a missing
+# comma in `["opus fable"]` is ONE string, it matched " opus fable " inside " opus fable "
+# and validated clean (get-defaults then emitted the bogus entry verbatim). The catalog
+# side already rejects the identical string via IDENT_RE (Test 47) — both sides now do.
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: ["opus fable"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a space-spanning claude_models entry (missing comma)" "1" "$RC"
+assert_stderr_contains "reports it as a charset violation, not as unknown" 'must start with a letter/digit' "$ERR"
+
+# design_review is validated by the same loop.
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  design_review:\n    builtin: [claude]\n    claude_models: [sonnet]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "applies the same rules to design_review" "1" "$RC"
+assert_stderr_contains "names the design_review preset" "defaults.design_review.claude_models" "$ERR"
+
+# Happy path: catalog wider than the presets, presets differing from each other.
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, sonnet, fable]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, fable]\n  design_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts differing per-preset subsets of a wider catalog" "0" "$RC"
+# The double call is now real: validate_all calls validate_claude directly and
+# validate_defaults calls it again. A `warn` added inside it would print twice with
+# nothing catching it, so pin the silence.
+if [ ! -s "$ERR" ]; then
+    PASS=$((PASS+1)); echo "  PASS: a valid catalog + presets produce no stderr (validate_claude stays side-effect-free under its double call)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: expected empty stderr, got:"; sed 's/^/      /' "$ERR"
+fi
+
+# Back-compat: claude in builtin with NO claude_models stays valid (fallback = 1 reviewer).
+{ printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts builtin claude with no claude_models" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 49: get-flag has_claude_models + list-claude-models ===
+# Unlike has_codex/has_gemini (plain section-existence probes) these read INSIDE the
+# section, so they must validate first — a raw jq read on `claude: false` would exit 5
+# with "Cannot index boolean" and the orchestrators would surface that as garbage.
+echo "=== Test 49: has_claude_models / list-claude-models ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable]\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=1 with a catalog"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 1, got '$GOT')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
+if [ "$GOT" = "opus,fable," ]; then PASS=$((PASS+1)); echo "  PASS: list-claude-models keeps config order"; else FAIL=$((FAIL+1)); echo "  FAIL: list-claude-models (expected 'opus,fable,', got '$GOT')"; fi
+
+{ printf '%s\n' "$BASE"; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 with no section"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
+assert_exit "list-claude-models exits 0 with no catalog" "0" "$RC"
+if [ ! -s "$TDIR/out" ]; then PASS=$((PASS+1)); echo "  PASS: list-claude-models prints nothing with no catalog"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty output, got '$(cat "$TDIR/out")'"; fi
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: []\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 on an empty list"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+
+# A mapping with no models key — same "no catalog" semantics as an absent section.
+{ printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 for 'claude: {}'"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
+assert_exit "list-claude-models exits 0 for 'claude: {}'" "0" "$RC"
+
+{ printf '%s\n' "$BASE"; printf 'claude: false\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-flag dies cleanly on claude: false (no raw jq rc=5)" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >/dev/null 2>"$ERR"; RC=$?
+assert_exit "list-claude-models dies cleanly on claude: false" "1" "$RC"
+
+{ printf '%s\n' "$BASE"; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag no_such_flag >/dev/null 2>"$ERR"; RC=$?
+assert_exit "unknown get-flag feature still dies" "1" "$RC"
+assert_stderr_contains "lists has_claude_models among valid features" "has_claude_models" "$ERR"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 50: get-defaults emits claude_models ===
+# The orchestrators read the preset through this single JSON object; a missing key would
+# make them fall back to "no claude models" and silently under-dispatch.
+echo "=== Test 50: get-defaults emits claude_models ==="
+TDIR=$(mktemp -d)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+
+{ printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, sonnet, fable]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, fable]\n  design_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
+if [ "$GOT" = "opus,fable" ]; then PASS=$((PASS+1)); echo "  PASS: code_review claude_models=opus,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review claude_models (expected 'opus,fable', got '$GOT')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
+if [ "$GOT" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: design_review claude_models=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review claude_models (expected 'opus', got '$GOT')"; fi
+
+# Absent key → an empty list that is PRESENT in the object, never a missing key and never
+# null. Tested with has() on purpose: `null | length` is 0 in jq, so a length check would
+# pass even when the field is absent entirely.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r 'has("claude_models")')
+if [ "$GOT" = "true" ]; then PASS=$((PASS+1)); echo "  PASS: claude_models key always present"; else FAIL=$((FAIL+1)); echo "  FAIL: expected has(claude_models)=true, got '$GOT'"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | type')
+if [ "$GOT" = "array" ]; then PASS=$((PASS+1)); echo "  PASS: absent claude_models becomes []"; else FAIL=$((FAIL+1)); echo "  FAIL: expected an array, got '$GOT'"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.builtin | join(",")')
+if [ "$GOT" = "claude" ]; then PASS=$((PASS+1)); echo "  PASS: existing get-defaults fields intact"; else FAIL=$((FAIL+1)); echo "  FAIL: builtin (expected 'claude', got '$GOT')"; fi
+
+# The clean-death path. cmd_get_defaults is the only real consumer of the validate_claude
+# call inside validate_defaults: with a scalar `claude:` next to a `defaults:` section it
+# must die with the validator's message, not with raw jq indexing noise. Deleting that call
+# leaves the rest of the suite green (validate_all calls validate_claude itself one line
+# earlier), so the call is pinned here. Unpiped on purpose — rc through a pipe is the
+# pipeline's rc, not the loader's.
+ERR=$(mktemp)
+{ printf '%s\n' "$BASE"; printf 'claude: false\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-defaults dies cleanly on claude: false (no raw jq rc=5)" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
+if grep -q -- "Cannot index" "$ERR"; then
+    FAIL=$((FAIL+1)); echo "  FAIL: raw jq indexing noise leaked to get-defaults stderr"
+    echo "    stderr was:"; sed 's/^/      /' "$ERR"
+else
+    PASS=$((PASS+1)); echo "  PASS: get-defaults stderr free of raw jq indexing noise"
+fi
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 51: config.example.yaml documents the claude catalog end-to-end ===
+# Guards the worked example itself: the catalog must be wider than the presets (so the
+# ★-recommended vs available distinction is demonstrable) and the two presets must differ
+# (so the per-preset capability is demonstrable). A doc-only example that silently loses
+# these properties would mis-teach every new user.
+echo "=== Test 51: config.example.yaml claude catalog round-trip ==="
+TDIR=$(mktemp -d)
+cp "$TESTS_DIR/../../../config.example.yaml" "$TDIR/config.yaml"
+CATALOG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
+if [ "$CATALOG" = "opus,sonnet,fable," ]; then PASS=$((PASS+1)); echo "  PASS: example catalog is opus,sonnet,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: example catalog (expected 'opus,sonnet,fable,', got '$CATALOG')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=1 for the example"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 1, got '$GOT')"; fi
+CR=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
+DR=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
+if [ "$CR" = "opus,fable" ]; then PASS=$((PASS+1)); echo "  PASS: example code_review claude_models=opus,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review claude_models (expected 'opus,fable', got '$CR')"; fi
+if [ "$DR" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review claude_models=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review claude_models (expected 'opus', got '$DR')"; fi
+if [ "$CR" != "$DR" ]; then PASS=$((PASS+1)); echo "  PASS: example presets demonstrate differing sets"; else FAIL=$((FAIL+1)); echo "  FAIL: example presets must differ to demonstrate the feature"; fi
+# Task 4 rewrote cmd_get_defaults as one jq object literal, leaving `models` and `run_mode`
+# with no regression coverage anywhere in this suite. Pin both here, on the example: run_mode
+# must stay `background` for code_review and keep defaulting to null for design_review (which
+# has no run_mode field at all), and neither preset's models list may be lost.
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
+if [ "$GOT" = "background,4" ]; then PASS=$((PASS+1)); echo "  PASS: example code_review keeps run_mode=background + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review run_mode/models count (expected 'background,4', got '$GOT')"; fi
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
+if [ "$GOT" = "null,4" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review keeps run_mode=null + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review run_mode/models count (expected 'null,4', got '$GOT')"; fi
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
