@@ -42,7 +42,7 @@ FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'
 # === Test 1: every command site uses the same resolver ===
 # The counts are a deliberate canary, not incidental. A new command that resolves the loader
 # SHOULD break this test — bump the numbers once you have checked the new site uses the same
-# two lines. Deleting the assertion instead is how the five copies silently drift apart.
+# two lines. Deleting the assertion instead is how the six copies silently drift apart.
 #
 # mesh-review.md went 2 -> 3 with the multi-model claude reviewers: Step 2.4 (the Claude-model
 # selection page) re-resolves the loader because Q1's AskUserQuestion sits between it and
