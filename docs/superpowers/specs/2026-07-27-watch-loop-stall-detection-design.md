@@ -94,8 +94,10 @@ which is why glm retried and deepseek/kimi did not. `runtime.max_redispatch` is 
 
 ## Component A — enable supervised mode in design-review
 
-Add `SUPERVISED_MODE=shell` to the three executor dispatch templates in
-`skills/mesh-design-review/SKILL.md` Step 6 (codex, gemini, ext-claude).
+Add `SUPERVISED_MODE: shell` to the executor dispatch templates in
+`skills/mesh-design-review/SKILL.md` Step 6 — two blocks covering three executors: one
+shared by codex and gemini, one for ext-claude. The punctuation matches the neighbouring
+`TASK_NAME:` line in each template.
 
 The parameter must also be documented in the executor agent contracts. Today only
 `agents/ext-claude-executor.md` mentions it, and only in passing; `agents/codex-executor.md`
