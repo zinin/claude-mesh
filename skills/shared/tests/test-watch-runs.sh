@@ -336,6 +336,69 @@ run --since "$SINCE_OK" --data-dir "$TDIR" --stall-sec --once codex
 assert_eq "--stall-sec eating --once → 64" "64" "$RC"
 rm -rf "$TDIR"
 
+# The deadline is computed inside the script as --since + global_sec + margin, so these tests
+# steer it by choosing --since. global_sec comes from the real config; read it the same way.
+GS="$(bash "$LOADER" get-runtime 2>/dev/null | jq -r '.timeouts.global_sec // empty' 2>/dev/null)"
+[[ "$GS" =~ ^[1-9][0-9]*$ ]] || GS=3600
+MARGIN=300
+
+if [ "$GS" -gt 80000 ]; then
+    FAIL=$((FAIL+1))
+    echo "  FAIL: runtime.timeouts.global_sec=$GS leaves no room inside the --since plausibility window; Tests 25-27 cannot run"
+else
+
+# === Test 25: the watcher blocks while everything is RUN, and returns when one goes silent ===
+# The 2026-07-26 blind spot: nothing finishes, so a count-based watcher never wakes. There is no
+# race with the baseline here — the baseline is virtual, so a change landing before the first
+# evaluation is reported just the same.
+echo "=== Test 25: a run going quiet wakes the watcher ==="
+TDIR=$(mktemp -d)
+a=$(mk_run "$TDIR" codex -60); : > "$a/raw.jsonl"
+b=$(mk_run "$TDIR" ext-claude/ollama/kimi -60); : > "$b/raw.jsonl"
+( sleep 2; touch -d '660 seconds ago' "$b/raw.jsonl" "$b" ) &
+TOUCHER=$!
+START=$(date +%s)
+OUT="$(timeout 30 bash "$SCRIPT" --since "$SINCE_OK" --stall-sec 600 --poll-sec 1 \
+        --data-dir "$TDIR" codex ext-claude/ollama/kimi 2>"$ERRF")"
+RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+wait "$TOUCHER" 2>/dev/null
+REASON="$(printf '%s\n' "$OUT" | head -1)"
+assert_eq "reason names the death" "CHANGED ext-claude/ollama/kimi RUN→SILENT" "$REASON"
+assert_eq "exit 0" "0" "$RC"
+assert_match "codex row still RUN" "RUN" "$(row codex)"
+assert_between "it waited for the change" 1 20 "$ELAPSED"
+rm -rf "$TDIR"
+
+# === Test 26: an expired budget reports DEADLINE ===
+echo "=== Test 26: an expired budget reports DEADLINE ==="
+TDIR=$(mktemp -d)
+a=$(mk_run "$TDIR" codex -60); : > "$a/raw.jsonl"
+run --since "$(( NOW - GS - MARGIN - 100 ))" --stall-sec 600 --poll-sec 1 --data-dir "$TDIR" codex
+assert_eq "reason DEADLINE" "DEADLINE" "$REASON"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# === Test 27: the watcher really blocks rather than returning at once ===
+echo "=== Test 27: the watcher blocks until its deadline ==="
+TDIR=$(mktemp -d)
+a=$(mk_run "$TDIR" codex -60); : > "$a/raw.jsonl"
+# NOW was stamped when the suite started and the suite takes seconds to get here; a deadline
+# eight seconds past a stale NOW is already behind us. Re-read the clock.
+printf -v T27_NOW '%(%s)T' -1
+START=$(date +%s)
+OUT="$(timeout 40 bash "$SCRIPT" --since "$(( T27_NOW - GS - MARGIN + 8 ))" --stall-sec 600 \
+        --poll-sec 1 --data-dir "$TDIR" codex 2>"$ERRF")"
+RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+REASON="$(printf '%s\n' "$OUT" | head -1)"
+assert_eq "reason DEADLINE" "DEADLINE" "$REASON"
+assert_eq "exit 0" "0" "$RC"
+assert_between "it blocked for roughly the remaining budget" 4 30 "$ELAPSED"
+rm -rf "$TDIR"
+
+fi
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

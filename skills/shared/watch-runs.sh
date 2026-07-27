@@ -268,12 +268,15 @@ any_moved() { local s; for s in "${STATUSES[@]}"; do [ "$s" = RUN ] || return 0;
 
 emit() { printf '%s\n' "$1"; printf '%s' "$ROWS"; exit 0; }
 
-# Checked in this order on every evaluation: all-done, settle, deadline, change.
-# Finished work outranks the budget: with the deadline first, a roster that had completed
-# while the orchestrator was busy reported DEADLINE — "time ran out" over six finished runs.
-evaluate
-all_done && emit "ALL_DONE"
-any_run || emit "SETTLED $(transitions)"
-[ "$NOW" -lt "$DEADLINE" ] || emit "DEADLINE"
-any_moved && emit "CHANGED $(transitions)"
-emit "SNAPSHOT"
+# Same order, now on a loop: all-done, settle, deadline, change. Because the baseline is
+# virtual there is no baseline-establishing pass — the first evaluation and every later one
+# run identical logic, and the loop needs no "first time" flag.
+while :; do
+    evaluate
+    all_done && emit "ALL_DONE"
+    any_run || emit "SETTLED $(transitions)"
+    [ "$NOW" -lt "$DEADLINE" ] || emit "DEADLINE"
+    any_moved && emit "CHANGED $(transitions)"
+    [ "$ONCE" = 0 ] || emit "SNAPSHOT"
+    sleep "$POLL_SEC"
+done
