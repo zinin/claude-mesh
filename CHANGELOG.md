@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.5.0] - 2026-07-27
 
 ### Added
 - Multi-model built-in Claude reviewers. A new optional `claude:` section holds a
