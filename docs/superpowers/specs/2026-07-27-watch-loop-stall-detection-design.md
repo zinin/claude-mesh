@@ -451,11 +451,20 @@ transitions there is no set arithmetic and no fallback branch.
 "nothing is left running" is not the useful half of the sentence — "kimi went RUN→SILENT"
 is. `ALL_DONE` carries none, since every transition would read `RUN→DONE`.
 
-Checked in this order on every evaluation: deadline, then all-done, then settle, then
+Checked in this order on every evaluation: all-done, then settle, then deadline, then
 change; `SNAPSHOT` is what `--once` prints when none of those fire. Because the baseline is
 virtual rather than established by the first iteration, there is no
 baseline-establishing pass — the first evaluation and every later one run identical logic,
 and the loop needs no "first time" flag.
+
+**Finished work outranks the budget.** Running the script against the real 2026-07-27 run
+directories 156 minutes after dispatch produced `DEADLINE` over six rows that all read
+`DONE` — "time ran out" about a review that had completed. Review iteration 1 predicted
+exactly this and it reproduces trivially, because the orchestrator is often busy when the
+last run lands. `ALL_DONE` and `SETTLED` are therefore evaluated first: if nothing is still
+running, the budget is irrelevant. The deadline stays ahead of `CHANGED` so that a roster
+which never stops running still terminates on the budget rather than on the orchestrator's
+diligence.
 
 **`CHANGED` therefore fires under `--once` too, and that is the point.** A one-shot check
 answering an executor's message reports `CHANGED ext-claude/ollama/kimi RUN→SILENT`
