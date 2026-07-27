@@ -2,6 +2,44 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Fixed
+- The `/mesh-review` and `/mesh-design-review` watch loops could not tell a slow
+  executor from a dead one — both leave the same disk, and every finalization predicate
+  was about a result *appearing*. The only backstop was `runtime.timeouts.global_sec`,
+  an hour of blindness by default, and when it fired it reported `WATCH_TIMEOUT` rather
+  than naming the death. A new `skills/shared/watch-runs.sh` classifies each dispatched
+  executor as `DONE` / `FAILED` / `RUN` / `SILENT` / `MISSING` and returns as soon as any
+  of them stops running, naming the executor and the transition. It holds a roster of
+  `engine[/provider/model]` rather than run directories, so an executor that dies and
+  self-retries into a new directory is followed instead of being reported dead. Freshness
+  is the newest mtime across `raw.jsonl`, `log.jsonl`, `watchdog.log` and
+  `attempt-*/raw.jsonl`, so a supervised run between watchdog retries reads as `RUN` on
+  its heartbeat. Recovery is reported too — `SILENT → RUN` is a transition like any other.
+  Both prompts now call the script instead of describing a poll loop in prose; the
+  improvised implementation exited only when the finished count grew, which death never
+  does. An executor's unprompted message is now spent on a `--once` liveness check rather
+  than on an acknowledgement.
+- `/mesh-design-review` never passed `SUPERVISED_MODE`, so its executors ran unsupervised
+  by default: no `shared/watchdog.sh`, no stall detection, no restart on a torn provider
+  stream, and no `watchdog.log`. Whether a run got a watchdog was luck — 42 of 223 archived
+  runs did, against 242 of 255 on the `/mesh-review` path. Step 6 now dispatches every
+  executor with `SUPERVISED_MODE: shell`, and `codex-executor` / `gemini-executor` /
+  `ext-claude-executor` document the parameter so it is forwarded to the skill instead of
+  leaking into the prompt.
+- `/mesh-design-review` accepted an executor's report without checking that the run had
+  produced one. A run that stops and leaves a non-empty `output.txt` looks finished even
+  when the file holds only the model's narration. It now runs `verify-delegation.sh` — the
+  guard `/mesh-review` has used since Step 6.0 existed — before asking an executor to
+  extract findings.
+
+### Configuration
+- No new keys. `runtime.timeouts.stall_sec` gains a second consumer: the orchestrator's
+  watcher reports a run `SILENT` past that threshold. The watcher floors it at 600, because
+  `codex-exec` and `gemini-exec` hardcode `HARD_ZERO_TIMEOUT=600` and ignore the key — a
+  lower value would let the watcher call a live run dead before its own watchdog acts.
+
 ## [0.5.0] - 2026-07-27
 
 ### Added
