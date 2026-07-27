@@ -125,29 +125,55 @@ five minors, then the same false claim surviving in README.
 
 The orchestrators are prompts — the loader suite cannot prove they dispatch correctly. Only a real run can.
 
-**Prerequisite:** the user's live `config.yaml` (`~/.claude/plugins/data/claude-mesh-zinin/config.yaml`) has no `claude:` section yet. **Do not edit it — agents never modify `config.yaml`.** Ask the user to add:
+**Prerequisite:** ✅ DONE (2026-07-26). The user explicitly instructed the controller to edit their
+live `config.yaml`, overriding the standing "agents never edit config.yaml" rule **for that one
+request** — the rule still stands by default. Backup at `config.yaml.bak-2026-07-26`, mode 600
+preserved. The live config now has:
 
 ```yaml
 claude:
-  models: [opus, fable]
+  models: [opus, sonnet, fable]     # `sonnet` added deliberately — see below
 ```
 
-and, if they want `default` mode covered, `claude_models: [opus, fable]` to `defaults.code_review` and `claude_models: [opus]` to `defaults.design_review`.
+plus `claude_models: [opus, fable]` in `defaults.code_review` and `claude_models: [opus]` in
+`defaults.design_review`.
 
-- [ ] **Step 1: Validate the live config**
+**Deviation from this plan, user-approved:** the plan prescribed the catalog `[opus, fable]`, which
+equals `code_review.claude_models` exactly — so every entry on the Step 2.4 page would carry ★ and
+the marker would discriminate nothing. `sonnet` was added so it renders **unstarred between two
+starred entries**. Costs nothing unless selected. Do not "fix" the catalog back.
 
-Run: `bash skills/shared/config-loader.sh validate && bash skills/shared/config-loader.sh list-claude-models`
-Expected: exit 0, then `opus` and `fable` on separate lines.
+- [x] **Step 1: Validate the live config** — ✅ DONE, rc=0. `list-claude-models` → `opus` / `sonnet` /
+  `fable`; `get-flag has_claude_models` → 1; `get-defaults code_review`.claude_models →
+  `["opus","fable"]`; `get-defaults design_review`.claude_models → `["opus"]`. The only stderr is the
+  pre-existing `codex.reasoning_level: max` WARN.
 
 - [ ] **Step 2: Smoke `/mesh-review` interactively**
 
-Run `/claude-mesh:mesh-review` and select `claude` plus at least one other reviewer type.
+**The `default` half of this step is ALREADY VERIFIED** (2026-07-26, `/mesh-review default`, 8
+reviewers): Step 0 expanded `claude` over `claude_models` into two `general-purpose` Tasks carrying
+`model: "opus"` and `model: "fable"`; `DISPATCH_MODEL=opus` governed the wrappers and NOT them; both
+were excluded from the `engine:model` list; the Step 6.0 guard returned `REAL` for all six wrappers.
+**What is left is strictly the interactive path** — none of Steps 1–4 of the UI execute in `default`
+mode, and neither does the `CLAUDE_DEFAULT_IDS` echo added by the review-fix commit.
+
+Run `/claude-mesh:mesh-review` (**no `default` argument**) and select `claude` plus at least one
+other reviewer type. Cheap variant if budget matters: select **only** `claude` — Step 3 is then
+skipped entirely and no external model runs; the mixed roster is the only thing that variant leaves
+uncovered, and the `default` run above already covered it with six wrappers.
 Expected:
-- the Claude-model page appears with `opus` and `fable`, ★ on the preset entries;
+- the Claude-model page (Step 2.4) appears with `opus`, `sonnet` and `fable`;
+- **★ on `opus` and `fable` only — `sonnet` unstarred, between them.** This is the actual ★ test:
+  it is the reason `sonnet` is in the catalog but in neither preset;
 - the Step 2.5 confirmation lists `claude:opus` and `claude:fable` as separate bullets;
 - two `general-purpose` Tasks are dispatched, carrying `model: "opus"` and `model: "fable"`;
 - the Step 6.0 table has an `INLINE` row for each, and `verify-delegation.sh` is not called for them;
 - findings are attributed `claude:opus` / `claude:fable`.
+
+**Watch the first bash fence of the run.** It must show
+`LOADER="/opt/github/zinin/claude-mesh/skills/shared/config-loader.sh"`. A path under
+`~/.claude/plugins/cache/zinin/claude-mesh/0.4.3` means the stale installed copy ran (it has no
+`list-claude-models` at all) and the smoke proves nothing — abort and relaunch with `--plugin-dir`.
 
 - [ ] **Step 3: Smoke the fallback path**
 
