@@ -451,7 +451,18 @@ Collect output paths from every **executor** (codex / gemini / ext-claude) — b
    | `MISSING` | no run dir for this executor at all |
 
    The reason line names what moved — `CHANGED ext-claude/ollama/kimi RUN→SILENT`. Terminal verdicts are `ALL_DONE`, `SETTLED` (nothing left running) and `DEADLINE` (the watch budget expired); those three end the loop. A healthy `--once` prints `SNAPSHOT`. **Every verdict exits 0.** A non-zero exit means the watcher itself is broken, never that an executor died.
-3. When a run is finalized but its executor has not delivered its review — SendMessage that agent: `your external run finished — read its output.txt, extract the findings and send your report`. Ping once per finalized run — re-ping only if the executor is still silent after the next poll interval (~60–90 s).
+3. When a run reaches `DONE`, check that it actually produced a review **before** pinging its executor. `DONE` means the run stopped and left a non-empty `output.txt`; it does not mean the file holds findings.
+
+   ```bash
+   SKILL_BASE="<the absolute path Claude Code printed when this skill loaded>"
+   VERIFY="$SKILL_BASE/../shared/verify-delegation.sh"
+   bash "$VERIFY" ext-claude zai/glm 1769515472
+   ```
+
+   The three arguments are the engine, the model (`-` for codex and gemini) and the **same** `DISPATCH_EPOCH` you pass to the watcher — substitute the actual number.
+
+   - `REAL` — SendMessage that executor: `your external run finished — read its output.txt, extract the findings and send your report`. Ping once per `DONE` run; re-ping only if it is still silent after the next poll interval (~60–90 s).
+   - `STALLED` / `BROKEN` / `FLIP` — the run stopped without producing a usable review. Treat it as a failed executor per point 4 and do **not** ping: asking an agent to extract findings from a file that has none is how a draft becomes a review. On 2026-07-27 a torn run left a 47429-byte `output.txt` containing only the model's narration; `verify-delegation.sh` classified it `STALLED` ("no usable result event in raw.jsonl"), and only the executor's own honesty had kept it out of the merge.
 4. **A `SILENT`, `FAILED` or `MISSING` run is a dead executor** — treat it per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Do **not** re-dispatch it. `watchdog.sh` already restarts the CLI up to twice inside the run, and that is this file's only retry layer, which is exactly why a third one here would just spend another budget on the same failure. Report what you actually observed: "ext-claude ollama/kimi silent for 612s, last write 14:40:43". Never call a death `WATCH_TIMEOUT`; that claims time ran out when in fact an executor died, and the two call for different actions.
 5. **Pass only the executors you are still waiting for.** The watcher assumes every roster entry is running, so an entry you have already handled comes straight back as news. If the watcher returns twice in a row with the same reason, you did not narrow the roster. Stop watching once the roster would be empty.
 6. Repeat until every dispatched executor has reported, is dead, or the watch budget expires — never interpret silence as "no findings". This loop covers the codex / gemini / ext-claude executors only; claude reviewers are not part of it.
