@@ -148,44 +148,32 @@ starred entries**. Costs nothing unless selected. Do not "fix" the catalog back.
   `["opus","fable"]`; `get-defaults design_review`.claude_models → `["opus"]`. The only stderr is the
   pre-existing `codex.reasoning_level: max` WARN.
 
-- [ ] **Step 2: Smoke `/mesh-review` interactively**
+- [x] **Step 2: Smoke `/mesh-review` interactively** — ✅ DONE. `default` half 2026-07-26 (8
+  reviewers, two `general-purpose` Tasks on `model: "opus"` / `"fable"`, wrappers on `DISPATCH_MODEL`
+  and excluded correctly, all six `REAL`); interactive half 2026-07-27 on a second machine. Step 2.4
+  rendered `opus` / `sonnet` / `fable` in config order with **★ on `opus` and `fable` only and
+  `sonnet` unstarred between them** — the assertion the catalog deviation exists for. Selecting
+  `opus` + **`sonnet`** (not the plan's `opus` + `fable`) made Step 2.5's bullets discriminate
+  `SELECTED_CLAUDE_MODELS` from `CLAUDE_DEFAULT_IDS`, which the plan's own choice could not. Fix C's
+  `CLAUDE_DEFAULT_IDS` echo and Task 6's fresh-shell `$LOADER` re-resolution both confirmed live.
+  Exited at Step 2.5 without dispatch, per the user's "no agents" instruction — the dispatch arc was
+  already proved by the `default` half. Copy-under-test gate passed on both halves. Details in the
+  ledger.
 
-**The `default` half of this step is ALREADY VERIFIED** (2026-07-26, `/mesh-review default`, 8
-reviewers): Step 0 expanded `claude` over `claude_models` into two `general-purpose` Tasks carrying
-`model: "opus"` and `model: "fable"`; `DISPATCH_MODEL=opus` governed the wrappers and NOT them; both
-were excluded from the `engine:model` list; the Step 6.0 guard returned `REAL` for all six wrappers.
-**What is left is strictly the interactive path** — none of Steps 1–4 of the UI execute in `default`
-mode, and neither does the `CLAUDE_DEFAULT_IDS` echo added by the review-fix commit.
+- [x] **Step 3: Smoke the fallback path** — ✅ DONE 2026-07-27, **without touching the live
+  `config.yaml`**. `resolve_plugin_data()` honours `$CLAUDE_PLUGIN_DATA`, so the config was copied to
+  a scratch dir, the catalog and both `claude_models:` keys commented out there, and the fences run
+  with that prefix. Result: `validate` rc=0, `has_claude_models`=0, both presets `claude_models: []`;
+  interactively `HAS_CLAUDE_MODELS=0` → **Step 2.4 skipped entirely** (the skip branch that binds
+  `SELECTED_CLAUDE_MODELS` empty, fix E) → Step 2.5 showed **exactly one** bullet,
+  `claude (модель по умолчанию)`, on `DISPATCH_MODEL=opus`. Back-compat guarantee holds.
+  Bonus, measured rather than reasoned: a second scratch config with ONLY the catalog commented out
+  makes `validate` exit rc=1 with `defaults.code_review.claude_models[0]: unknown claude model
+  "opus" (add it to the claude.models catalog)` — the trap this step warns about is real and the
+  message names its own fix.
 
-Run `/claude-mesh:mesh-review` (**no `default` argument**) and select `claude` plus at least one
-other reviewer type. Cheap variant if budget matters: select **only** `claude` — Step 3 is then
-skipped entirely and no external model runs; the mixed roster is the only thing that variant leaves
-uncovered, and the `default` run above already covered it with six wrappers.
-Expected:
-- the Claude-model page (Step 2.4) appears with `opus`, `sonnet` and `fable`;
-- **★ on `opus` and `fable` only — `sonnet` unstarred, between them.** This is the actual ★ test:
-  it is the reason `sonnet` is in the catalog but in neither preset;
-- the Step 2.5 confirmation lists `claude:opus` and `claude:fable` as separate bullets;
-- two `general-purpose` Tasks are dispatched, carrying `model: "opus"` and `model: "fable"`;
-- the Step 6.0 table has an `INLINE` row for each, and `verify-delegation.sh` is not called for them;
-- findings are attributed `claude:opus` / `claude:fable`.
-
-**Watch the first bash fence of the run.** It must show
-`LOADER="/opt/github/zinin/claude-mesh/skills/shared/config-loader.sh"`. A path under
-`~/.claude/plugins/cache/zinin/claude-mesh/0.4.3` means the stale installed copy ran (it has no
-`list-claude-models` at all) and the smoke proves nothing — abort and relaunch with `--plugin-dir`.
-
-- [ ] **Step 3: Smoke the fallback path**
-
-Ask the user to comment out the `claude:` section **together with both `claude_models:` keys**. Commenting out only the catalog leaves the preset lists orphaned, and the fail-closed guard added in Task 2 then makes the config invalid — every command fast-fails on validation and the fallback path never runs at all. That failure would look like a regression while actually being the new validator working correctly.
-
-Then run `/claude-mesh:mesh-review` again and select `claude`.
-Expected: no Claude-model page; exactly one reviewer named `claude` on `dispatch_model` (`opus` in the user's config). This is the back-compat guarantee — if it regresses, every existing config changes behaviour on upgrade.
-
-- [ ] **Step 3b: Restore the config before continuing**
-
-Ask the user to uncomment everything they commented out in Step 3, then confirm with `bash skills/shared/config-loader.sh validate && bash skills/shared/config-loader.sh list-claude-models`.
-Expected: exit 0 and the catalog printed again. **Step 4 below asserts a `## claude:opus` section, which cannot appear while the catalog is still commented out** — skipping this restore makes Step 4 fail for the wrong reason.
+- [x] **Step 3b: Restore the config** — ✅ MOOT. Step 3 never modified the live config, so there is
+  nothing to restore and Step 4 cannot fail for that reason.
 
 - [ ] **Step 4: Smoke `/mesh-design-review default`**
 
