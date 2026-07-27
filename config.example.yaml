@@ -257,6 +257,12 @@ runtime:
 
   timeouts:                                    # all [optional]; each must be a positive integer (seconds).
     single_run_sec: 1800                       # one `claude -p` attempt (wrapped in `timeout`). default 1800
-    stall_sec: 600                             # supervised mode: no output for this long → kill + retry. default 600
+    stall_sec: 600                             # no output for this long → supervised mode kills and retries;
+                                               #   the /mesh-review and /mesh-design-review watcher
+                                               #   (shared/watch-runs.sh) reports the run SILENT. default 600.
+                                               #   The watcher floors this at 600: codex-exec and gemini-exec
+                                               #   hardcode HARD_ZERO_TIMEOUT=600 and ignore this key, so a
+                                               #   lower value would call a live run silent before its own
+                                               #   watchdog acts on it.
     global_sec: 3600                           # supervised mode: overall wall-clock budget. default 3600
     max_retries: 2                             # supervised mode: retries after a kill. default 2

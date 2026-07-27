@@ -30,6 +30,7 @@ Optional parameters:
 - **TASK_NAME** — short identifier for log files (default: "task")
 - **MODEL** — Codex model. If omitted, the skill resolves the default from config (`get-codex`, falling back to `gpt-5.5`). Pass a model ONLY when the caller EXPLICITLY specifies one — do NOT choose a model yourself.
 - **REASONING_LEVEL** — one of: `none|minimal|low|medium|high|xhigh|ultra` (known set as of 2026-07; unknown values pass through to codex). If omitted, the skill resolves the default from config (`get-codex`, falling back to `xhigh`). Pass a level ONLY when the caller EXPLICITLY specifies one — do NOT choose a level yourself.
+- **SUPERVISED_MODE** — `none` (default) or `shell`. Forward it to the skill as a named parameter; it is NOT part of `PROMPT`. `shell` wraps the codex run in `shared/watchdog.sh`, which restarts the CLI on a stall or a torn stream and writes a `watchdog.log` the caller can watch for liveness. Orchestrated runs (`/mesh-design-review`) pass `shell`; a one-off interactive run leaves it unset, which keeps the live `progress-monitor.sh` output.
 
 ## Process
 

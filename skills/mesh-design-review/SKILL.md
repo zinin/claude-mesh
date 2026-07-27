@@ -393,7 +393,7 @@ Task tool:
 
 **If a claude reviewer's Task errors** — most likely a `claude_models` entry this Claude Code build does not accept — treat it exactly like a failed executor per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Never silently re-dispatch it on a different model: a failed dispatch is the only signal that a model name is wrong (design §13), and substituting another model hides it while pretending the cross-check happened.
 
-**codex / gemini executors** parse `PROMPT` / `MODEL` / `REASONING_LEVEL` as named params (any line), so use the wrapped form:
+**codex / gemini executors** parse `PROMPT` / `MODEL` / `REASONING_LEVEL` / `SUPERVISED_MODE` as named params (any line), so use the wrapped form:
 ```
 Task tool:
   subagent_type: [claude-mesh:<executor>]
@@ -401,6 +401,7 @@ Task tool:
   prompt: "Execute this prompt via [tool]:
     PROMPT: [composed prompt with PREVIOUS_DECISIONS]
     TASK_NAME: design-review-[TOPIC]-iter-N
+    SUPERVISED_MODE: shell
     [agent-specific params]"
 ```
 
@@ -412,13 +413,16 @@ Task tool:
   prompt: "MODEL=<id>
     Execute this prompt via ext-claude-exec:
     PROMPT: [composed prompt with PREVIOUS_DECISIONS]
-    TASK_NAME: design-review-[TOPIC]-iter-N"
+    TASK_NAME: design-review-[TOPIC]-iter-N
+    SUPERVISED_MODE: shell"
 ```
 
 Agent-specific parameters:
 - **`claude-mesh:codex-executor`** (built-in selected: `codex`): pass `MODEL={CODEX_MODEL}` / `REASONING_LEVEL={CODEX_REASONING_LEVEL}` ONLY when the user explicitly set them; otherwise omit both lines entirely — codex-exec resolves model/level from `config.yaml` (`codex.model` / `codex.reasoning_level`, fallbacks `gpt-5.5`/`xhigh`)
 - **`claude-mesh:gemini-executor`** (built-in selected: `gemini`): default settings
 - **`claude-mesh:ext-claude-executor`** (one per selected model id): `MODEL=<id>` on line 1 (e.g. `MODEL=zai/glm`, `MODEL=alibaba/qwen`, `MODEL=ollama/kimi`) — the model id comes from the config (`SELECTED_IDS`, or `defaults.design_review.models` in `default` mode), NOT a hardcoded provider profile.
+
+**Every executor template carries `SUPERVISED_MODE: shell` — never drop it.** Without it the `*-exec` skills default to `none`, which means no `shared/watchdog.sh`: no stall detection, no restart when a provider tears the stream mid-response, and no `watchdog.log` — the file whose `cleanup` event tells the watch loop below that a run has stopped, and whose `alive` heartbeat tells it the run is still alive. Design review never set this until 2026-07-27, so supervision was a coin flip: 42 of 223 archived runs got a watchdog, against 242 of 255 on the `/mesh-review` path where it is hardcoded. On 2026-07-26 none of six did, four executors died mid-stream, and nothing noticed for 38 minutes. On 2026-07-27 four of five died again and only recovered because the executor agents improvised their own retries.
 
 Collect output paths from every **executor** (codex / gemini / ext-claude) — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports. Claude reviewers have no output path to collect: they create no `runs/<engine>/…` dir and return their review as the Task result.
 

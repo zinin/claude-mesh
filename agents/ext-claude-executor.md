@@ -26,14 +26,22 @@ Parse MODEL with regex `^MODEL=(\S+)` from the first non-blank line.
 ## CRITICAL: You MUST Use the Skill Tool
 
 Once MODEL is parsed, invoke `ext-claude-exec` via the Skill tool. The rest of the
-prompt (after `MODEL=...` and any optional `TASK_NAME=...`, `SUPERVISED_MODE=...`)
-goes to `PROMPT`.
+prompt — everything after the `MODEL=` line and after any of the named parameters
+listed below — goes to `PROMPT`.
 
 ```
 Skill tool → skill: "claude-mesh:ext-claude-exec"
 ```
 
 Follow ALL steps in the skill exactly.
+
+## Optional Parameters
+
+Recognise these on their own lines and pass each to the skill as a named parameter.
+They are NOT part of `PROMPT`.
+
+- **TASK_NAME** — short identifier for log files (default: "task")
+- **SUPERVISED_MODE** — `none` (default) or `shell`. `shell` wraps the `claude -p` run in `shared/watchdog.sh`, which restarts the CLI on a stall or a torn stream and writes a `watchdog.log` the caller can watch for liveness. Orchestrated runs (`/mesh-design-review`) pass `shell`; a one-off interactive run leaves it unset, which keeps the live `progress-monitor.sh` output.
 
 ## PROHIBITIONS
 
