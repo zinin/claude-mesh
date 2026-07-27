@@ -1,11 +1,10 @@
 ## TASK
 
-Continue work on watch-loop stall detection in claude-mesh. Iteration 1 of the design review
-is finished; **no fixes have been applied yet**. The chosen path (variant B) is: settle three
-architectural decisions FIRST, then rewrite the design and plan against them, then apply the
-accumulated auto-fixes to the final text — so that nothing is written twice.
+Continue work on watch-loop stall detection in claude-mesh. The design and the implementation
+plan have both been rewritten against four settled architectural decisions and committed.
+**No task in the plan has been executed** — all 38 steps are unchecked.
 
-Branch: `fix/watch-loop-stall-detection` (already checked out, 3 commits ahead of master).
+Branch: `fix/watch-loop-stall-detection` (already checked out, 5 commits ahead of master).
 
 ## CRITICAL: DO NOT START WORKING
 
@@ -26,199 +25,123 @@ After loading all context below, you MUST:
 
 ## DOCUMENTS
 
-- Design: `docs/superpowers/specs/2026-07-27-watch-loop-stall-detection-design.md`
-- Plan: `docs/superpowers/plans/2026-07-27-watch-loop-stall-detection.md`
-- **Merged review (8 reviewers):** `docs/superpowers/specs/2026-07-27-watch-loop-stall-detection-review-merged-iter-1.md`
-- **First-hand findings from running the design live:** `docs/superpowers/specs/2026-07-27-watch-loop-stall-detection-dogfood-findings.md`
+- Design: `docs/superpowers/specs/2026-07-27-watch-loop-stall-detection-design.md` (commit `3c2deb7`)
+- Plan: `docs/superpowers/plans/2026-07-27-watch-loop-stall-detection.md` (commit `c9556f0`)
 
-Read all four. The merged review is the largest and the most important — the design and plan
-are both known to be partly wrong, and the review says where.
+Read both. They are self-contained and current.
+
+Two further documents exist and are **not required reading** — everything actionable in them
+has been absorbed into the two above. Consult them only for provenance:
+- `docs/superpowers/specs/2026-07-27-watch-loop-stall-detection-review-merged-iter-1.md`
+- `docs/superpowers/specs/2026-07-27-watch-loop-stall-detection-dogfood-findings.md`
 
 ## PROGRESS
 
 **Done:**
-- [x] Brainstorming — root cause established and verified against 212 archived runs
-- [x] Design document written and committed (`9636195`)
-- [x] Implementation plan written and committed (`f70101c`); its shell code was dry-run
-      outside the repo before committing
-- [x] Design review iteration 1 — 8 reviewers dispatched, all 8 reported, output merged
-      and committed (`631cffc`)
-- [x] Step 9 classification: 18 auto-fixes, 13 disputed, 16 dismissed, 0 repeats
+- [x] Brainstorming; root cause established and verified against the run archive
+- [x] Design review iteration 1 — 8 reviewers, merged and committed (`631cffc`)
+- [x] Four architectural decisions settled with the user (below)
+- [x] Design document rewritten against them (`3c2deb7`)
+- [x] Implementation plan rewritten (`c9556f0`), and its shell code executed rather than read
+- [x] All 18 verified auto-fixes from iteration 1 applied to the final text
 
-**Remaining:**
-- [ ] Settle the three architectural decisions below
-- [ ] Rewrite the design document against those decisions
-- [ ] Rewrite the affected plan tasks
-- [ ] Apply the 18 auto-fixes to the rewritten text
-- [ ] Commit; optionally run design review iteration 2
-- [ ] Then execute the plan (Tasks 1–5, none started)
+**Remaining — none of these has been started:**
+- [ ] Task 1: `watch-runs.sh` — roster resolution, classification, one evaluation
+- [ ] Task 2: `watch-runs.sh` — the polling loop
+- [ ] Task 3: Component A — `SUPERVISED_MODE: shell` in design-review + three agent contracts
+- [ ] Task 4: Component C — both prompts through `watch-runs.sh` + canary bump
+- [ ] Task 5: Component D — `verify-delegation.sh` content gate in design-review
+- [ ] Task 6: CHANGELOG and full verification
 
-## THE THREE DECISIONS (this is the immediate work)
+**The user has not yet chosen how to proceed.** The three options put to them were:
+subagent-driven execution, inline execution, or a second design-review iteration over the
+rewritten documents first. Do not assume — ask.
 
-The 13 disputed findings collapse into three questions. Everything else depends on them.
+## THE FOUR DECISIONS (settled; do not reopen without the user)
 
-### Decision 1 — what handle does the watcher hold?
-
-Today `watch-runs.sh` takes a fixed list of run directories captured at dispatch. That is
-disproven: an executor that dies and self-retries creates a **new** directory, the abandoned
-one crosses `stall_sec`, and a live executor is reported dead. Observed 4× in one run, and one
-retry directory even carried a different suffix (`…-iter-1-retry`), defeating glob
-rediscovery.
-
-Compounding this, `DISPATCH_EPOCH` and `$WATCH` do not survive between Bash-tool calls, so the
-snippet's `DEADLINE=$(( DISPATCH_EPOCH + … ))` collapses to `3900` and the watcher reports the
-budget expired on its first evaluation — silently, because bash reads the dangling `+` as
-unary plus and `is_pos_int 3900` passes.
-
-Candidates: keep directories and require a literal epoch substituted into every call; or take
-`engine[/provider/model]` plus `--since EPOCH` and re-resolve the newest match each tick (the
-way `verify-delegation.sh` already does); or a `--state-file` written once at dispatch holding
-the deadline and the roster. The second and third also remove most of the prose rules.
-
-### Decision 2 — what does `DONE` mean, and is there a `FAILED`?
-
-`DONE` currently conflates "stopped changing" with "produced a usable result". Three
-independent confirmations: a torn run left a 47429-byte `output.txt` containing only the
-model's narration and was classified `DONE`; `watchdog.sh` `bail()` creates `final` and writes
-`cleanup` even when every attempt failed; and at `rc=0` `output.txt` can still be empty.
-`/mesh-review` is protected downstream by `verify-delegation.sh`; design-review has no
-analogue, so the new script widens that asymmetry.
-
-Candidates: state plainly that `DONE` means finalized-not-successful and mandate
-`verify-delegation.sh` before accepting a report; or add a `FAILED` status read from
-`watchdog.exit` (`reason: all_attempts_failed|global_timeout`) — roughly five lines; or both.
-Also settle the naming collision: `verify-delegation.sh` already emits `STALLED` with a
-different meaning inside the same command (`opus` K6 suggests `SILENT` for the watcher).
-
-### Decision 3 — does Component B earn its cost after Component A?
-
-`claude:opus` measured: `cleanup` is present in **282 of 282 completed** supervised runs and
-`stall_detected` in **0 of 284**. After Component A every orchestrated run is supervised and
-`watchdog.log` heartbeats every 60s regardless of stream activity, so `quiet` can barely
-exceed `stall_sec` while the watchdog lives. **Component A alone would have closed the
-incident**, because `cleanup` increments the finished counter the improvised watcher woke on.
-
-So Component B is insurance against an executor not honouring `SUPERVISED_MODE`, not a
-liveness sensor — and it costs ~130 lines, 36 asserts and two mirrored prompt rewrites. The
-counter-argument, which this run supports: non-compliance is real and non-deterministic —
-today all six executors started unsupervised, and four only became supervised because they
-improvised it themselves after dying.
-
-Candidates: keep B as designed; keep a reduced B; drop B and ship A alone. **Note the user
-already chose "watchdog + net" during brainstorming — reopening this needs their explicit
-agreement, not an inference.**
-
-## THE 18 AUTO-FIXES (apply AFTER the rewrite, to the final text)
-
-Verified by hand in the previous session, marked ✔:
-
-1. ✔ Test baseline is **246**, not 180 — wrong in four places (plan Global Constraints,
-   Task 1 Step 5, Task 5 Step 2, design Testing). Assert `0 failed` with no hardcoded count.
-   Full measured baseline is in the merged review.
-2. ✔ Task 5 Step 2 omits `skills/shared/tests/test-check-context-size.sh` (6 suites exist).
-3. ✔ Task 3 Step 7 expects `grep -c 'SUPERVISED_MODE: shell'` = 2; the real answer is **3**,
-   because Step 5's explanatory paragraph contains the same literal.
-4. ✔ Task 4 breaks `skills/shared/tests/test-loader-resolution.sh` — a deliberate canary
-   asserting 5 / 5 / 3. A fourth resolver copy makes it 6 / 6 / 4. Bump the numbers, use all
-   **three** canonical lines (the plan's copy drops the `[ -f "$LOADER" ] || …` error check),
-   and add the test file to Task 4's modified list.
-5. `${CLAUDE_PLUGIN_ROOT}` is forbidden inside Bash blocks by `mesh-design-review/SKILL.md`'s
-   own "Locating plugin files" section — use `SKILL_BASE/../shared/watch-runs.sh` plus an
-   explicit `[ -x "$WATCH" ]` check. The `find` fallback would select the installed 0.5.0
-   cache, where the script does not exist.
-6. Remove the false "retry already exists at two layers / Step 6.0's `max_redispatch`" claim
-   from the text inserted into `skills/mesh-design-review/SKILL.md` — neither exists there
-   (0 occurrences vs 7 in `commands/mesh-review.md`).
-7. `new_statuses` must compare per-position transitions, not status sets. Corrected code is in
-   the dogfooding findings document, already verified.
-8. Assert the exec bit reached the index (`git ls-files -s` → `100755`) for both new files;
-   the prompts invoke `"$WATCH"` directly and the first live launch died `Permission denied`.
-9. Replace `date -d` with the bash builtin `printf '%(%H:%M:%S)T'` and add a GNU-coreutils
-   precondition; `config-loader.sh` has a Darwin preflight precisely for this class.
-10. `agents/gemini-executor.md` Output section still promises `log.jsonl`, which supervised
-    mode does not write; `codex-executor.md:44` already carries the caveat — mirror it.
-11. `agents/ext-claude-executor.md:29` documents `SUPERVISED_MODE=…` with `=` while the new
-    templates use `: ` — one file would carry two contradictory syntaxes.
-12. `--stall-sec` with an invalid value silently becomes 600 while `--poll-sec` / `--deadline`
-    exit 64. Make it symmetric. Concrete breaking input: `--stall-sec --once <dir>` eats
-    `--once` as the value and the script blocks forever.
-13. Warn on stderr when `stall_sec` falls back to the default.
-14. Widen Test 15's timing margin; Test 14 is scheduler-sensitive — wait on a marker file the
-    watcher writes after its first iteration instead of a bare `sleep`.
-15. Missing tests: mixed baseline (`DONE` + `RUN`→`DONE` must say `CHANGED done`; `DONE` +
-    `RUN`→`STALLED` must name `stalled`); the *values* of `quiet` and `last`; the threshold
-    boundary (`-gt`, so `quiet == stall_sec` is RUN); `log.jsonl` as a freshness source;
-    `CHANGED missing` mid-watch; `--once` never yielding `CHANGED`; a path containing a space.
-16. The term `idle_notification` appears nowhere in the repo — define it or use existing
-    vocabulary. Also: the rule says `--once <that run dir>` but never says how to derive the
-    run dir from a notification.
-17. CHANGELOG: "exits on any status change" overclaims (`STALLED → RUN` is deliberately not
-    signalled); add an explicit "Configuration: no new keys" line.
-18. In Task 4 the fenced block and table sit at column zero inside a numbered list item,
-    breaking the list.
+1. **The watcher holds a roster, not directories.** `engine[/provider/model]` entries plus
+   `--since EPOCH`, re-resolving the newest run dir every tick. A fixed list is disproven: a
+   self-retrying executor creates a *new* directory and the old one goes quiet, so a live
+   executor gets reported dead. The deadline is computed inside the script from `--since`, so
+   exactly one volatile value crosses the Bash-call boundary and the script validates it.
+2. **`DONE` splits into `DONE` and `FAILED`**, on the `cleanup` exit code, and `DONE`
+   additionally requires a non-empty `output.txt`. Content is judged by *calling*
+   `verify-delegation.sh` (Task 5), never by duplicating its rules. The watcher's silence
+   status is `SILENT`, freeing `STALLED` for the meaning `verify-delegation.sh` already gives it.
+3. **Component B stays in full**, with an honest justification: after Component A the stall
+   sensor is the least of its five jobs, and the cost being argued about is the watch loop
+   itself, not the threshold. The threshold is floored at `max(stall_sec, 600)`.
+4. **Every verdict exits 0.** A non-zero exit means the script is broken, never that an
+   executor died.
 
 ## SESSION CONTEXT
 
-**The root-cause analysis is sound and was confirmed live — do not relitigate it.**
-`/mesh-design-review` never passes `SUPERVISED_MODE`, so `watchdog.sh` runs only by chance
-(38 of 212 archived runs). During this very review, **4 of the 5 ext-claude executors died
-mid-stream in the default unsupervised mode**; all four recovered on the first attempt after
-self-retrying under the watchdog. The 2026-07-26 incident had the same 4/5 ratio with no
-recovery. Component A is not in question.
+**The plan's code was executed, not dry-run.** Both bash blocks were extracted from the plan
+file, Task 2 was applied verbatim to Task 1's output, and the suite was run: **52 passed,
+0 failed** at the Task 1 boundary and **61 passed, 0 failed** at the Task 2 boundary, in about
+19 seconds. The script was then run against the real 2026-07-27 run directories and returned
+`ALL_DONE` with **all four self-retries followed** into their new directories, including the
+one carrying a `-retry` suffix. Reproduce by writing the two blocks to a scratch
+`shared/watch-runs.sh` and `shared/tests/test-watch-runs.sh`, symlinking the real
+`config-loader.sh` alongside, and running the suite. **Do this again if you change the plan's
+code** — the previous session's "dry-run outside the repo" still shipped nine Critical defects.
 
-**Two claims from the original task document turned out to be wrong.** It said the retry that
-saved `zai/glm` came from some mechanism — there is none; the default-mode block exits 4 and
-the executor agent improvises. And it said the test baseline was "180 passed" — it is 246. The
-document warned that it was written by a participant in the incident; that warning was
-correct, and the test-count line was taken on faith. Verify numbers before propagating them.
+**Three defects were found only by running it**, and are already fixed in the committed plan:
+the test suite's `row()` helper matched the reason line (printed first, and it names entries
+too), so several row assertions were passing against the wrong line; Test 27 built a deadline
+from a `NOW` stamped when the suite started, which the suite outlives; and with the deadline
+checked first, a roster that finished while the orchestrator was busy reported `DEADLINE` over
+six rows reading `DONE`. The check order is now all-done → settle → deadline → change.
 
-**`stall_detected` has never fired in 284 watchdog logs, and should not have.** A torn stream
-kills the CLI, which the `kill -0` check catches. But `ollama/minimax` (Critical 1) argues the
-inference is unproven and proposes tabulating `bail.reason` across the archive to settle it.
-That check has not been run.
+**Numbers were re-measured, not inherited.** design-review 42/223 supervised, code-review
+242/255. Across 286 `watchdog.log` files: `cleanup` 286, `complete` 246, `attempt_failed` 13,
+`bail` 2 (both `global_timeout`, zero `all_attempts_failed`), `stall_detected` 0,
+`stream_lost` 0. 40 runs carry `cleanup` without `complete` — 38 with `exit_code:143`, 2 with
+`exit_code:2` — and 36 of those have neither `final` nor `output.txt`. The `bail.reason`
+tabulation is the falsifiable check reviewer `ollama/minimax` asked for; it confirms the
+design's inference rather than refuting it. **Verify any number before propagating it**: the
+previous plan's "180 passed" baseline came from the input document and was wrong (246).
 
-**Reviewers reason plausibly and are sometimes wrong.** Three of them called the `,state`
-fallback in `new_statuses` unreachable; it fired live and was reproduced by executing the
-plan's own code. `ollama/minimax` self-retracted 5 of its own findings after checking. One
-reviewer said nobody writes `.watchdog_rc` while another said 3 exist on disk — both are true
-in part (no writer in `skills/`; the files predate). Adjudicate by running things, not by
-weighing authority.
+**The content gate was validated on the real artifact.** `verify-delegation.sh` classifies the
+torn `alibaba/qwen` attempt — 47429 bytes of the model's narration — as `STALLED` ("no usable
+result event in raw.jsonl"), and its supervised retry as `REAL` (`num_turns=26`). Task 5 exists
+because that verdict is available and design-review never asks for it.
 
-**`.watchdog_rc` is dead code** — `verify-delegation.sh:89` reads it, nothing writes it. Real,
-pre-existing, and out of scope because that file must not be touched. Recorded, not fixed.
+**Two auto-fixes from iteration 1 were deliberately inverted** by the new interface: the
+per-position `new_statuses` fix is moot (per-entry transitions removed set arithmetic and the
+`,state` fallback entirely), and the requested test asserting "`--once` never yields `CHANGED`"
+is now the opposite — with a virtual baseline, a one-shot check must name an already-dead
+executor.
 
-**Sharpest architectural critique, from codex:** Decision 3's justification ("prose gets
-re-improvised") cuts against the design itself. The script only *reports*; the orchestrator
-still *acts*, and points 3–5 of the new prompt block — drop dead runs, answer notifications
-with `--once`, routing — remain prose carrying all the behaviour. The defects compound: skip
-point 5 and a repeat `STALLED` enters the new baseline and never resurfaces.
+**Anomaly that is not one:** a supervised run *does* always write `watchdog.log`. An earlier
+`ls | head` in this session truncated the listing and briefly suggested otherwise.
 
-**Confirmed live during the run:** a background Bash task exiting 2 is surfaced by the harness
-as "failed with exit code 2". An LLM orchestrator will read a normal terminal verdict as an
-error.
+**`--since` is rejected if older than 24 hours**, so the 2026-07-26 incident directories can no
+longer be used for a live smoke check. Use the 2026-07-27 13:0x runs instead.
 
-**Working prototype is gone.** A corrected `watch-runs.sh` lived in the previous session's
-scratchpad (36/36 asserts, correct reason lines on the live run), but scratchpad directories
-are session-scoped. The corrected `new_statuses` is preserved in the dogfooding findings
-document; the rest is in the plan.
+**Scope boundaries the user set:** `skills/shared/verify-delegation.sh` and
+`skills/shared/watchdog.sh` are called, never modified; the `SUPERVISED_MODE` default in the
+`*-exec` skills stays `none`; the point-4 routing divergence between the two prompt files is
+out of scope; plumbing `stall_sec` into `codex-exec`/`gemini-exec` is out of scope (the 600
+floor covers it).
 
-**Process constraints (from `~/.claude/CLAUDE.md`):** design and plan documents must not be
-committed to master, and must be `git rm`'d from the branch before opening a PR — they stay
-in branch history. The branch was created with `git switch -c` at the user's choice.
+**Process constraints (`~/.claude/CLAUDE.md`):** design and plan documents must not be
+committed to master, and must be `git rm`'d from the branch before opening a PR — they stay in
+branch history. The branch was created with `git switch -c` at the user's choice.
 
-**Scope boundaries the user set:** `skills/shared/verify-delegation.sh` must not be touched;
-the `SUPERVISED_MODE` default in the `*-exec` skills stays `none` (flipping it would strip
-live progress from direct `/claude-mesh:*-exec` calls); and reconciling the point-4 routing
-divergence between the two prompt files is explicitly out of scope.
+**Do not relitigate the root cause.** It is sound and was confirmed live: during iteration 1's
+own review, four of five ext-claude executors died mid-stream in the default unsupervised mode
+and only recovered because the executor agents improvised their own retries.
 
 ## PLAN QUALITY WARNING
 
-The plan was written for a large task and **is known to contain errors** — iteration 1 found
-nine Critical ones. Beyond those, it may contain:
-- Further inaccuracies in implementation details
+This plan is in better shape than its predecessor — its shell code was executed end to end and
+its assertions were measured. But **the prompt-file edits in Tasks 3, 4 and 5 are verified only
+by reading**, and Task 4 in particular replaces long blocks in two files that must stay
+mirrored. The plan may still contain:
+- Inaccuracies in the quoted "replace this line" anchors, if those files changed
 - Oversights about edge cases or dependencies
-- Assumptions that don't match the actual codebase
-- Missing steps or incomplete instructions
+- Assumptions that no longer match the codebase
 
 **If you notice any issues during implementation:**
 1. STOP before proceeding with the problematic step
@@ -230,7 +153,7 @@ Do NOT silently work around plan issues or make significant deviations without u
 
 ## INSTRUCTIONS
 
-1. Read the four documents listed above
+1. Read the two documents listed above
 2. Understand current progress and session context
 3. Provide a brief summary of what you understood
 4. **STOP and WAIT** — do NOT proceed with any implementation
