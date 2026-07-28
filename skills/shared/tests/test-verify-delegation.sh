@@ -533,6 +533,65 @@ assert_eq "verdict FLIP" "FLIP" "$VERDICT"
 assert_eq "exit 3" "3" "$RC"
 rm -rf "$TDIR"
 
+# --- the dispatch window is the NAME window, the same one watch-runs.sh uses ---------------
+# It used to be `find -newermt` — MODIFICATION time. A run dir created BEFORE the window but
+# still being written stayed eligible forever, so /mesh-review Step 6.4a, which stamps a fresh
+# epoch precisely "so the guard inspects the NEW run, not the old failed one", still got the
+# old one: a wrapper that flipped on re-dispatch was scored REAL off the previous round's
+# corpse, while watch-runs.sh — comparing names — reported no run in that window at all.
+
+# === Test: a run named before --since is out of the window however fresh its mtime ===
+echo "=== Test: run dir named before the window, mtime inside it → FLIP ==="
+TDIR=$(mktemp -d)
+NOW_T=$(date +%s)
+OLD_NAME="$(date -d "@$(( NOW_T - 900 ))" +%Y-%m-%d-%H-%M-%S)-1000-task"
+rd=$(mk_run "$TDIR/runs/codex" "$OLD_NAME")
+echo 'findings' > "$rd/output.txt"                       # written NOW → mtime inside the window
+printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+run codex - "$(( NOW_T - 300 ))" "$TDIR"
+assert_eq "verdict FLIP" "FLIP" "$VERDICT"
+assert_eq "exit 3" "3" "$RC"
+rm -rf "$TDIR"
+
+# === Test: the same run is REAL once --since precedes its name ===
+echo "=== Test: the same run with --since before its name → REAL ==="
+TDIR=$(mktemp -d)
+NOW_T=$(date +%s)
+IN_NAME="$(date -d "@$(( NOW_T - 300 ))" +%Y-%m-%d-%H-%M-%S)-1000-task"
+rd=$(mk_run "$TDIR/runs/codex" "$IN_NAME")
+echo 'findings' > "$rd/output.txt"
+printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+run codex - "$(( NOW_T - 900 ))" "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# === Test: a non-numeric since-epoch is a usage error, not a FLIP verdict ===
+# An unsubstituted "$DISPATCH_EPOCH" expands to nothing; `find -newermt "@"` used to fail
+# silently and the run came back FLIP — "the reviewer never delegated" — for every reviewer.
+echo "=== Test: empty since-epoch → usage error (exit 1, no verdict) ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/codex"
+run codex - "" "$TDIR"
+assert_eq "no verdict on stdout" "" "$VERDICT"
+assert_eq "exit 1" "1" "$RC"
+rm -rf "$TDIR"
+
+# === Test: root output.txt empty while final/ holds the review → REAL, as watch-runs sees it ===
+# watch-runs.sh picks the root file with -s and falls through to final/output.txt; this script
+# used to pick it with -f, so an existing-but-empty root won and the gate answered STALLED on
+# the run the watcher had just reported DONE.
+echo "=== Test: empty root output.txt, content under final/ → REAL ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
+ln -sfn attempt-1 "$rd/final"
+: > "$rd/output.txt"
+echo 'findings' > "$rd/attempt-1/output.txt"
+printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/attempt-1/raw.jsonl"
+run codex - 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

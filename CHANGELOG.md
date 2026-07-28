@@ -79,6 +79,23 @@ All notable changes to claude-mesh will be documented here.
   eligible — legacy runs, direct `/claude-mesh:*-exec` invocations and a harness without the
   variable must keep working, and reporting `MISSING` for a live unstamped run would be worse
   than the collision. Two orchestrations inside one session remain indistinguishable.
+- `shared/verify-delegation.sh` and `shared/watch-runs.sh` disagreed about which runs are even
+  *in* the dispatch window, which is the same class of defect as the mtime-vs-name winner above
+  and survived that fix. Eligibility in the gate was `find -newermt` — MODIFICATION time — while
+  the watcher compares the run-dir name against `--since` rendered the same way. A run created
+  before the window but still being written stays mtime-eligible indefinitely, so `/mesh-review`
+  Step 6.4a, which stamps a fresh epoch precisely "so the guard inspects the NEW run, not the
+  old failed one", still handed the gate the old one: a wrapper that flipped on re-dispatch and
+  produced no run dir at all was scored `REAL` off the previous round's corpse. The gate now
+  filters candidates by name against the same rendering the watcher uses, so the two windows are
+  identical by construction. Three smaller divergences closed with it: the gate picked
+  `output.txt` with `-f` where the watcher uses `-s`, so an existing-but-empty root file beat a
+  `final/output.txt` holding the actual review (`DONE` from the watcher, `STALLED` from the
+  gate); name comparison and sorting now run under `LC_ALL=C` in both, since a UTF-8 collation
+  ignores `-` and would order run dirs differently; and a non-numeric `since-epoch` — an
+  unsubstituted `$DISPATCH_EPOCH`, which expands to nothing — is a usage error rather than a
+  silent `FLIP` for every reviewer. `/mesh-review` Step 6.0 stopped passing that variable
+  through a shell reference that cannot survive between Bash tool calls.
 
 ### Configuration
 - No new keys. `runtime.timeouts.stall_sec` gains a second consumer: the orchestrator's

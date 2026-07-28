@@ -13,7 +13,8 @@
 #   verify-delegation.sh <engine> <model|-> <since-epoch> [data-dir]
 #     engine      ext-claude | codex | gemini
 #     model       for ext-claude: "<provider>/<short>" (e.g. zai/glm); "-" for codex/gemini
-#     since-epoch only run dirs created at/after this unix time are considered
+#     since-epoch only run dirs NAMED at/after this unix time are considered — the same
+#                 window watch-runs.sh applies, and creation time rather than mtime
 #                 (the orchestrator stamps this just before dispatch)
 #     data-dir    optional; defaults to config-loader resolve_plugin_data()
 #
@@ -39,11 +40,17 @@
 #              zero tool calls (thinking-only / DSML grammar / answered without reading code —
 #              retry futile; fix by swapping the model in config.yaml)
 set -u
+export LC_ALL=C   # run dir names are compared with [[ < ]] and sorted; keep both byte-wise.
+                  # A UTF-8 collation ignores '-' when comparing, so the name window below
+                  # would disagree with watch-runs.sh on exactly the dirs it must agree on.
 
-[ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || {
-    echo "verify-delegation: bash 4+ required (got ${BASH_VERSION:-unknown})" >&2
+# 4.2, not 4.0: printf '%(fmt)T' renders --since into a run-dir name below, the same way
+# watch-runs.sh does. Both scripts must resolve the same run, so both need the same builtin.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] ||
+   { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 2 ]; }; then
+    echo "verify-delegation: bash 4.2+ required (got ${BASH_VERSION:-unknown})" >&2
     exit 1
-}
+fi
 
 resolve_plugin_data() {
     if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then printf '%s\n' "$CLAUDE_PLUGIN_DATA"; return; fi
@@ -77,6 +84,13 @@ DATA_DIR="${4:-}"
     echo "usage: verify-delegation.sh <engine> <model|-> <since-epoch> [data-dir]" >&2
     exit 1
 }
+# A non-numeric epoch used to reach `find -newermt "@$SINCE"`, which failed silently and left
+# no candidate — FLIP, the verdict that says "the reviewer never delegated". Say it is a usage
+# error instead: exit 1 prints no verdict, which is what the prompts read as "fix the call".
+[[ "$SINCE" =~ ^[0-9]+$ ]] || {
+    echo "verify-delegation: since-epoch must be a unix epoch (got '$SINCE') — did DISPATCH_EPOCH expand to nothing?" >&2
+    exit 1
+}
 [ -n "$DATA_DIR" ] || DATA_DIR="$(resolve_plugin_data)"
 
 case "$ENGINE" in
@@ -91,15 +105,23 @@ emit() { echo "$1"; [ -n "${2:-}" ] && echo "verify-delegation[$ENGINE${MODEL:+/
 # --- 1. did anything run? (run dir created in the dispatch window) ---
 [ -d "$BASE" ] || emit FLIP "no run dir under ${BASE#"$DATA_DIR"/} — reviewer did not delegate (self-reviewed on the session model)" 3
 
-# Eligibility is still "modified inside the dispatch window", but the WINNER is the newest by
-# NAME, not by mtime. Run dir names start with a zero-padded timestamp, so name order is
-# creation order; mtime order is not. On bail an abandoned dir gains a `final` symlink, which
-# lifts its mtime above the retry dir that superseded it — picking by mtime then inspects the
-# corpse and reports STALLED while watch-runs.sh, which picks by name, reports DONE on the
-# retry. mesh-design-review chains the two on the same run, so that disagreement discarded a
-# finished review.
+# Both ELIGIBILITY and the WINNER are decided by NAME, not by mtime. Run dir names start with
+# a zero-padded timestamp, so name order is creation order; mtime order is not. On bail an
+# abandoned dir gains a `final` symlink, which lifts its mtime above the retry dir that
+# superseded it — picking by mtime then inspects the corpse and reports STALLED while
+# watch-runs.sh, which picks by name, reports DONE on the retry. mesh-design-review chains the
+# two on the same run, so that disagreement discarded a finished review.
 #
-# Candidates are also SHAPE-filtered, with the same anchor as watch-runs.sh:189. In LC_ALL=C
+# Eligibility used to be `find -newermt "@$SINCE"` — MODIFICATION time — while watch-runs.sh
+# compares the name against the same epoch rendered as a name. A dir created BEFORE the window
+# but still being written stays mtime-eligible forever, so /mesh-review Step 6.4a, which stamps
+# a FRESH epoch before re-dispatching precisely "so the guard inspects the NEW run, not the old
+# failed one", still handed this script the old one: a wrapper that flipped on re-dispatch
+# (no new run dir at all) was scored REAL off the previous round's corpse. Rendering --since
+# into the run-dir naming and comparing names makes the two scripts' windows identical by
+# construction — and drops the last -newermt, so only -printf keeps GNU find in the picture.
+#
+# Candidates are also SHAPE-filtered, with the same anchor as watch-runs.sh:213. In LC_ALL=C
 # letters sort above digits, so any non-timestamp name — a stray `tmp/`, or the model dirs
 # that become children when a truncated MODEL argument makes $BASE a provider directory —
 # outranks every real run and gets inspected as if it were one, yielding a terminal STALLED.
@@ -111,13 +133,17 @@ emit() { echo "$1"; [ -n "${2:-}" ] && echo "verify-delegation[$ENGINE${MODEL:+/
 # this data dir, and inspecting a stranger's run yields a terminal verdict about work nobody
 # asked for. Process substitution, not a pipe — a `while` on the right of a pipe runs in a
 # subshell and NEWEST would not survive it.
+printf -v SINCE_STR '%(%Y-%m-%d-%H-%M-%S)T' "$SINCE"
 NEWEST=""
 while IFS= read -r cand; do
     [ -n "$cand" ] || continue
+    # Descending name order: the first candidate older than the window ends the walk, because
+    # every one after it is older still.
+    [[ "$cand" < "$SINCE_STR" ]] && break
     run_is_mine "$BASE/$cand" || continue
     NEWEST="$BASE/$cand"; break
-done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%f\n' 2>/dev/null |
-         grep -E '^[0-9]{4}(-[0-9]{2}){5}-' | LC_ALL=C sort -r)
+done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null |
+         grep -E '^[0-9]{4}(-[0-9]{2}){5}-' | sort -r)
 [ -n "$NEWEST" ] || emit FLIP "no run dir newer than dispatch time — reviewer did not delegate" 3
 RD="$NEWEST"
 
@@ -126,7 +152,12 @@ if [ ! -e "$RD/final" ] && [ ! -f "$RD/output.txt" ]; then
     emit STALLED "run dir present but not finalized (killed mid-flight)" 2
 fi
 
-OUT="$RD/output.txt"; [ -f "$OUT" ] || OUT="$RD/final/output.txt"
+# -s, not -f, on the root file: gemini-exec pre-creates a zero-byte output.txt at launch and
+# the supervised copy-up can land one, and an EXISTING-but-empty root would then win over a
+# final/output.txt that holds the actual review. watch-runs.sh:279 picks the same file with -s
+# and reports DONE; with -f here the gate answered STALLED on the run the watcher had just
+# called finished, and design review's failure path drops it for good.
+OUT="$RD/output.txt"; [ -s "$OUT" ] || OUT="$RD/final/output.txt"
 
 # --- 3. is the content a REAL review? ---
 case "$ENGINE" in

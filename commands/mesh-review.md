@@ -334,9 +334,11 @@ N="$("$LOADER" get-runtime | jq -r '.max_redispatch // 1')"; [[ "$N" =~ ^[0-9]+$
 for spec in "codex:-" "ext-claude:zai/glm" "ext-claude:ollama/kimi"; do
   eng="${spec%%:*}"; mdl="${spec#*:}"
   printf '%-28s ' "$spec"
-  bash "$VERIFY" "$eng" "$mdl" "$DISPATCH_EPOCH" "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN; reason on stderr
+  bash "$VERIFY" "$eng" "$mdl" <DISPATCH_EPOCH> "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN; reason on stderr
 done
 ```
+
+Substitute the **actual** `DISPATCH_EPOCH` number — the one stamped in Step 5, or the fresh one from step 4a on a re-dispatch round — exactly as in the Step 5a watcher call. A shell variable does not survive from one Bash call to the next, and `DISPATCH_EPOCH` was stamped in a different one; left as `"$DISPATCH_EPOCH"` it expands to nothing and the guard prints its usage line and exits 1 for every reviewer, which is not a verdict at all.
 Verdicts:
 - `REAL` (exit 0) — delegated, real review → **keep** for Step 6.1.
 - `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**.
