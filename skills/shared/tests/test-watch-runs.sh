@@ -73,6 +73,22 @@ mk_run() {
 # a watchdog.log holding one cleanup event with the given exit code
 wd_log() { printf '{"ts":"x","event":"cleanup","attempt":1,"details":{"exit_code":%s}}\n' "$2" > "$1/watchdog.log"; }
 
+# run the script under an explicit session identity: <sid>, or '-' for no identity at all.
+# The assignment prefixes the EXTERNAL command on purpose: `CLAUDE_CODE_SESSION_ID=x run …`
+# would leak into the rest of the suite, because bash scopes a prefix assignment to a command,
+# not to a function call.
+run_as() {
+    local sid="$1"; shift
+    if [ "$sid" = "-" ]; then
+        OUT="$(env -u CLAUDE_CODE_SESSION_ID timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
+    else
+        OUT="$(env "CLAUDE_CODE_SESSION_ID=$sid" timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
+    fi
+    REASON="$(printf '%s\n' "$OUT" | head -1)"; ERR="$(cat "$ERRF")"
+}
+# stamp a run dir with a session id; sid_stamp "$dir" '' writes the empty-stamp case
+sid_stamp() { printf '%s\n' "$2" > "$1/.session_id"; }
+
 SINCE_OK=$(( NOW - 300 ))    # inside the MISSING grace when --stall-sec is 600
 SINCE_OLD=$(( NOW - 900 ))   # past the grace
 
@@ -512,6 +528,72 @@ a=$(mk_run "$TDIR" gemini -60)
 printf 'full answer' > "$a/output.txt"; : > "$a/log.jsonl"; printf '# report\n' > "$a/report.md"
 run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" gemini
 assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_match "row is DONE" "DONE" "$(row gemini)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 34: a foreign-stamped newest dir is skipped for the older own-stamped one"
+TDIR="$(mktemp -d)"
+mine=$(mk_run "$TDIR" codex -120 100001);  sid_stamp "$mine" sid-A
+theirs=$(mk_run "$TDIR" codex -60 100002); sid_stamp "$theirs" sid-B
+printf 'my review'    > "$mine/output.txt";   wd_log "$mine" 0
+printf 'their review' > "$theirs/output.txt"; wd_log "$theirs" 0
+run_as sid-A --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex
+assert_match "resolves the own dir" "$(basename "$mine")" "$(row codex)"
+assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 35: an unstamped dir stays eligible — legacy runs and direct *-exec calls"
+TDIR="$(mktemp -d)"
+old=$(mk_run "$TDIR" codex -120 100001); sid_stamp "$old" sid-A
+new=$(mk_run "$TDIR" codex -60 100002)          # deliberately no .session_id
+printf 'review' > "$new/output.txt"; wd_log "$new" 0
+run_as sid-A --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex
+assert_match "resolves the unstamped newest dir" "$(basename "$new")" "$(row codex)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 36: a reader with no session identity does not filter at all"
+TDIR="$(mktemp -d)"
+mine=$(mk_run "$TDIR" codex -120 100001);  sid_stamp "$mine" sid-A
+theirs=$(mk_run "$TDIR" codex -60 100002); sid_stamp "$theirs" sid-B
+printf 'their review' > "$theirs/output.txt"; wd_log "$theirs" 0
+run_as - --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex
+assert_match "newest wins regardless of stamps" "$(basename "$theirs")" "$(row codex)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 37: when every candidate belongs to another session there is no run to watch"
+TDIR="$(mktemp -d)"
+theirs=$(mk_run "$TDIR" codex -60 100002); sid_stamp "$theirs" sid-B
+printf 'their review' > "$theirs/output.txt"; wd_log "$theirs" 0
+run_as sid-A --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" codex
+assert_eq "reason names the transition" "SETTLED codex RUN→MISSING" "$REASON"
+assert_match "row is MISSING" "MISSING" "$(row codex)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 38: an empty .session_id reads as unstamped (so does an unreadable one — same branch)"
+TDIR="$(mktemp -d)"
+a=$(mk_run "$TDIR" codex -60); sid_stamp "$a" ''
+printf 'review' > "$a/output.txt"; wd_log "$a" 0
+run_as sid-A --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex
+assert_match "empty stamp is still selected" "$(basename "$a")" "$(row codex)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 39: the own retry is followed even when a foreign dir is newer than both"
+TDIR="$(mktemp -d)"
+dead=$(mk_run "$TDIR" gemini -280 100001);  sid_stamp "$dead" sid-A
+: > "$dead/log.jsonl"; touch -d "@$(( NOW - 280 ))" "$dead/log.jsonl"
+retry=$(mk_run "$TDIR" gemini -120 100002); sid_stamp "$retry" sid-A
+printf 'full answer' > "$retry/output.txt"; : > "$retry/log.jsonl"; printf '# report\n' > "$retry/report.md"
+theirs=$(mk_run "$TDIR" gemini -60 100003); sid_stamp "$theirs" sid-B
+: > "$theirs/log.jsonl"
+run_as sid-A --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" gemini
+assert_match "follows the own retry" "$(basename "$retry")" "$(row gemini)"
 assert_match "row is DONE" "DONE" "$(row gemini)"
 rm -rf "$TDIR"
 

@@ -65,6 +65,13 @@ ONCE=0
 DATA_DIR=""
 ROSTER=()
 
+# Run identity. CLAUDE_CODE_SESSION_ID is exported into every Bash tool call and inherited
+# across the agent boundary (verified 2026-07-28: a subagent's Bash call sees the
+# orchestrator's value), so a run dir stamped by the *-exec skill at creation carries the
+# session that dispatched it. Two orchestrations of one engine/model share the global data
+# dir, and without this the newest dir wins even when it belongs to someone else's dispatch.
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-}"
+
 is_pos_int() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 die() { echo "watch-runs: $1" >&2; exit 64; }
 usage() {
@@ -166,11 +173,25 @@ RUNDIR=""
 STATUSES=()
 ROWS=""
 
+# A candidate belongs to this dispatch. The body is mirrored byte-for-byte in
+# verify-delegation.sh — the two must agree on which run is "the run", or the watcher reports
+# DONE on one directory while the gate inspects another. FAIL-OPEN by design: an unstamped dir
+# is a run from a plugin version older than this stamp, a direct *-exec invocation, or a
+# harness that does not export the variable. Calling those foreign would resolve nothing and
+# report MISSING for a live run — the one thing this whole feature exists not to do.
+run_is_mine() {
+    [ -n "$SELF_SID" ] || return 0
+    local v=""
+    [ -r "$1/.session_id" ] && IFS= read -r v < "$1/.session_id"
+    [ -z "$v" ] || [ "$v" = "$SELF_SID" ]
+}
+
 # The newest run dir for a roster entry, at/after --since. Selection is by NAME, not mtime: on
 # bail the abandoned dir gains a `final` symlink, which bumps its mtime above the retry dir's,
 # and selecting by mtime would follow the corpse.
 resolve_run_dir() {
-    local entry="$1" base="$DATA_DIR/runs/$1" best="" name d
+    local entry="$1" base="$DATA_DIR/runs/$1" name d i
+    local -a cands=()
     RUNDIR_PATH=""
     if [ ! -d "$base" ]; then
         [ -n "${WARNED_BASE[$entry]:-}" ] || {
@@ -188,10 +209,17 @@ resolve_run_dir() {
         # future run under it, reporting a finished review as SILENT forever.
         [[ "$name" =~ ^[0-9]{4}(-[0-9]{2}){5}- ]] || continue
         [[ "$name" < "$SINCE_STR" ]] && continue
-        [[ -z "$best" || "$name" > "$best" ]] && best="$name"
+        cands+=("$name")
     done
-    [ -n "$best" ] || return 1
-    RUNDIR_PATH="$base/$best"
+    # Bash expands a glob in ascending byte order (LC_ALL=C, :35), so walking the array
+    # backwards is newest-first. Take the newest that is ours; reading the stamp only as far
+    # as the walk goes keeps the common case at a single file read.
+    for (( i=${#cands[@]}-1; i>=0; i-- )); do
+        run_is_mine "$base/${cands[i]}" || continue
+        RUNDIR_PATH="$base/${cands[i]}"
+        return 0
+    done
+    return 1
 }
 
 # Freshness is the newest mtime across every stream a run can be writing.
