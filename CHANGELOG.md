@@ -38,6 +38,18 @@ All notable changes to claude-mesh will be documented here.
   executor with `SUPERVISED_MODE: shell`, and `codex-executor` / `gemini-executor` /
   `ext-claude-executor` document the parameter so it is forwarded to the skill instead of
   leaking into the prompt.
+- `shared/verify-delegation.sh` picked the newest run dir by mtime while `watch-runs.sh` picks
+  it by name. On bail an abandoned dir gains a `final` symlink, which lifts its mtime above the
+  retry dir that superseded it, so the two disagreed on which run was "the run" — the watcher
+  reporting `DONE` on the retry while the gate reported `STALLED` on the corpse. Now that
+  design review chains them on the same run, that disagreement discarded a finished review, so
+  the gate orders candidates by name too. Its codex/gemini branch also stopped being a no-op:
+  it checked `.watchdog_rc`, which nothing under `skills/` writes, and then only that
+  `output.txt` was non-empty — the same question the caller had already answered. It now reads
+  the watchdog's real exit code out of `watchdog.log` and requires the CLI's own terminal event
+  (`turn.completed` / `result`) plus at least one tool call, which is the codex and gemini
+  analogue of `num_turns<=1`. A narration-only draft is `BROKEN` for those engines instead of
+  `REAL`.
 - `/mesh-design-review` accepted an executor's report without checking that the run had
   produced one. A run that stops and leaves a non-empty `output.txt` looks finished even
   when the file holds only the model's narration. It now runs `verify-delegation.sh` — the

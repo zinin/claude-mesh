@@ -70,7 +70,15 @@ emit() { echo "$1"; [ -n "${2:-}" ] && echo "verify-delegation[$ENGINE${MODEL:+/
 # --- 1. did anything run? (run dir created in the dispatch window) ---
 [ -d "$BASE" ] || emit FLIP "no run dir under ${BASE#"$DATA_DIR"/} — reviewer did not delegate (self-reviewed on the session model)" 3
 
-NEWEST="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)"
+# Eligibility is still "modified inside the dispatch window", but the WINNER is the newest by
+# NAME, not by mtime. Run dir names start with a zero-padded timestamp, so name order is
+# creation order; mtime order is not. On bail an abandoned dir gains a `final` symlink, which
+# lifts its mtime above the retry dir that superseded it — picking by mtime then inspects the
+# corpse and reports STALLED while watch-runs.sh, which picks by name, reports DONE on the
+# retry. mesh-design-review chains the two on the same run, so that disagreement discarded a
+# finished review.
+NEWEST="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%f\n' 2>/dev/null | LC_ALL=C sort -r | head -1)"
+[ -z "$NEWEST" ] || NEWEST="$BASE/$NEWEST"
 [ -n "$NEWEST" ] || emit FLIP "no run dir newer than dispatch time — reviewer did not delegate" 3
 RD="$NEWEST"
 
@@ -84,13 +92,35 @@ OUT="$RD/output.txt"; [ -f "$OUT" ] || OUT="$RD/final/output.txt"
 # --- 3. is the content a REAL review? ---
 case "$ENGINE" in
     codex|gemini)
-        # codex/gemini CLIs have their own stream format (no type:result/num_turns);
-        # the watchdog return code is the success signal.
+        # These CLIs carry no type:result/num_turns, so this branch used to check only
+        # `.watchdog_rc` — which nothing under skills/ writes, only test fixtures — and then a
+        # non-empty output.txt. That made it a no-op: it asked exactly what the caller already
+        # knew, and a narration-only file passed as REAL. Use the signals that are on disk.
         RCF="$RD/.watchdog_rc"
         if [ -f "$RCF" ] && [ "$(cat "$RCF" 2>/dev/null)" != "0" ]; then
             emit STALLED "engine exit code != 0 ($(cat "$RCF" 2>/dev/null))" 2
         fi
+        # The watchdog records its own exit in watchdog.log; that file really is written.
+        if [ -f "$RD/watchdog.log" ]; then
+            WRC="$(grep '"event":"cleanup"' "$RD/watchdog.log" 2>/dev/null | tail -1 |
+                   grep -o '"exit_code":[[:space:]]*-\?[0-9]\+' | grep -o -- '-\?[0-9]\+$')"
+            [ -z "$WRC" ] || [ "$WRC" = 0 ] || emit STALLED "watchdog cleanup exit code $WRC" 2
+        fi
         [ -s "$OUT" ] || emit STALLED "output.txt empty — no usable review produced" 2
+        # Content, when a stream is present. codex emits turn.completed / command_execution;
+        # gemini emits result / tool_use. No terminal event means the CLI was killed mid-flight
+        # and output.txt is salvage. A terminal event with no tool call at all is the codex and
+        # gemini analogue of ext-claude's num_turns<=1: it finished, and it did nothing —
+        # exactly the 47429-byte narration draft this gate exists to stop.
+        STREAM="$RD/raw.jsonl"
+        [ -s "$STREAM" ] || STREAM="$RD/final/raw.jsonl"
+        [ -s "$STREAM" ] || STREAM="$RD/log.jsonl"
+        if [ -s "$STREAM" ]; then
+            grep -q '"type":"turn\.completed"\|"type":"result"' "$STREAM" 2>/dev/null ||
+                emit STALLED "stream has no terminal event — killed mid-flight" 2
+            grep -q '"type":"command_execution"\|"type":"tool_use"' "$STREAM" 2>/dev/null ||
+                emit BROKEN "terminal event but no tool call — narration, not a review" 4
+        fi
         emit REAL "delegated, non-empty review" 0
         ;;
     ext-claude)

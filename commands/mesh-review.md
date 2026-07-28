@@ -340,8 +340,8 @@ done
 Verdicts:
 - `REAL` (exit 0) — delegated, real review → **keep** for Step 6.1.
 - `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**.
-- `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps).
-- `BROKEN` (exit 4) — run dir but thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events) → **DROP, do NOT retry** (the engine itself is broken).
+- `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps). For ext-claude that is a missing result event; for codex and gemini, a stream with no `turn.completed` / `result` event, or a non-zero watchdog exit.
+- `BROKEN` (exit 4) — run dir but the engine finished without doing any work → **DROP, do NOT retry** (the engine itself is broken). For ext-claude that is thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events); for codex and gemini, a completed turn that ran no tool at all — narration rather than a review.
 
 **3. Show the delegation status table** so the user sees who really cross-validated:
 ```

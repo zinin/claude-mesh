@@ -323,6 +323,62 @@ assert_eq "verdict STALLED" "STALLED" "$VERDICT"
 assert_eq "exit 2" "2" "$RC"
 rm -rf "$TDIR"
 
+# === Test: the winner is the newest run dir by NAME, not by mtime ===
+# mesh-design-review chains watch-runs.sh and this script on the same run. watch-runs.sh picks
+# by name; picking by mtime here made them disagree, because on bail an abandoned dir gains a
+# `final` symlink that lifts its mtime above the retry dir that superseded it. The watcher then
+# reported DONE on the retry while this script reported STALLED on the corpse, and the caller
+# is told to treat STALLED as a dead executor — discarding a finished review.
+echo "=== Test: newest by name wins over a later-touched abandoned dir ==="
+TDIR=$(mktemp -d)
+BASE="$TDIR/runs/ext-claude/zai/glm"
+abandoned=$(mk_run "$BASE" 2026-07-28-11-00-00-1000-task)
+retry=$(mk_run "$BASE" 2026-07-28-11-05-00-2000-task-retry)
+printf '{"type":"result","num_turns":20,"is_error":false}\n' > "$retry/raw.jsonl"
+echo 'review' > "$retry/output.txt"; ln -s attempt-1 "$retry/final"
+touch -d '2026-07-28 11:06:00' "$retry"
+touch -d '2026-07-28 11:20:00' "$abandoned"     # the corpse is touched LAST
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict REAL (the retry, not the corpse)" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# === Test: codex narration-only output is BROKEN, not REAL ===
+# This branch used to check `.watchdog_rc` — which nothing under skills/ writes — and then only
+# that output.txt was non-empty, so it confirmed what the caller already knew. The 47429-byte
+# narration draft that motivated the gate would have passed it for codex and gemini.
+echo "=== Test: codex terminal event with no tool call → BROKEN ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
+printf 'Проведу ревью документов… Начну с чтения.\n' > "$rd/output.txt"
+printf '{"type":"thread.started"}\n{"type":"agent_message"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+run codex - 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+# === Test: codex stream without a terminal event is STALLED ===
+echo "=== Test: codex stream cut off mid-flight → STALLED ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
+echo 'partial' > "$rd/output.txt"
+printf '{"type":"thread.started"}\n{"type":"command_execution"}\n' > "$rd/raw.jsonl"
+run codex - 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# === Test: a real codex run still passes ===
+echo "=== Test: codex with a terminal event and tool calls → REAL ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
+echo 'findings' > "$rd/output.txt"
+printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+run codex - 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
