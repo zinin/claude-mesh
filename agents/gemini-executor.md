@@ -30,6 +30,7 @@ Optional parameters:
 - **TASK_NAME** — short identifier for log files (default: "task")
 - **MODEL** — Gemini model. If omitted, the skill resolves the default from config (`get-gemini`, falling back to `gemini-3.1-pro-preview`). Pass a model ONLY when the caller EXPLICITLY specifies one — do NOT choose a model yourself.
 - **APPROVAL_MODE** — one of: yolo, plan, default, auto_edit. **MUST be `yolo`** unless the caller EXPLICITLY specifies a different mode. Do NOT choose a mode yourself.
+- **SUPERVISED_MODE** — `none` (default) or `shell`. Forward it to the skill as a named parameter; it is NOT part of `PROMPT`. `shell` wraps the gemini run in `shared/watchdog.sh`, which restarts the CLI on a stall or a torn stream and writes a `watchdog.log` the caller can watch for liveness. Orchestrated runs (`/mesh-design-review`) pass `shell`; a one-off interactive run leaves it unset, which keeps the live `progress-monitor.sh` output.
 
 ## Process
 
@@ -41,7 +42,7 @@ Optional parameters:
 
 You will return:
 - Work directory path: `${CLAUDE_PLUGIN_DATA}/runs/gemini/YYYY-MM-DD-HH-MM-SS-taskname/`
-- Files inside: `prompt.md`, `log.jsonl`, `output.txt`, `report.md`, `stderr.txt`
+- Files inside: `prompt.md`, `log.jsonl`, `output.txt`, `report.md`, `stderr.txt` (supervised mode writes `raw.jsonl` instead of `log.jsonl`)
 - The final output content from Gemini
 
 ## WARNING

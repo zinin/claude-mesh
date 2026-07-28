@@ -153,6 +153,11 @@ mkdir -p "$WORK_DIR"
 # Persist sanitized TASK_NAME for step 2 callers — avoids fragile path-parsing
 # in generate-md.sh when WORK_DIR contains the -$$ PID suffix.
 echo "$TASK_NAME" > "$WORK_DIR/.task_name"
+# Stamp the dispatching session. CLAUDE_CODE_SESSION_ID is inherited across the agent
+# boundary, so shared/watch-runs.sh and shared/verify-delegation.sh can tell this run from one
+# a concurrent orchestration started under the same engine/model in the same data dir.
+# Unconditional: an empty value writes an empty line, which both readers treat as unstamped.
+printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}" > "$WORK_DIR/.session_id"
 cat > "$WORK_DIR/prompt.md" << '__PROMPT_BOUNDARY_a8f7e2c4_3b91_47d8_b6a9_PROMPT_END__'
 {PROMPT_TEXT_HERE}
 __PROMPT_BOUNDARY_a8f7e2c4_3b91_47d8_b6a9_PROMPT_END__

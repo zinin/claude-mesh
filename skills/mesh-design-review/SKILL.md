@@ -393,7 +393,7 @@ Task tool:
 
 **If a claude reviewer's Task errors** — most likely a `claude_models` entry this Claude Code build does not accept — treat it exactly like a failed executor per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Never silently re-dispatch it on a different model: a failed dispatch is the only signal that a model name is wrong (design §13), and substituting another model hides it while pretending the cross-check happened.
 
-**codex / gemini executors** parse `PROMPT` / `MODEL` / `REASONING_LEVEL` as named params (any line), so use the wrapped form:
+**codex / gemini executors** parse `PROMPT` / `MODEL` / `REASONING_LEVEL` / `SUPERVISED_MODE` as named params (any line), so use the wrapped form:
 ```
 Task tool:
   subagent_type: [claude-mesh:<executor>]
@@ -401,6 +401,7 @@ Task tool:
   prompt: "Execute this prompt via [tool]:
     PROMPT: [composed prompt with PREVIOUS_DECISIONS]
     TASK_NAME: design-review-[TOPIC]-iter-N
+    SUPERVISED_MODE: shell
     [agent-specific params]"
 ```
 
@@ -412,7 +413,8 @@ Task tool:
   prompt: "MODEL=<id>
     Execute this prompt via ext-claude-exec:
     PROMPT: [composed prompt with PREVIOUS_DECISIONS]
-    TASK_NAME: design-review-[TOPIC]-iter-N"
+    TASK_NAME: design-review-[TOPIC]-iter-N
+    SUPERVISED_MODE: shell"
 ```
 
 Agent-specific parameters:
@@ -420,14 +422,63 @@ Agent-specific parameters:
 - **`claude-mesh:gemini-executor`** (built-in selected: `gemini`): default settings
 - **`claude-mesh:ext-claude-executor`** (one per selected model id): `MODEL=<id>` on line 1 (e.g. `MODEL=zai/glm`, `MODEL=alibaba/qwen`, `MODEL=ollama/kimi`) — the model id comes from the config (`SELECTED_IDS`, or `defaults.design_review.models` in `default` mode), NOT a hardcoded provider profile.
 
+**Every executor template carries `SUPERVISED_MODE: shell` — never drop it.** Without it the `*-exec` skills default to `none`, which means no `shared/watchdog.sh`: no stall detection, no restart when a provider tears the stream mid-response, and no `watchdog.log` — the file whose `cleanup` event tells the watch loop below that a run has stopped, and whose `alive` heartbeat tells it the run is still alive. Design review never set this until 2026-07-27, so supervision was a coin flip: 42 of 223 archived runs got a watchdog, against 242 of 255 on the `/mesh-review` path where it is hardcoded. On 2026-07-26 none of six did, four executors died mid-stream, and nothing noticed for 38 minutes. On 2026-07-27 four of five died again and only recovered because the executor agents improvised their own retries.
+
 Collect output paths from every **executor** (codex / gemini / ext-claude) — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports. Claude reviewers have no output path to collect: they create no `runs/<engine>/…` dir and return their review as the Task result.
 
 **CRITICAL — an executor's report does NOT arrive on its own: disk-watch the runs and ping idle executors.** Each executor launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…` under the plugin data dir), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits, so the report stalls until pinged (same mechanics verified 2026-07-10 on the mesh-review wrappers: 0 notifications in 5/5 transcripts, reports stalled 8–12 min over a finished `output.txt`). After dispatch:
 
 1. Capture each executor's run dir from its interim status. Fallback when a status names none: the newest dir under `$PLUGIN_DATA/runs/<engine>/[<provider>/<model>/]` (`PLUGIN_DATA` = `"$LOADER" data-dir`) created after `DISPATCH_EPOCH`.
-2. Poll the disk via Bash — as a background Bash task (a background watcher that exits on each state change re-invokes the orchestrator per event; a foreground poll loop would block the session). ~30–60 s cadence; bound the whole watch by `runtime.timeouts.global_sec` (read it via `"$LOADER" get-runtime | jq -r '.timeouts.global_sec'`, default 3600) plus a margin. A run is finalized when: root `output.txt` is present and non-empty (gemini-exec pre-creates a zero-byte `output.txt` at launch — an empty file is NOT finalization), or a `final` symlink exists, or the run's `watchdog.log` has a `cleanup` event.
-3. When a run is finalized but its executor has not delivered its review — SendMessage that agent: `your external run finished — read its output.txt, extract the findings and send your report`. Ping once per finalized run — re-ping only if the executor is still silent after the next poll interval (~60–90 s).
-4. Repeat until every dispatched executor has reported or the watch budget expires; treat a still-silent executor as failed per Error Handling ("One agent fails, others succeed") — never interpret silence as "no findings". This loop covers the codex / gemini / ext-claude executors only; claude reviewers are not part of it.
+2. Watch the disk with `shared/watch-runs.sh`, launched as a **background** Bash task — a foreground poll loop would block the session, and a background watcher that returns on each event re-invokes you per event. **Do NOT hand-roll a poller.** The one improvised here exited only when the count of finished runs grew, and death never grows a count; that is the blind spot this script exists to close.
+
+   ```bash
+   SKILL_BASE="<the absolute path Claude Code printed when this skill loaded>"
+   WATCH="$SKILL_BASE/../shared/watch-runs.sh"
+   [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
+   "$WATCH" --since <DISPATCH_EPOCH> codex gemini ext-claude/zai/glm
+   ```
+
+   Substitute the **actual** `DISPATCH_EPOCH` number you stamped above. A shell variable does not survive from one Bash call to the next, and an unset name in a prompt raises nothing at all — the script rejects an implausible `--since` rather than silently watching a window that ended in 1970.
+
+   The arguments after the options are a **roster** of `engine[/provider/model]` — the subpath under `runs/` — not run directories. An executor that dies and self-retries creates a new run dir, so the watcher re-resolves the newest one at/after `--since` on every tick and follows the retry by itself. Pass only the executors you are still waiting for (point 5).
+
+   | Status | Meaning |
+   |---|---|
+   | `DONE` | finished, and there is a non-empty `output.txt` to read |
+   | `FAILED` | finished without usable output — the watchdog exited non-zero, or nothing appeared in the minute after the run stopped writing |
+   | `RUN` | still producing, or still starting up |
+   | `SILENT` | nothing written to any stream for longer than the stall threshold |
+   | `MISSING` | no run dir for this executor at all |
+
+   The reason line names what moved — `CHANGED ext-claude/ollama/kimi RUN→SILENT`. Terminal verdicts are `ALL_DONE`, `SETTLED` (nothing left running) and `DEADLINE` (the watch budget expired); those three end the loop. A healthy `--once` prints `SNAPSHOT`. **Every verdict exits 0.** A non-zero exit means the watcher itself is broken, never that an executor died.
+
+   A `MISSING` row that ends `N run(s) in this window belong to another session` is the one status here that is **not** about the executor. Run dirs carry the id of the session that dispatched them, and this session's id no longer matches — a resumed or forked session, not a death. Do not route it to Error Handling as a failed executor; say so and, if the runs are in fact this orchestration's, finish the watch by reading them directly. `verify-delegation.sh` reports the same cause as a `FLIP` whose reason names the session mismatch — that one is not a flip either.
+3. When a run reaches `DONE`, check that it actually produced a review **before** pinging its executor. `DONE` means the run stopped and left a non-empty `output.txt`; it does not mean the file holds findings.
+
+   ```bash
+   SKILL_BASE="<the absolute path Claude Code printed when this skill loaded>"
+   VERIFY="$SKILL_BASE/../shared/verify-delegation.sh"
+   DATA_DIR="$("$SKILL_BASE/../shared/config-loader.sh" data-dir)"
+   bash "$VERIFY" ext-claude zai/glm <DISPATCH_EPOCH> "$DATA_DIR"
+   ```
+
+   The arguments are the engine, the model (`-` for codex and gemini), the **same** `DISPATCH_EPOCH` you pass to the watcher — substitute the actual number — and the data dir, so the gate reads the tree the watcher read instead of resolving one for itself. It prints the verdict on stdout and the reason on stderr, and exits non-zero for every verdict but `REAL`: `STALLED`=2, `FLIP`=3, `BROKEN`=4. **For those three codes the non-zero exit is the answer, not a breakage** — unlike the watcher, do not re-run the gate and do not skip it over a 2, 3 or 4. Any *other* non-zero code is the script failing rather than answering: `1` is a usage error (missing or unknown engine, a `since-epoch` that is not a number — the shape an unsubstituted `DISPATCH_EPOCH` takes — bash < 4.2, or a non-GNU `find`), `126`/`127` mean the path is wrong. Those print no verdict on stdout at all, so treat them as your own mistake — fix the invocation and re-run that one.
+
+   - `REAL` — SendMessage that executor: `your external run finished — read its output.txt, extract the findings and send your report`. Ping once per `DONE` run **that has not already sent its report**: an executor sometimes delivers on its own the moment its run lands, and a ping that crosses the report in flight costs it a turn and you a duplicate. Re-ping only if it is still silent after the next poll interval (~60–90 s).
+   - `STALLED` / `BROKEN` / `FLIP` — the run stopped without producing a usable review. Treat it as a failed executor per point 4 and do **not** ping: asking an agent to extract findings from a file that has none is how a draft becomes a review. On 2026-07-27 a torn run left a 47429-byte `output.txt` containing only the model's narration; `verify-delegation.sh` classified it `STALLED` ("no usable result event in raw.jsonl"), and only the executor's own honesty had kept it out of the merge. `FLIP` is the one verdict here that earns a check first. The script emits it in three places: when the engine/model directory does not exist at all; when it exists but holds no run NAMED at/after the `--since` you passed; and when the runs in that window carry another session's id, which the reason line says outright — that third one is a session that was resumed or forked mid-orchestration, not a reviewer that skipped its skill, so re-dispatching it would only make a second orphan. After a `DONE` none of the three can mean "never delegated" — the watcher just saw that directory. Both mean the two are looking in different places, or at different windows. Re-check the engine and model against the roster entry from point 2 — the watcher takes them as **one** token, `ext-claude/zai/glm`, while this script takes **two**, `ext-claude zai/glm`, and copying the roster entry across as-is is an unknown-engine usage error, not a verdict. Then re-check the epoch: Step 6 is a loop that stamps a fresh `DISPATCH_EPOCH` each iteration, so one carried over from another iteration yields `FLIP` with engine, model and data dir all correct. Only when all of those match is the executor dead; otherwise you would drop a finished report over a typo.
+4. **A `SILENT`, `FAILED` or `MISSING` run is a dead executor** — treat it per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Do **not** re-dispatch it. `watchdog.sh` already restarts the CLI up to twice inside the run, and that is this file's only retry layer, which is exactly why a third one here would just spend another budget on the same failure. Report what you actually observed: "ext-claude ollama/kimi silent for 612s, last write 14:40:43". Never call a death `WATCH_TIMEOUT`; that claims time ran out when in fact an executor died, and the two call for different actions.
+5. **Pass only the executors you are still waiting for.** The watcher assumes every roster entry is running, so an entry you have already handled comes straight back as news. If the watcher returns twice in a row with the same reason, you did not narrow the roster. Stop watching once the roster would be empty.
+6. Repeat until every dispatched executor has reported, is dead, or the watch budget expires — never interpret silence as "no findings". This loop covers the codex / gemini / ext-claude executors only; claude reviewers are not part of it.
+
+**Anything an executor says while the watch is running is a free liveness check.** Before replying to an interim status, a progress note or a question, run one `"$WATCH" --since <the same epoch> --once <current roster>` — re-resolve `$WATCH` with the same lines as in point 2 first; it does not survive between Bash calls — and act on the rows. On 2026-07-26 six such messages arrived while three executors were already dead; each was answered with "expected, still waiting", and not one triggered a check that would have taken a single command. `--once` reports `CHANGED` when something has already died, so the answer names the death rather than handing you a table to compare by eye.
+
+> Sync note: points 1–6 are mirrored in `commands/mesh-review.md` (Step 5a) — in substance, not byte for byte, and four things are not mirrored at all. Work out which kind you are touching before copying anything across.
+>
+> **Mirror the substance.** The status table, the roster explanation, the `--since` warning, the "every verdict exits 0" contract, point 5 and the `--once` liveness rule just above this note say the same thing in both files and must go on saying it: when you change what one of them says, change the other. Do not paste bytes — each copy is worded to its own file (`wrapper` in `/mesh-review`, `executor` in design review), names its own cross-references (where `DISPATCH_EPOCH` was stamped; the "Do NOT block" instruction only `/mesh-review` has) and describes its own retry model (a run re-dispatched by `/mesh-review` versus one that self-retries under design review).
+>
+> **Never mirror these four.** (1) Points 1–2 resolve paths differently by construction: `/mesh-review` reads `$DATA_DIR` and finds its loader through `${CLAUDE_PLUGIN_ROOT}` with a version-sorted `find` fallback, because the harness substitutes that placeholder into a command file's text; a skill gets no such substitution, so design review starts from the base path Claude Code prints at load (`SKILL_BASE`) and asks the loader for `data-dir`. Copying either block across breaks path resolution outright. (2) Point 3: design review runs the `verify-delegation.sh` content gate inline before pinging, while `/mesh-review` pings on `DONE` and only reaches the same check later, in its own mechanical classification step. (3) Point 4: a dead run goes to Error Handling in design review, whose only retry layer is `watchdog.sh` inside the run, and to Step 6.0 in `/mesh-review`, which classifies it mechanically and owns a second, wrapper-level retry layer; the retry sentence that closes the point differs with the routing. (4) Point 6's closing clause: `/mesh-review` hands whatever is still silent to that same step, while design review instead records that the loop covers the codex / gemini / ext-claude executors only.
+>
+> Do not restore parity by copying the gate or the routing across, and do not delete either: each file checks a finished run's content exactly once and routes a dead run exactly once, and a copy of either in the other file would be the weaker of the two.
 
 ### Step 7: Merge Review Results
 

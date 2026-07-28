@@ -244,9 +244,46 @@ When each agent completes, read its output. After all agents finish (or the user
 **CRITICAL — a wrapper's report does NOT arrive on its own: disk-watch the runs and ping idle wrappers.** A wrapper launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…`), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits (verified 2026-07-10: 0 notifications in 5/5 smoke transcripts; wrappers sat 8–12 min over a finished `output.txt` until explicitly pinged). Treat the interim status as the last thing a wrapper says unprompted. After dispatch:
 
 1. **Capture each wrapper's run dir** from its interim status. Fallback when a status names none: the newest dir under `$DATA_DIR/runs/<engine>/[<provider>/<model>/]` created after `DISPATCH_EPOCH` — the same discovery `verify-delegation.sh` uses (locate `DATA_DIR` as in Step 6.0 point 1).
-2. **Poll the disk via Bash — as a background Bash task**, so "Do NOT block" above stays true (a background watcher that exits on each state change re-invokes the orchestrator per event; a foreground poll loop would hold the session hostage). ~30–60 s cadence; bound the whole watch by `runtime.timeouts.global_sec` (read it via `"$LOADER" get-runtime | jq -r '.timeouts.global_sec'`, default 3600) plus a margin. A run is finalized when: root `output.txt` is present **and non-empty** (gemini-exec pre-creates a zero-byte `output.txt` at launch — an empty file is NOT finalization), or a `final` symlink exists, or the run's `watchdog.log` has a `cleanup` event.
-3. **When a run is finalized but its wrapper has not delivered a report — SendMessage that wrapper:** `your external run finished — read its output.txt, extract the findings and send your report`. A pinged wrapper answers promptly. **Ping once per finalized run** — track who was already pinged and re-ping only if a wrapper is still silent after the next poll interval (~60–90 s), so a wrapper whose answer is already in flight is not spammed.
-4. **Repeat** until every dispatched wrapper has reported or the watch budget expires; whatever is still silent lands in Step 6.0, which classifies it mechanically. Never interpret wrapper silence as "no findings".
+2. **Watch the disk with `shared/watch-runs.sh`, launched as a background Bash task**, so "Do NOT block" above stays true — a foreground poll loop would hold the session hostage, and a background watcher that returns on each event re-invokes you per event. **Do NOT hand-roll a poller.** The improvised one exited only when the count of finished runs grew, and death never grows a count; that is the blind spot this script exists to close.
+
+   ```bash
+   LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+   [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
+   WATCH="$(dirname "$LOADER")/watch-runs.sh"
+   [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
+   "$WATCH" --since <DISPATCH_EPOCH> codex ext-claude/zai/glm ext-claude/ollama/kimi
+   ```
+
+   Substitute the **actual** `DISPATCH_EPOCH` number you stamped in Step 5. A shell variable does not survive from one Bash call to the next, and an unset name in a prompt raises nothing at all — the script rejects an implausible `--since` rather than silently watching a window that ended in 1970.
+
+   The arguments after the options are a **roster** of `engine[/provider/model]` — the subpath under `runs/` — not run directories. A wrapper whose run dies and is re-run creates a new run dir, so the watcher re-resolves the newest one at/after `--since` on every tick and follows it by itself. Pass only the wrappers you are still waiting for (point 5).
+
+   | Status | Meaning |
+   |---|---|
+   | `DONE` | finished, and there is a non-empty `output.txt` to read |
+   | `FAILED` | finished without usable output — the watchdog exited non-zero, or nothing appeared in the minute after the run stopped writing |
+   | `RUN` | still producing, or still starting up |
+   | `SILENT` | nothing written to any stream for longer than the stall threshold |
+   | `MISSING` | no run dir for this wrapper at all |
+
+   The reason line names what moved — `CHANGED ext-claude/ollama/kimi RUN→SILENT`. Terminal verdicts are `ALL_DONE`, `SETTLED` (nothing left running) and `DEADLINE` (the watch budget expired); those three end the loop. A healthy `--once` prints `SNAPSHOT`. **Every verdict exits 0.** A non-zero exit means the watcher itself is broken, never that a wrapper died.
+
+   A `MISSING` row that ends `N run(s) in this window belong to another session` is the one status here that is **not** about the wrapper. Run dirs carry the id of the session that dispatched them, and this session's id no longer matches — a resumed or forked session, not a death. Do not route it to Step 6.0 as a failure; say so and, if the runs are in fact this orchestration's, finish the watch by reading them directly.
+3. **When the watcher reports a run `DONE` but its wrapper has not delivered a report — SendMessage that wrapper:** `your external run finished — read its output.txt, extract the findings and send your report`. A pinged wrapper answers promptly. **Ping once per `DONE` run** — track who was already pinged and re-ping only if a wrapper is still silent after the next poll interval (~60–90 s), so a wrapper whose answer is already in flight is not spammed.
+4. **A `SILENT`, `FAILED` or `MISSING` run is dead — send it to Step 6.0**, which classifies it mechanically, rather than waiting out the budget over a run that will never change. Do **not** re-dispatch it here: `watchdog.sh` already restarts the CLI up to twice inside the run, and Step 6.0 owns the wrapper-level retry via `max_redispatch`. Report what you actually observed: "ext-claude ollama/kimi silent for 612s, last write 14:40:43". Never call a death `WATCH_TIMEOUT`; that claims time ran out when in fact a wrapper died, and the two call for different actions.
+5. **Pass only the wrappers you are still waiting for.** The watcher assumes every roster entry is running, so an entry you have already handled comes straight back as news. If the watcher returns twice in a row with the same reason, you did not narrow the roster. Stop watching once the roster would be empty.
+6. **Repeat** until every dispatched wrapper has reported, is dead, or the watch budget expires; whatever is still silent lands in Step 6.0. Never interpret wrapper silence as "no findings".
+
+**Anything a wrapper says while the watch is running is a free liveness check.** Before replying to an interim status, a progress note or a question, run one `"$WATCH" --since <the same epoch> --once <current roster>` — re-resolve `$WATCH` with the same lines as in point 2 first; it does not survive between Bash calls — and act on the rows. On 2026-07-26 six such messages arrived while three executors were already dead; each was answered with "expected, still waiting", and not one triggered a check that would have taken a single command. `--once` reports `CHANGED` when something has already died, so the answer names the death rather than handing you a table to compare by eye.
+
+> Sync note: points 1–6 are mirrored in `skills/mesh-design-review/SKILL.md` (Step 6) — in substance, not byte for byte, and four things are not mirrored at all. Work out which kind you are touching before copying anything across.
+>
+> **Mirror the substance.** The status table, the roster explanation, the `--since` warning, the "every verdict exits 0" contract, point 5 and the `--once` liveness rule just above this note say the same thing in both files and must go on saying it: when you change what one of them says, change the other. Do not paste bytes — each copy is worded to its own file (`wrapper` in `/mesh-review`, `executor` in design review), names its own cross-references (where `DISPATCH_EPOCH` was stamped; the "Do NOT block" instruction only `/mesh-review` has) and describes its own retry model (a run re-dispatched by `/mesh-review` versus one that self-retries under design review).
+>
+> **Never mirror these four.** (1) Points 1–2 resolve paths differently by construction: `/mesh-review` reads `$DATA_DIR` and finds its loader through `${CLAUDE_PLUGIN_ROOT}` with a version-sorted `find` fallback, because the harness substitutes that placeholder into a command file's text; a skill gets no such substitution, so design review starts from the base path Claude Code prints at load (`SKILL_BASE`) and asks the loader for `data-dir`. Copying either block across breaks path resolution outright. (2) Point 3: design review runs the `verify-delegation.sh` content gate inline before pinging, while `/mesh-review` pings on `DONE` and only reaches the same check later, in its own mechanical classification step. (3) Point 4: a dead run goes to Error Handling in design review, whose only retry layer is `watchdog.sh` inside the run, and to Step 6.0 in `/mesh-review`, which classifies it mechanically and owns a second, wrapper-level retry layer; the retry sentence that closes the point differs with the routing. (4) Point 6's closing clause: `/mesh-review` hands whatever is still silent to that same step, while design review instead records that the loop covers the codex / gemini / ext-claude executors only.
+>
+> Do not restore parity by copying the gate or the routing across, and do not delete either: each file checks a finished run's content exactly once and routes a dead run exactly once, and a copy of either in the other file would be the weaker of the two.
 
 The builtin `claude` reviewers are exempt: they review inline, create no `runs/<engine>/…` dir and complete on their own. Never wait for a run dir for them and never ping them.
 
@@ -299,14 +336,16 @@ N="$("$LOADER" get-runtime | jq -r '.max_redispatch // 1')"; [[ "$N" =~ ^[0-9]+$
 for spec in "codex:-" "ext-claude:zai/glm" "ext-claude:ollama/kimi"; do
   eng="${spec%%:*}"; mdl="${spec#*:}"
   printf '%-28s ' "$spec"
-  bash "$VERIFY" "$eng" "$mdl" "$DISPATCH_EPOCH" "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN; reason on stderr
+  bash "$VERIFY" "$eng" "$mdl" <DISPATCH_EPOCH> "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN; reason on stderr
 done
 ```
+
+Substitute the **actual** `DISPATCH_EPOCH` number — the one stamped in Step 5, or the fresh one from step 4a on a re-dispatch round — exactly as in the Step 5a watcher call. A shell variable does not survive from one Bash call to the next, and `DISPATCH_EPOCH` was stamped in a different one; left as `"$DISPATCH_EPOCH"` it expands to nothing and the guard prints its usage line and exits 1 for every reviewer, which is not a verdict at all.
 Verdicts:
 - `REAL` (exit 0) — delegated, real review → **keep** for Step 6.1.
-- `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**.
-- `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps).
-- `BROKEN` (exit 4) — run dir but thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events) → **DROP, do NOT retry** (the engine itself is broken).
+- `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**. One `FLIP` reason reads differently and is not about the wrapper: `N run dir(s) in the dispatch window belong to another session`. The runs are there, but they carry an id this session does not have — either this session was resumed or forked since Step 5, or the wrapper really did flip and another orchestration's runs happen to sit in the same window on the same model. The guard cannot tell those two apart and deliberately does not guess. Re-dispatch anyway: a fresh run is stamped with this session's id and verifies honestly, which is the only way back to a checkable answer. What changes is how it is reported if it does not recover — see step 5.
+- `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps). For ext-claude that is a missing result event; for codex and gemini, a stream with no `turn.completed` / `result` event, or a non-zero watchdog exit.
+- `BROKEN` (exit 4) — run dir but the engine finished without doing any work → **DROP, do NOT retry** (the engine itself is broken). For ext-claude that is thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events); for codex and gemini, a completed turn that ran no tool at all — narration rather than a review.
 
 **3. Show the delegation status table** so the user sees who really cross-validated:
 ```
@@ -343,12 +382,13 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 **5. Finalize:**
 - `REAL` reviewers → their reviews enter Step 6.1 (dedupe/classify) as normal.
 - Reviewers still `FLIP`/`STALLED` after `N` rounds → **EXCLUDE from cross-validation** and record in the Step 6.6 summary: `⚠ <reviewer> did not delegate after N attempts — NOT counted as external review (self-review on the session model / killed mid-flight)`.
+- A reviewer whose final `FLIP` names a **session mismatch** is excluded on the same terms — a run this session cannot verify never counts as external cross-validation — but it is recorded for what was actually observed, not as a flip: `⚠ <reviewer>: N run dir(s) in the window carry another session's id — NOT counted as external review (this session's id does not match the one that dispatched them)`. "Did not delegate" would be a false statement about that reviewer: the run dirs exist, and if the id moved under the orchestration they hold its finished work.
 - `BROKEN` reviewers → record: `⚠ <reviewer>: external engine produced no usable review (broken — ask the user to swap the model in config.yaml; agents never edit it)`.
 - The builtin `claude` reviewers' findings always enter Step 6.1 — every one of them whose Task completed, one entry per selected Claude model (or the single fallback reviewer). The ones marked `FAILED` above contribute nothing; they are never re-dispatched on a substitute model.
 
 **Do NOT silently accept a FLIP as an external review.** A flipped wrapper is the session's model reviewing its own work; counting it as independent cross-validation is the exact failure this guard exists to prevent.
 
-> **Concurrency note:** the guard picks the newest run dir for an engine/model created after `DISPATCH_EPOCH`. If two `/mesh-review` invocations run the same model concurrently, the window can overlap — rare in practice; run them sequentially if exact attribution matters.
+> **Concurrency note:** the guard picks the newest run dir for an engine/model created at/after `DISPATCH_EPOCH` **that carries this session's id** — the `*-exec` skills stamp `$CLAUDE_CODE_SESSION_ID` into `<run dir>/.session_id`, and the guard walks past anyone else's. Two `/mesh-review` invocations in two different Claude Code sessions therefore no longer see each other's runs, even on the same model and the same shared data dir. Two invocations *inside one session* still share an identity and can still overlap on a model; run those sequentially if exact attribution matters. Runs left by an older plugin version carry no stamp and stay eligible on purpose — reporting a live unstamped run as "never delegated" would be worse than the collision.
 
 ### Step 6.1: Deduplicate, Verify, and Classify
 

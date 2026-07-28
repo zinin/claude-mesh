@@ -68,14 +68,14 @@ Install missing tools:
 
 ### macOS additional setup
 
-claude-mesh's scripts use **GNU coreutils** (`timeout`, `stdbuf`, `stat -c`, `setsid` from util-linux). macOS ships only BSD variants by default. After `brew install bash coreutils util-linux`, prepend the gnubin paths to your `PATH` so `timeout`/`stat`/`setsid` resolve to the GNU versions:
+claude-mesh's scripts use **GNU coreutils** (`timeout`, `stdbuf`, `stat -c`, `setsid` from util-linux) and **GNU findutils** (`find -printf`, used by the delegation guard). macOS ships only BSD variants by default. After `brew install bash coreutils util-linux findutils`, prepend the gnubin paths to your `PATH` so `timeout`/`stat`/`setsid`/`find` resolve to the GNU versions:
 
 ```sh
 # Add to ~/.zshrc or ~/.bashrc
-export PATH="$(brew --prefix)/opt/coreutils/libexec/gnubin:$(brew --prefix)/opt/util-linux/sbin:$(brew --prefix)/opt/util-linux/bin:$PATH"
+export PATH="$(brew --prefix)/opt/coreutils/libexec/gnubin:$(brew --prefix)/opt/findutils/libexec/gnubin:$(brew --prefix)/opt/util-linux/sbin:$(brew --prefix)/opt/util-linux/bin:$PATH"
 ```
 
-A bash 4+ shell is also required (macOS system bash is 3.2). `brew install bash` provides this; ensure `/opt/homebrew/bin/bash` (Apple Silicon) or `/usr/local/bin/bash` (Intel) appears in `$SHELL` or your terminal config. `config-loader.sh` and `ext-claude-exec` preflights detect Darwin and fail fast with these instructions if the setup is missing.
+A bash 4.2+ shell is also required (macOS system bash is 3.2). `brew install bash` provides this; ensure `/opt/homebrew/bin/bash` (Apple Silicon) or `/usr/local/bin/bash` (Intel) appears in `$SHELL` or your terminal config. `config-loader.sh` and `ext-claude-exec` preflights detect Darwin and fail fast with these instructions if the setup is missing; `shared/watch-runs.sh` and `shared/verify-delegation.sh` are the two that need 4.2 rather than 4.0, for the `printf '%(fmt)T'` builtin, and `verify-delegation.sh` probes for GNU `find` at startup.
 
 ## Config schema reference
 

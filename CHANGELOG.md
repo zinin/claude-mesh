@@ -2,6 +2,127 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Fixed
+- The `/mesh-review` and `/mesh-design-review` watch loops could not tell a slow
+  executor from a dead one — both leave the same disk, and every finalization predicate
+  was about a result *appearing*. The only backstop was `runtime.timeouts.global_sec`,
+  an hour of blindness by default, and when it fired it reported `WATCH_TIMEOUT` rather
+  than naming the death. A new `skills/shared/watch-runs.sh` classifies each dispatched
+  executor as `DONE` / `FAILED` / `RUN` / `SILENT` / `MISSING` and returns as soon as any
+  of them stops running, naming the executor and the transition. It holds a roster of
+  `engine[/provider/model]` rather than run directories, so an executor that dies and
+  self-retries into a new directory is followed instead of being reported dead. Freshness
+  is the newest mtime across `raw.jsonl`, `log.jsonl`, `watchdog.log` and
+  `attempt-*/raw.jsonl`, so a supervised run between watchdog retries reads as `RUN` on
+  its heartbeat. Finishing is deliberately not judged on `output.txt` alone, in either
+  direction. `watchdog.sh` never writes that file — the `*-exec` skill extracts it from
+  `raw.jsonl` after the watchdog returns, 0-33s later across 249 archived runs — so a run
+  that exited 0 with nothing yet on disk stays `RUN` for a settle minute instead of being
+  called `FAILED` over a file still being written. Without a watchdog a non-empty
+  `output.txt` is not a finish either: `gemini-exec` appends to it inside its stream loop,
+  so a live run would read `DONE` and hand back half a review. `report.md`, which all three
+  `*-exec` skills write only after that loop ends, is the stop signal there. Recovery is
+  deliberately not signalled: the baseline is virtual — every
+  roster entry is assumed `RUN`, so an already-dead run is caught on the first tick after
+  every restart, and an executor that recovers on its own produces no event. Both prompts
+  now call the script instead of describing a poll loop in prose; the improvised
+  implementation exited only when the finished count grew, which death never does. An
+  executor's unprompted message is now spent on a `--once` liveness check rather than on
+  an acknowledgement. A budget expiring on the same tick something moved names the
+  transitions (`DEADLINE codex RUN→DONE`) instead of summarising a finished run as a bare
+  `DEADLINE`, and the roster validator rejects `.` as a path component alongside `..`.
+- `/mesh-design-review` never passed `SUPERVISED_MODE`, so its executors ran unsupervised
+  by default: no `shared/watchdog.sh`, no stall detection, no restart on a torn provider
+  stream, and no `watchdog.log`. Whether a run got a watchdog was luck — 42 of 223 archived
+  runs did, against 242 of 255 on the `/mesh-review` path. Step 6 now dispatches every
+  executor with `SUPERVISED_MODE: shell`, and `codex-executor` / `gemini-executor` /
+  `ext-claude-executor` document the parameter so it is forwarded to the skill instead of
+  leaking into the prompt.
+- `shared/verify-delegation.sh` picked the newest run dir by mtime while `watch-runs.sh` picks
+  it by name. On bail an abandoned dir gains a `final` symlink, which lifts its mtime above the
+  retry dir that superseded it, so the two disagreed on which run was "the run" — the watcher
+  reporting `DONE` on the retry while the gate reported `STALLED` on the corpse. Now that
+  design review chains them on the same run, that disagreement discarded a finished review, so
+  the gate orders candidates by name too. Its codex/gemini branch also stopped being a no-op:
+  it checked `.watchdog_rc`, which nothing under `skills/` writes, and then only that
+  `output.txt` was non-empty — the same question the caller had already answered. It now reads
+  the watchdog's real exit code out of `watchdog.log` and requires the CLI's own terminal event
+  (`turn.completed` / `result`) plus at least one tool call, which is the codex and gemini
+  analogue of `num_turns<=1`. A narration-only draft is `BROKEN` for those engines instead of
+  `REAL`. Three more holes in that gate closed after a second review round: candidates are
+  shape-filtered to timestamp-named directories like the watcher's (in `LC_ALL=C` letters sort
+  above digits, so a stray `tmp/` — or the provider directory a truncated model argument
+  resolves to — outranked every real run and read `STALLED` where the truth was `REAL` or
+  `FLIP`); a gemini result event carrying an explicit `status != "success"` is `STALLED`
+  rather than `REAL` (the CLI can exit 0 on an API failure while `gemini-exec`'s extraction
+  writes `API Error: …` into `output.txt`); and a finalized run with no stream file at all is
+  `STALLED` — every layout the exec skills produce carries one, so its absence means the
+  checks would otherwise be skipped on a layout nothing in the tooling wrote.
+- `/mesh-design-review` accepted an executor's report without checking that the run had
+  produced one. A run that stops and leaves a non-empty `output.txt` looks finished even
+  when the file holds only the model's narration. It now runs `verify-delegation.sh` — the
+  guard `/mesh-review` has used since Step 6.0 existed — before asking an executor to
+  extract findings.
+- A watcher or content gate could resolve a run directory belonging to a different
+  orchestration. Both pick the newest run dir under `runs/<engine>[/provider/model]`, and the
+  plugin's data dir is global, so two `/mesh-review` or `/mesh-design-review` sessions on the
+  same engine/model — in two different repositories — saw each other's runs: the earlier
+  session could report `DONE`/`SILENT` about a run it never dispatched, ping its wrapper
+  early, and hand `verify-delegation.sh` the wrong directory, discarding a finished review.
+  The four skills that create a run dir now stamp `$CLAUDE_CODE_SESSION_ID` into
+  `<run dir>/.session_id`, and both consumers walk their existing newest-first order until
+  they reach a run of their own. The identity is ambient rather than passed down the dispatch:
+  the variable is inherited across the agent boundary, so an executor cannot fail to forward
+  it and an improvised re-run inherits it automatically. A directory with no stamp stays
+  eligible — legacy runs, direct `/claude-mesh:*-exec` invocations and a harness without the
+  variable must keep working, and reporting `MISSING` for a live unstamped run would be worse
+  than the collision. Two orchestrations inside one session remain indistinguishable. When the
+  reader's own id is the one that moved — a resumed or forked session, where every live run is
+  suddenly foreign — neither consumer can find a run, and both now say so instead of reporting
+  it as a death: the watcher's `MISSING` row and the gate's `FLIP` reason both name how many
+  in-window runs belong to another session. Both prompts route the watcher's annotated row
+  away from their failure paths. The gate's annotated `FLIP` keeps `/mesh-review`'s
+  re-dispatch — a fresh run carries this session's id and is the only way back to a checkable
+  answer, and the guard cannot tell "my id moved" from "a real flip whose window overlaps
+  another orchestration's runs" — but such a reviewer is never recorded as having failed to
+  delegate; the summary names the session mismatch instead.
+- `shared/verify-delegation.sh` and `shared/watch-runs.sh` disagreed about which runs are even
+  *in* the dispatch window, which is the same class of defect as the mtime-vs-name winner above
+  and survived that fix. Eligibility in the gate was `find -newermt` — MODIFICATION time — while
+  the watcher compares the run-dir name against `--since` rendered the same way. A run created
+  before the window but still being written stays mtime-eligible indefinitely, so `/mesh-review`
+  Step 6.4a, which stamps a fresh epoch precisely "so the guard inspects the NEW run, not the
+  old failed one", still handed the gate the old one: a wrapper that flipped on re-dispatch and
+  produced no run dir at all was scored `REAL` off the previous round's corpse. The gate now
+  filters candidates by name against the same rendering the watcher uses, so the two windows are
+  identical by construction. Three smaller divergences closed with it: the gate picked
+  `output.txt` with `-f` where the watcher uses `-s`, so an existing-but-empty root file beat a
+  `final/output.txt` holding the actual review (`DONE` from the watcher, `STALLED` from the
+  gate); name comparison and sorting now run under `LC_ALL=C` in both, since a UTF-8 collation
+  ignores `-` and would order run dirs differently; and a non-numeric `since-epoch` — an
+  unsubstituted `$DISPATCH_EPOCH`, which expands to nothing — is a usage error rather than a
+  silent `FLIP` for every reviewer. `/mesh-review` Step 6.0 stopped passing that variable
+  through a shell reference that cannot survive between Bash tool calls.
+- `shared/verify-delegation.sh` had no GNU-`find` probe although it depends on `-printf`, so on
+  a BSD `find` the candidate walk failed silently and every reviewer came back `FLIP` — which
+  `/mesh-review` acts on by re-dispatching all of them. It now fails loudly, like the GNU-`stat`
+  probes in `config-loader.sh` and `watch-runs.sh`.
+
+### Requirements
+- `shared/watch-runs.sh` and `shared/verify-delegation.sh` need **bash 4.2**, up from the 4.0
+  the rest of the plugin asks for: both render a timestamp with the `printf '%(fmt)T'`
+  builtin. `verify-delegation.sh` also states the **GNU `find`** dependency it always had
+  (`-printf`) and probes for it at startup. README's macOS setup gains `findutils` and its
+  gnubin path — `coreutils` does not provide GNU `find`.
+
+### Configuration
+- No new keys. `runtime.timeouts.stall_sec` gains a second consumer: the orchestrator's
+  watcher reports a run `SILENT` past that threshold. The watcher floors it at 600, because
+  `codex-exec` and `gemini-exec` hardcode `HARD_ZERO_TIMEOUT=600` and ignore the key — a
+  lower value would let the watcher call a live run dead before its own watchdog acts.
+
 ## [0.5.0] - 2026-07-27
 
 ### Added
