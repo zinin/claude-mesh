@@ -34,6 +34,20 @@ assert_eq() {
 # run the script and capture verdict + rc
 run() { VERDICT=$(bash "$SCRIPT" "$@" 2>/dev/null); RC=$?; }
 
+# run the script under an explicit session identity: <sid>, or '-' for no identity at all.
+# The assignment prefixes the EXTERNAL command; a prefix on a function call would leak into
+# the rest of the suite.
+run_as() {
+    local sid="$1"; shift
+    if [ "$sid" = "-" ]; then
+        VERDICT=$(env -u CLAUDE_CODE_SESSION_ID bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
+    else
+        VERDICT=$(env "CLAUDE_CODE_SESSION_ID=$sid" bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
+    fi
+}
+# stamp a run dir with a session id
+sid_stamp() { printf '%s\n' "$2" > "$1/.session_id"; }
+
 # --- helpers to build run dirs ---
 # $1 base dir (e.g. $TDIR/runs/ext-claude/zai/glm), $2 run name
 mk_run() { mkdir -p "$1/$2/attempt-1"; echo "$1/$2"; }
@@ -468,6 +482,55 @@ echo 'plausible findings' > "$rd/output.txt"
 run gemini - 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
 assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# === Test: a foreign-stamped newest run is skipped for the older own-stamped one ===
+# The gate and watch-runs.sh must agree on which run is "the run". mesh-design-review chains
+# them: the watcher reports DONE, the gate then reads content. Disagreement discards a review.
+echo "=== Test: run identity — the foreign newest run is not inspected ==="
+TDIR=$(mktemp -d)
+mine=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-mine)
+echo 'real review' > "$mine/output.txt"; ln -s attempt-1 "$mine/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$mine/raw.jsonl"
+sid_stamp "$mine" sid-A
+theirs=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-12-00-00-1000-theirs)
+sid_stamp "$theirs" sid-B                       # newer by name, killed mid-flight
+run_as sid-A ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict REAL (own run inspected)" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# === Test: an unstamped run stays eligible ===
+echo "=== Test: run identity — an unstamped run is still inspected ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-legacy)
+echo 'real review' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$rd/raw.jsonl"
+run_as sid-A ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+rm -rf "$TDIR"
+
+# === Test: a reader with no session identity does not filter ===
+echo "=== Test: run identity — no reader identity means no filtering ==="
+TDIR=$(mktemp -d)
+theirs=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-theirs)
+echo 'real review' > "$theirs/output.txt"; ln -s attempt-1 "$theirs/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$theirs/raw.jsonl"
+sid_stamp "$theirs" sid-B
+run_as - ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+rm -rf "$TDIR"
+
+# === Test: every candidate foreign → FLIP, the same verdict as no run dir at all ===
+echo "=== Test: run identity — only foreign runs present → FLIP ==="
+TDIR=$(mktemp -d)
+theirs=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-theirs)
+echo 'real review' > "$theirs/output.txt"; ln -s attempt-1 "$theirs/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$theirs/raw.jsonl"
+sid_stamp "$theirs" sid-B
+run_as sid-A ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict FLIP" "FLIP" "$VERDICT"
+assert_eq "exit 3" "3" "$RC"
 rm -rf "$TDIR"
 
 echo ""

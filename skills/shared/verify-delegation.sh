@@ -54,6 +54,20 @@ resolve_plugin_data() {
     printf '%s\n' "$HOME/.claude/plugins/data/claude-mesh-zinin"
 }
 
+# Run identity. CLAUDE_CODE_SESSION_ID is exported into every Bash tool call and inherited
+# across the agent boundary, so a run dir stamped by the *-exec skill carries the session that
+# dispatched it. The body below is mirrored byte-for-byte in watch-runs.sh — the two must agree
+# on which run is "the run", or the watcher reports DONE on one dir while this gate inspects
+# another. FAIL-OPEN: an unstamped dir is a legacy run, a direct *-exec invocation, or a
+# harness without the variable, and calling those foreign would drop a finished review.
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-}"
+run_is_mine() {
+    [ -n "$SELF_SID" ] || return 0
+    local v=""
+    [ -r "$1/.session_id" ] && IFS= read -r v < "$1/.session_id"
+    [ -z "$v" ] || [ "$v" = "$SELF_SID" ]
+}
+
 ENGINE="${1:-}"
 MODEL="${2:-}"
 SINCE="${3:-}"
@@ -91,9 +105,19 @@ emit() { echo "$1"; [ -n "${2:-}" ] && echo "verify-delegation[$ENGINE${MODEL:+/
 # outranks every real run and gets inspected as if it were one, yielding a terminal STALLED.
 # Filtered out, those cases fall through to FLIP, the verdict the prompts say to re-check
 # against the engine/model arguments.
-NEWEST="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%f\n' 2>/dev/null |
-          grep -E '^[0-9]{4}(-[0-9]{2}){5}-' | LC_ALL=C sort -r | head -1)"
-[ -z "$NEWEST" ] || NEWEST="$BASE/$NEWEST"
+#
+# The walk stops at the newest candidate that belongs to THIS session (run_is_mine above). A
+# foreign one is skipped rather than inspected: two orchestrations of one engine/model share
+# this data dir, and inspecting a stranger's run yields a terminal verdict about work nobody
+# asked for. Process substitution, not a pipe — a `while` on the right of a pipe runs in a
+# subshell and NEWEST would not survive it.
+NEWEST=""
+while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    run_is_mine "$BASE/$cand" || continue
+    NEWEST="$BASE/$cand"; break
+done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%f\n' 2>/dev/null |
+         grep -E '^[0-9]{4}(-[0-9]{2}){5}-' | LC_ALL=C sort -r)
 [ -n "$NEWEST" ] || emit FLIP "no run dir newer than dispatch time — reviewer did not delegate" 3
 RD="$NEWEST"
 
