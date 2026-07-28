@@ -402,6 +402,47 @@ rm -rf "$TDIR"
 
 fi
 
+# --- roster and run-dir shape -------------------------------------------------------------
+# A name that is not a timestamp sorts ABOVE every timestamp, so without a shape filter one
+# stray directory shadows its roster entry permanently — every finished run under it reads
+# SILENT, forever. That is the silent blindness this whole script exists to remove.
+
+echo ""
+echo "Test 28: a non-timestamp directory beside a finished run does not shadow it"
+TDIR="$(mktemp -d)"
+A="$(mk_run "$TDIR" codex)"
+wd_log "$A" 0; printf 'findings\n' > "$A/output.txt"
+mkdir -p "$TDIR/runs/codex/tmp"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" codex
+assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_match "codex is still DONE" "DONE" "$(row codex)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 29: a bare entry whose base holds only provider dirs is MISSING, not a provider dir"
+TDIR="$(mktemp -d)"
+mk_run "$TDIR" ext-claude/zai/glm >/dev/null
+run --since "$SINCE_OLD" --stall-sec 600 --once --data-dir "$TDIR" ext-claude
+assert_eq "reason SETTLED RUN→MISSING" "SETTLED ext-claude RUN→MISSING" "$REASON"
+assert_match "ext-claude is MISSING" "MISSING" "$(row ext-claude)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 30: a roster entry containing '..' is a usage error"
+TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
+run --since "$SINCE_OK" --once --data-dir "$TDIR" 'ext-claude/zai/..'
+assert_eq "exit 64" "64" "$RC"
+assert_match "stderr names the entry" "invalid roster entry" "$ERR"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 31: an empty roster entry is a usage error, not a watch of runs/ itself"
+TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
+run --since "$SINCE_OK" --once --data-dir "$TDIR" ''
+assert_eq "exit 64" "64" "$RC"
+assert_match "stderr names the entry" "invalid roster entry" "$ERR"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

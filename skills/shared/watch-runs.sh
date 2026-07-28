@@ -83,6 +83,19 @@ done
 # A caller with nothing left to watch should not invoke the watcher at all.
 [ "${#ROSTER[@]}" -gt 0 ] || usage
 
+# A roster entry is a subpath under runs/ and nothing else. Unvalidated, an empty entry — one
+# stray space in a substituted roster — resolves to runs/ itself, and `ext-claude/zai/..`
+# resolves to a provider directory; both then report a plausible RUN forever instead of the
+# "check the roster entry" warning below. Silent blindness is the failure this script exists
+# to remove, so a malformed entry is a usage error, not something to watch.
+for _entry in "${ROSTER[@]}"; do
+    [[ "$_entry" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] ||
+        die "invalid roster entry '$_entry' — expected engine[/provider/model]"
+    case "/$_entry/" in
+        */../*) die "invalid roster entry '$_entry' — '..' is not a path component" ;;
+    esac
+done
+
 # Every option validates the same way. A silent fallback on one of them is how
 # `--stall-sec --once <entry>` used to swallow the flag and then block forever.
 is_pos_int "$POLL_SEC" || die "--poll-sec must be a positive integer (got '$POLL_SEC')"
@@ -123,11 +136,18 @@ GLOBAL_SEC=""
 if [ -x "$LOADER" ]; then
     GLOBAL_SEC="$("$LOADER" get-runtime 2>/dev/null | jq -r '.timeouts.global_sec // empty' 2>/dev/null)"
 fi
-is_pos_int "$GLOBAL_SEC" || GLOBAL_SEC=3600
+is_pos_int "$GLOBAL_SEC" || {
+    # Say so. The neighbouring stall_sec fallback warns, and a deadline silently reset to the
+    # default is the one substitution in this script that nobody could otherwise notice.
+    echo "watch-runs: runtime.timeouts.global_sec not resolved — using 3600" >&2
+    GLOBAL_SEC=3600
+}
 DEADLINE=$(( SINCE + GLOBAL_SEC + DEADLINE_MARGIN ))
 
-# Run dir names begin YYYY-MM-DD-HH-MM-SS-<pid>, fixed width and zero padded, so a lexicographic
-# comparison against the same rendering of --since is an exact creation-time window.
+# Run dir names begin YYYY-MM-DD-HH-MM-SS-<pid>. The TIMESTAMP prefix is fixed width and zero
+# padded, so a lexicographic comparison against the same rendering of --since is an exact
+# creation-time window. The pid suffix is NOT fixed width — "-999999" sorts above "-1000000" —
+# so ordering within a single second is arbitrary. The window only needs second resolution.
 printf -v SINCE_STR '%(%Y-%m-%d-%H-%M-%S)T' "$SINCE"
 
 declare -A WARNED_BASE=()
@@ -157,6 +177,11 @@ resolve_run_dir() {
     for d in "$base"/*/; do
         [ -d "$d" ] || continue
         name="${d%/}"; name="${name##*/}"
+        # Only timestamped run dirs are candidates. Anything else — a stray `tmp/`, or a
+        # provider directory reached through a malformed entry — sorts ABOVE every timestamp
+        # (letters outrank digits) and would shadow the entry not just now but for every
+        # future run under it, reporting a finished review as SILENT forever.
+        [[ "$name" =~ ^[0-9]{4}(-[0-9]{2}){5}- ]] || continue
         [[ "$name" < "$SINCE_STR" ]] && continue
         [[ -z "$best" || "$name" > "$best" ]] && best="$name"
     done
@@ -204,7 +229,7 @@ classify() {
     if [ -f "$wl" ]; then
         while IFS= read -r line; do
             case "$line" in *'"event":"cleanup"'*) ;; *) continue ;; esac
-            [[ "$line" =~ \"exit_code\":(-?[0-9]+) ]] && rc="${BASH_REMATCH[1]}"
+            [[ "$line" =~ \"exit_code\":[[:space:]]*(-?[0-9]+) ]] && rc="${BASH_REMATCH[1]}"
         done < "$wl"
     fi
 
@@ -226,7 +251,10 @@ classify() {
     fi
 
     newest_mtime "$d"
-    QUIET=$(( NOW - NEWEST ))
+    # NOW is stamped once per evaluation, so a run still writing while we walk the roster can
+    # carry an mtime past it. The classification is unaffected, but a negative duration on the
+    # row reads to an LLM orchestrator as a broken watcher.
+    QUIET=$(( NOW - NEWEST )); [ "$QUIET" -lt 0 ] && QUIET=0
     printf -v LAST '%(%H:%M:%S)T' "$NEWEST"
     if [ "$QUIET" -gt "$STALL_SEC" ]; then STATUS=SILENT; else STATUS=RUN; fi
 }

@@ -252,7 +252,7 @@ When each agent completes, read its output. After all agents finish (or the user
    [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
    WATCH="$(dirname "$LOADER")/watch-runs.sh"
    [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
-   "$WATCH" --since 1769515472 codex ext-claude/zai/glm ext-claude/ollama/kimi
+   "$WATCH" --since <DISPATCH_EPOCH> codex ext-claude/zai/glm ext-claude/ollama/kimi
    ```
 
    Substitute the **actual** `DISPATCH_EPOCH` number you stamped in Step 5. A shell variable does not survive from one Bash call to the next, and an unset name in a prompt raises nothing at all — the script rejects an implausible `--since` rather than silently watching a window that ended in 1970.
