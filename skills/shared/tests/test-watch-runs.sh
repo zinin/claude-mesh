@@ -572,6 +572,21 @@ printf 'their review' > "$theirs/output.txt"; wd_log "$theirs" 0
 run_as sid-A --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" codex
 assert_eq "reason names the transition" "SETTLED codex RUN→MISSING" "$REASON"
 assert_match "row is MISSING" "MISSING" "$(row codex)"
+# MISSING routes to "the executor is dead" in both prompts. "Nobody dispatched anything" and
+# "the session id moved under us" must not read the same: a resumed or forked session makes
+# every live run foreign, and that is a broken watcher, not a death.
+assert_match "row says the runs are someone else's" "belong to another session" "$(row codex)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 37b: MISSING with no run dir at all carries no foreign-session note"
+TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs/codex"
+run_as sid-A --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" codex
+assert_eq "reason names the transition" "SETTLED codex RUN→MISSING" "$REASON"
+case "$(row codex)" in
+    *"another session"*) FAIL=$((FAIL+1)); echo "  FAIL: empty base must not blame a session" ;;
+    *) PASS=$((PASS+1)); echo "  PASS: empty base carries no session note" ;;
+esac
 rm -rf "$TDIR"
 
 echo ""

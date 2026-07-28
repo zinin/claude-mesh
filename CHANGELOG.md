@@ -78,7 +78,12 @@ All notable changes to claude-mesh will be documented here.
   it and an improvised re-run inherits it automatically. A directory with no stamp stays
   eligible — legacy runs, direct `/claude-mesh:*-exec` invocations and a harness without the
   variable must keep working, and reporting `MISSING` for a live unstamped run would be worse
-  than the collision. Two orchestrations inside one session remain indistinguishable.
+  than the collision. Two orchestrations inside one session remain indistinguishable. When the
+  reader's own id is the one that moved — a resumed or forked session, where every live run is
+  suddenly foreign — neither consumer can find a run, and both now say so instead of reporting
+  it as a death: the watcher's `MISSING` row and the gate's `FLIP` reason both name how many
+  in-window runs belong to another session, and both prompts route that row away from their
+  failure paths.
 - `shared/verify-delegation.sh` and `shared/watch-runs.sh` disagreed about which runs are even
   *in* the dispatch window, which is the same class of defect as the mtime-vs-name winner above
   and survived that fix. Eligibility in the gate was `find -newermt` — MODIFICATION time — while

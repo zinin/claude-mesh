@@ -33,9 +33,11 @@
 #              is_error:true / engine rc!=0 / agentic but blank output — and for codex/gemini:
 #              no stream file at all, no terminal event, or an error-status final result
 #              (retry helps)
-#   FLIP=3     no TIMESTAMP-NAMED run dir for this engine in the dispatch window — the reviewer
-#              self-reviewed on the session model, or the model argument was truncated and BASE
-#              is a provider directory (its children never match the run-dir shape)
+#   FLIP=3     no TIMESTAMP-NAMED run dir of THIS session for this engine in the dispatch
+#              window — the reviewer self-reviewed on the session model, the model argument was
+#              truncated and BASE is a provider directory (its children never match the run-dir
+#              shape), or every run in the window carries another session's id, which the
+#              reason line names because it is the one FLIP that is not the reviewer's doing
 #   BROKEN=4   finalized but non-agentic — ext-claude: NT<=1; codex/gemini: terminal event but
 #              zero tool calls (thinking-only / DSML grammar / answered without reading code —
 #              retry futile; fix by swapping the model in config.yaml)
@@ -144,15 +146,21 @@ emit() { echo "$1"; [ -n "${2:-}" ] && echo "verify-delegation[$ENGINE${MODEL:+/
 # subshell and NEWEST would not survive it.
 printf -v SINCE_STR '%(%Y-%m-%d-%H-%M-%S)T' "$SINCE"
 NEWEST=""
+FOREIGN=0
 while IFS= read -r cand; do
     [ -n "$cand" ] || continue
     # Descending name order: the first candidate older than the window ends the walk, because
     # every one after it is older still.
     [[ "$cand" < "$SINCE_STR" ]] && break
-    run_is_mine "$BASE/$cand" || continue
+    run_is_mine "$BASE/$cand" || { FOREIGN=$(( FOREIGN + 1 )); continue; }
     NEWEST="$BASE/$cand"; break
 done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null |
          grep -E '^[0-9]{4}(-[0-9]{2}){5}-' | sort -r)
+# "Never delegated" and "delegated, but the session id moved under us" are both FLIP, and the
+# prompts act on FLIP by re-dispatching. Name the second one: it is a third cause on top of the
+# two the design-review prose lists, and it is the reviewer's fault least of all.
+[ -n "$NEWEST" ] || [ "$FOREIGN" = 0 ] ||
+    emit FLIP "$FOREIGN run dir(s) in the dispatch window belong to another session — this session's id does not match the one that dispatched them" 3
 [ -n "$NEWEST" ] || emit FLIP "no run dir newer than dispatch time — reviewer did not delegate" 3
 RD="$NEWEST"
 

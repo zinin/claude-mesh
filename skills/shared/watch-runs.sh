@@ -164,6 +164,7 @@ printf -v SINCE_STR '%(%Y-%m-%d-%H-%M-%S)T' "$SINCE"
 
 declare -A WARNED_BASE=()
 RUNDIR_PATH=""
+FOREIGN=0
 NEWEST=0
 STATUS=""
 QUIET=""
@@ -193,6 +194,7 @@ resolve_run_dir() {
     local entry="$1" base="$DATA_DIR/runs/$1" name d i
     local -a cands=()
     RUNDIR_PATH=""
+    FOREIGN=0
     if [ ! -d "$base" ]; then
         [ -n "${WARNED_BASE[$entry]:-}" ] || {
             echo "watch-runs: no runs directory for '$entry' ($base) — check the roster entry" >&2
@@ -215,7 +217,7 @@ resolve_run_dir() {
     # backwards is newest-first. Take the newest that is ours; reading the stamp only as far
     # as the walk goes keeps the common case at a single file read.
     for (( i=${#cands[@]}-1; i>=0; i-- )); do
-        run_is_mine "$base/${cands[i]}" || continue
+        run_is_mine "$base/${cands[i]}" || { FOREIGN=$(( FOREIGN + 1 )); continue; }
         RUNDIR_PATH="$base/${cands[i]}"
         return 0
     done
@@ -248,6 +250,11 @@ classify() {
         # No dir yet is normal right after dispatch: an executor still booting must not be
         # declared dead in milliseconds. Grace runs from --since, so no extra option is needed.
         if [ $(( NOW - SINCE )) -gt "$STALL_SEC" ]; then STATUS=MISSING; else STATUS=RUN; fi
+        # "Nobody dispatched anything" and "the run in this window belongs to another session"
+        # are the same MISSING row, and the prompts route MISSING to "the executor is dead".
+        # Say which one it is: a session id that changed mid-orchestration (a resumed or forked
+        # session) makes every live run foreign, and that is a broken watcher, not a death.
+        [ "$FOREIGN" = 0 ] || DETAIL="$FOREIGN run(s) in this window belong to another session"
         return
     fi
     d="$RUNDIR_PATH"
@@ -326,9 +333,10 @@ evaluate() {
         STATUSES[$i]="$STATUS"
         row="$(printf '%-8s %-26s %s' "$STATUS" "$entry" "${RUNDIR:-—}")"
         case "$STATUS" in
-            SILENT) row="$row  quiet=${QUIET}s last=$LAST" ;;
-            RUN)    [ -n "$QUIET" ] && row="$row  quiet=${QUIET}s" ;;
-            FAILED) [ -n "$DETAIL" ] && row="$row  $DETAIL" ;;
+            SILENT)  row="$row  quiet=${QUIET}s last=$LAST" ;;
+            RUN)     [ -n "$QUIET" ] && row="$row  quiet=${QUIET}s" ;;
+            FAILED)  [ -n "$DETAIL" ] && row="$row  $DETAIL" ;;
+            MISSING) [ -n "$DETAIL" ] && row="$row  $DETAIL" ;;
         esac
         ROWS="$ROWS$row"$'\n'
     done

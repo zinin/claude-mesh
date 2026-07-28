@@ -31,6 +31,14 @@ assert_eq() {
     fi
 }
 
+assert_match() {
+    local desc="$1" pattern="$2" actual="$3"
+    case "$actual" in
+        *"$pattern"*) PASS=$((PASS+1)); echo "  PASS: $desc" ;;
+        *) FAIL=$((FAIL+1)); echo "  FAIL: $desc (no '$pattern' in '$actual')" ;;
+    esac
+}
+
 # run the script and capture verdict + rc
 run() { VERDICT=$(bash "$SCRIPT" "$@" 2>/dev/null); RC=$?; }
 
@@ -531,6 +539,8 @@ sid_stamp "$theirs" sid-B
 run_as sid-A ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict FLIP" "FLIP" "$VERDICT"
 assert_eq "exit 3" "3" "$RC"
+assert_match "reason names the session mismatch" "belong to another session" \
+    "$(env CLAUDE_CODE_SESSION_ID=sid-A bash "$SCRIPT" ext-claude zai/glm 1 "$TDIR" 2>&1 >/dev/null)"
 rm -rf "$TDIR"
 
 # --- the dispatch window is the NAME window, the same one watch-runs.sh uses ---------------
