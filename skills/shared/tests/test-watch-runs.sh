@@ -48,8 +48,15 @@ assert_between() {
     fi
 }
 
-# run the script; capture stdout, stderr, reason line and rc
-run() { OUT="$(bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?; REASON="$(printf '%s\n' "$OUT" | head -1)"; ERR="$(cat "$ERRF")"; }
+# run the script; capture stdout, stderr, reason line and rc.
+# The bound is not about slowness. Every call through this helper passes --once, which cannot
+# block; a measured call costs ~260ms, so 10s is ~40x headroom and never fires on a healthy
+# suite. It fires when a regression makes the watcher wait forever — deleting the SNAPSHOT emit
+# does exactly that — and turns a suite that hangs until someone kills it into one that fails
+# with rc=124. For a feature whose whole subject is unbounded silent waiting, that is the
+# failure mode its own tests have to have. Keep the bound tight enough that 24 blocked calls
+# still finish in minutes. Tests 25-27 bound themselves; they do not go through run().
+run() { OUT="$(timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?; REASON="$(printf '%s\n' "$OUT" | head -1)"; ERR="$(cat "$ERRF")"; }
 # the rendered row for a roster entry. Line 1 is the reason line and it names entries too,
 # so it must be skipped — otherwise every row assertion silently matches the reason instead.
 row() { printf '%s\n' "$OUT" | tail -n +2 | grep -F " $1 " | head -1; }
