@@ -110,6 +110,13 @@ All notable changes to claude-mesh will be documented here.
   `/mesh-review` acts on by re-dispatching all of them. It now fails loudly, like the GNU-`stat`
   probes in `config-loader.sh` and `watch-runs.sh`.
 
+### Requirements
+- `shared/watch-runs.sh` and `shared/verify-delegation.sh` need **bash 4.2**, up from the 4.0
+  the rest of the plugin asks for: both render a timestamp with the `printf '%(fmt)T'`
+  builtin. `verify-delegation.sh` also states the **GNU `find`** dependency it always had
+  (`-printf`) and probes for it at startup. README's macOS setup gains `findutils` and its
+  gnubin path — `coreutils` does not provide GNU `find`.
+
 ### Configuration
 - No new keys. `runtime.timeouts.stall_sec` gains a second consumer: the orchestrator's
   watcher reports a run `SILENT` past that threshold. The watcher floors it at 600, because
