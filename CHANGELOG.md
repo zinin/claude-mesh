@@ -82,8 +82,12 @@ All notable changes to claude-mesh will be documented here.
   reader's own id is the one that moved — a resumed or forked session, where every live run is
   suddenly foreign — neither consumer can find a run, and both now say so instead of reporting
   it as a death: the watcher's `MISSING` row and the gate's `FLIP` reason both name how many
-  in-window runs belong to another session, and both prompts route that row away from their
-  failure paths.
+  in-window runs belong to another session. Both prompts route the watcher's annotated row
+  away from their failure paths. The gate's annotated `FLIP` keeps `/mesh-review`'s
+  re-dispatch — a fresh run carries this session's id and is the only way back to a checkable
+  answer, and the guard cannot tell "my id moved" from "a real flip whose window overlaps
+  another orchestration's runs" — but such a reviewer is never recorded as having failed to
+  delegate; the summary names the session mismatch instead.
 - `shared/verify-delegation.sh` and `shared/watch-runs.sh` disagreed about which runs are even
   *in* the dispatch window, which is the same class of defect as the mtime-vs-name winner above
   and survived that fix. Eligibility in the gate was `find -newermt` — MODIFICATION time — while
