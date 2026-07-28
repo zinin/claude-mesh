@@ -20,7 +20,17 @@ FAIL=0
 PASS=0
 printf -v NOW '%(%s)T' -1
 ERRF="$(mktemp)"
-trap 'rm -f "$ERRF"' EXIT
+
+# Pin the config the script reads. --data-dir only overrides the runs tree; the timeouts still
+# come from the loader, and the deadline is --since + global_sec + 300. Against a developer
+# config with `global_sec: 600` — a perfectly valid value — every SINCE_OLD test below lands
+# past the deadline and reports DEADLINE instead of its own verdict. Point the loader at a
+# fixture (same CLAUDE_PLUGIN_DATA trick as test-config-loader.sh) so the suite tests the
+# script rather than whatever is in ~/.claude.
+CFGDIR="$(mktemp -d)"
+cp "$TESTS_DIR/fixtures/valid-minimal.yaml" "$CFGDIR/config.yaml"
+export CLAUDE_PLUGIN_DATA="$CFGDIR"
+trap 'rm -f "$ERRF"; rm -rf "$CFGDIR"' EXIT
 
 assert_eq() {
     local desc="$1" expected="$2" actual="$3"
