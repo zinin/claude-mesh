@@ -124,12 +124,16 @@ if [ -z "$DATA_DIR" ]; then
 fi
 [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR" ] || die "data dir not resolved or missing: '$DATA_DIR'"
 
+# One loader call serves both timeouts below — the two keys live in the same JSON document, and
+# get-runtime re-reads and re-validates config.yaml on every invocation.
+RUNTIME_JSON=""
+[ -x "$LOADER" ] && RUNTIME_JSON="$("$LOADER" get-runtime 2>/dev/null)"
+runtime_timeout() { printf '%s' "$RUNTIME_JSON" | jq -r ".timeouts.$1 // empty" 2>/dev/null; }
+
 # Threshold: the caller's flag, else runtime.timeouts.stall_sec, else the floor. jq is optional —
 # without it the substitution yields nothing and the fallback takes over, loudly.
 if [ -z "$STALL_SEC" ]; then
-    if [ -x "$LOADER" ]; then
-        STALL_SEC="$("$LOADER" get-runtime 2>/dev/null | jq -r '.timeouts.stall_sec // empty' 2>/dev/null)"
-    fi
+    STALL_SEC="$(runtime_timeout stall_sec)"
     is_pos_int "$STALL_SEC" || {
         echo "watch-runs: runtime.timeouts.stall_sec not resolved — using $STALL_FLOOR" >&2
         STALL_SEC="$STALL_FLOOR"
@@ -144,10 +148,7 @@ fi
 # relative budget would reset each time and never expire; and arithmetic over a shell variable
 # in a prompt silently collapses to nonsense, because shell state does not survive between
 # Bash-tool calls. Deriving it from --since makes that whole class of failure impossible.
-GLOBAL_SEC=""
-if [ -x "$LOADER" ]; then
-    GLOBAL_SEC="$("$LOADER" get-runtime 2>/dev/null | jq -r '.timeouts.global_sec // empty' 2>/dev/null)"
-fi
+GLOBAL_SEC="$(runtime_timeout global_sec)"
 is_pos_int "$GLOBAL_SEC" || {
     # Say so. The neighbouring stall_sec fallback warns, and a deadline silently reset to the
     # default is the one substitution in this script that nobody could otherwise notice.

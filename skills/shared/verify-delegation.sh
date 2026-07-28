@@ -184,8 +184,9 @@ case "$ENGINE" in
         # non-empty output.txt. That made it a no-op: it asked exactly what the caller already
         # knew, and a narration-only file passed as REAL. Use the signals that are on disk.
         RCF="$RD/.watchdog_rc"
-        if [ -f "$RCF" ] && [ "$(cat "$RCF" 2>/dev/null)" != "0" ]; then
-            emit STALLED "engine exit code != 0 ($(cat "$RCF" 2>/dev/null))" 2
+        if [ -f "$RCF" ]; then
+            RCV=""; IFS= read -r RCV < "$RCF" 2>/dev/null || true
+            [ "$RCV" = "0" ] || emit STALLED "engine exit code != 0 ($RCV)" 2
         fi
         # The watchdog records its own exit in watchdog.log; that file really is written.
         if [ -f "$RD/watchdog.log" ]; then
