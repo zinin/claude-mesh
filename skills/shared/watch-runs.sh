@@ -97,7 +97,7 @@ for _entry in "${ROSTER[@]}"; do
     [[ "$_entry" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] ||
         die "invalid roster entry '$_entry' — expected engine[/provider/model]"
     case "/$_entry/" in
-        */../*) die "invalid roster entry '$_entry' — '..' is not a path component" ;;
+        */./*|*/../*) die "invalid roster entry '$_entry' — '.' and '..' are not path components" ;;
     esac
 done
 
@@ -238,6 +238,8 @@ classify() {
         done < "$wl"
     fi
 
+    # Root first, but only when NON-EMPTY (-s, not -f): gemini-exec pre-creates a zero-byte
+    # output.txt at launch, and on bail the only readable text can sit under final/.
     out="$d/output.txt"; [ -s "$out" ] || out="$d/final/output.txt"
     has_out=0
     [ -s "$out" ] && has_out=1
@@ -330,7 +332,11 @@ while :; do
     evaluate
     all_done && emit "ALL_DONE"
     any_run || emit "SETTLED $(transitions)"
-    [ "$NOW" -lt "$DEADLINE" ] || emit "DEADLINE"
+    # The budget can expire on the very tick something moved. DEADLINE still outranks CHANGED —
+    # a roster that never stops running must terminate on the budget — but a bare "DEADLINE"
+    # summarises a run that just finished as "time ran out", the incident wording this script
+    # replaces. Name the transitions when there are any.
+    [ "$NOW" -lt "$DEADLINE" ] || { T="$(transitions)"; emit "DEADLINE${T:+ $T}"; }
     any_moved && emit "CHANGED $(transitions)"
     [ "$ONCE" = 0 ] || emit "SNAPSHOT"
     sleep "$POLL_SEC"

@@ -30,7 +30,9 @@ All notable changes to claude-mesh will be documented here.
   now call the script instead of describing a poll loop in prose; the improvised
   implementation exited only when the finished count grew, which death never does. An
   executor's unprompted message is now spent on a `--once` liveness check rather than on
-  an acknowledgement.
+  an acknowledgement. A budget expiring on the same tick something moved names the
+  transitions (`DEADLINE codex RUN→DONE`) instead of summarising a finished run as a bare
+  `DEADLINE`, and the roster validator rejects `.` as a path component alongside `..`.
 - `/mesh-design-review` never passed `SUPERVISED_MODE`, so its executors ran unsupervised
   by default: no `shared/watchdog.sh`, no stall detection, no restart on a torn provider
   stream, and no `watchdog.log`. Whether a run got a watchdog was luck — 42 of 223 archived
@@ -49,7 +51,15 @@ All notable changes to claude-mesh will be documented here.
   the watchdog's real exit code out of `watchdog.log` and requires the CLI's own terminal event
   (`turn.completed` / `result`) plus at least one tool call, which is the codex and gemini
   analogue of `num_turns<=1`. A narration-only draft is `BROKEN` for those engines instead of
-  `REAL`.
+  `REAL`. Three more holes in that gate closed after a second review round: candidates are
+  shape-filtered to timestamp-named directories like the watcher's (in `LC_ALL=C` letters sort
+  above digits, so a stray `tmp/` — or the provider directory a truncated model argument
+  resolves to — outranked every real run and read `STALLED` where the truth was `REAL` or
+  `FLIP`); a gemini result event carrying an explicit `status != "success"` is `STALLED`
+  rather than `REAL` (the CLI can exit 0 on an API failure while `gemini-exec`'s extraction
+  writes `API Error: …` into `output.txt`); and a finalized run with no stream file at all is
+  `STALLED` — every layout the exec skills produce carries one, so its absence means the
+  checks would otherwise be skipped on a layout nothing in the tooling wrote.
 - `/mesh-design-review` accepted an executor's report without checking that the run had
   produced one. A run that stops and leaves a non-empty `output.txt` looks finished even
   when the file holds only the model's narration. It now runs `verify-delegation.sh` — the

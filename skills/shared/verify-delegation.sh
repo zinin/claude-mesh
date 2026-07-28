@@ -24,13 +24,20 @@
 #
 # Verdict on stdout + exit code:
 #   REAL=0     finalized + agentic — ext-claude: NT>1 & output.txt has non-whitespace content;
-#                                     codex/gemini: watchdog rc=0 & non-empty output
+#              codex/gemini: watchdog cleanup exit 0 (when logged), non-empty output, and a
+#              stream carrying a terminal event, at least one tool call, and no final result
+#              with an explicit status != "success"
 #   STALLED=2  killed mid-flight or delivered nothing usable: no final / no result event /
 #              no successful result event with an integer num_turns / final result event
-#              is_error:true / engine rc!=0 / agentic but blank output (retry helps)
-#   FLIP=3     no run dir for this engine in the dispatch window (self-reviewed on the session model)
-#   BROKEN=4   finalized but NT<=1 — thinking-only / DSML grammar / answered
-#              without reading code (retry futile; fix by swapping the model in config.yaml)
+#              is_error:true / engine rc!=0 / agentic but blank output — and for codex/gemini:
+#              no stream file at all, no terminal event, or an error-status final result
+#              (retry helps)
+#   FLIP=3     no TIMESTAMP-NAMED run dir for this engine in the dispatch window — the reviewer
+#              self-reviewed on the session model, or the model argument was truncated and BASE
+#              is a provider directory (its children never match the run-dir shape)
+#   BROKEN=4   finalized but non-agentic — ext-claude: NT<=1; codex/gemini: terminal event but
+#              zero tool calls (thinking-only / DSML grammar / answered without reading code —
+#              retry futile; fix by swapping the model in config.yaml)
 set -u
 
 [ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || {
@@ -77,7 +84,15 @@ emit() { echo "$1"; [ -n "${2:-}" ] && echo "verify-delegation[$ENGINE${MODEL:+/
 # corpse and reports STALLED while watch-runs.sh, which picks by name, reports DONE on the
 # retry. mesh-design-review chains the two on the same run, so that disagreement discarded a
 # finished review.
-NEWEST="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%f\n' 2>/dev/null | LC_ALL=C sort -r | head -1)"
+#
+# Candidates are also SHAPE-filtered, with the same anchor as watch-runs.sh:189. In LC_ALL=C
+# letters sort above digits, so any non-timestamp name — a stray `tmp/`, or the model dirs
+# that become children when a truncated MODEL argument makes $BASE a provider directory —
+# outranks every real run and gets inspected as if it were one, yielding a terminal STALLED.
+# Filtered out, those cases fall through to FLIP, the verdict the prompts say to re-check
+# against the engine/model arguments.
+NEWEST="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -newermt "@$SINCE" -printf '%f\n' 2>/dev/null |
+          grep -E '^[0-9]{4}(-[0-9]{2}){5}-' | LC_ALL=C sort -r | head -1)"
 [ -z "$NEWEST" ] || NEWEST="$BASE/$NEWEST"
 [ -n "$NEWEST" ] || emit FLIP "no run dir newer than dispatch time — reviewer did not delegate" 3
 RD="$NEWEST"
@@ -118,8 +133,26 @@ case "$ENGINE" in
         if [ -s "$STREAM" ]; then
             grep -q '"type":"turn\.completed"\|"type":"result"' "$STREAM" 2>/dev/null ||
                 emit STALLED "stream has no terminal event — killed mid-flight" 2
+            # gemini can exit 0 while reporting an API failure as a result event with
+            # status!="success" — gemini-exec's own extraction then writes "API Error: …" into
+            # output.txt (SKILL.md:350-357), so every other signal here looks healthy. Reject an
+            # explicit non-success status on the LAST result event; a result carrying no status
+            # field stays accepted — the documented success shape does not promise one, and a
+            # false STALLED discards a finished review. codex streams have no "type":"result"
+            # lines at all (turn.completed is their terminal), so this never fires for codex.
+            LAST_RES="$(grep '"type":"result"' "$STREAM" 2>/dev/null | tail -1)"
+            if printf '%s\n' "$LAST_RES" | grep -q '"status"' &&
+               ! printf '%s\n' "$LAST_RES" | grep -q '"status":[[:space:]]*"success"'; then
+                emit STALLED "final result event carries status != \"success\" — the engine reported an error, not a review" 2
+            fi
             grep -q '"type":"command_execution"\|"type":"tool_use"' "$STREAM" 2>/dev/null ||
                 emit BROKEN "terminal event but no tool call — narration, not a review" 4
+        else
+            # Every layout the exec skills produce carries a stream: supervised runs get root
+            # raw.jsonl copied back, default-mode runs write log.jsonl (0 of 75 archived runs
+            # lack both). No stream means the layout is not one our tooling wrote — nothing can
+            # prove the run was agentic, so fail closed instead of silently skipping the gate.
+            emit STALLED "no stream file (raw.jsonl / log.jsonl) — cannot verify the run did anything" 2
         fi
         emit REAL "delegated, non-empty review" 0
         ;;

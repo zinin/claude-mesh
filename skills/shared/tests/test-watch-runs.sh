@@ -420,6 +420,23 @@ assert_eq "exit 0" "0" "$RC"
 assert_between "it blocked for roughly the remaining budget" 4 30 "$ELAPSED"
 rm -rf "$TDIR"
 
+# === Test 27b: a budget expiring on the tick something moved names the transition ===
+# DEADLINE outranks CHANGED by design — a roster that never stops running must still
+# terminate on the budget. But a run can finish in the final poll interval, and a bare
+# "DEADLINE" then summarises a finished review as "time ran out" — the incident wording
+# this whole script replaces. The reason line must carry the transitions when there are
+# any; Tests 26/27 pin that with none it stays exactly "DEADLINE".
+echo "=== Test 27b: DEADLINE with a finished run names the transition ==="
+TDIR=$(mktemp -d)
+a=$(mk_run "$TDIR" codex -60); wd_log "$a" 0; echo 'review' > "$a/output.txt"
+b=$(mk_run "$TDIR" ext-claude/ollama/kimi -60); : > "$b/raw.jsonl"
+run --once --since "$(( NOW - GS - MARGIN - 100 ))" --stall-sec 600 --data-dir "$TDIR" \
+    codex ext-claude/ollama/kimi
+assert_eq "reason DEADLINE + transition" "DEADLINE codex RUN→DONE" "$REASON"
+assert_eq "exit 0" "0" "$RC"
+assert_match "kimi row still RUN" "RUN" "$(row ext-claude/ollama/kimi)"
+rm -rf "$TDIR"
+
 fi
 
 # --- roster and run-dir shape -------------------------------------------------------------
@@ -451,6 +468,14 @@ echo ""
 echo "Test 30: a roster entry containing '..' is a usage error"
 TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
 run --since "$SINCE_OK" --once --data-dir "$TDIR" 'ext-claude/zai/..'
+assert_eq "exit 64" "64" "$RC"
+assert_match "stderr names the entry" "invalid roster entry" "$ERR"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 30b: a roster entry containing '.' as a component is a usage error"
+TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
+run --since "$SINCE_OK" --once --data-dir "$TDIR" 'codex/.'
 assert_eq "exit 64" "64" "$RC"
 assert_match "stderr names the entry" "invalid roster entry" "$ERR"
 rm -rf "$TDIR"
