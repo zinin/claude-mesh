@@ -96,6 +96,10 @@ All notable changes to claude-mesh will be documented here.
   unsubstituted `$DISPATCH_EPOCH`, which expands to nothing — is a usage error rather than a
   silent `FLIP` for every reviewer. `/mesh-review` Step 6.0 stopped passing that variable
   through a shell reference that cannot survive between Bash tool calls.
+- `shared/verify-delegation.sh` had no GNU-`find` probe although it depends on `-printf`, so on
+  a BSD `find` the candidate walk failed silently and every reviewer came back `FLIP` — which
+  `/mesh-review` acts on by re-dispatching all of them. It now fails loudly, like the GNU-`stat`
+  probes in `config-loader.sh` and `watch-runs.sh`.
 
 ### Configuration
 - No new keys. `runtime.timeouts.stall_sec` gains a second consumer: the orchestrator's

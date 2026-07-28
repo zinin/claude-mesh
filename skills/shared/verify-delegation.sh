@@ -52,6 +52,15 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] ||
     exit 1
 fi
 
+# GNU find. The candidate walk below uses -printf, which BSD find does not have; without a
+# probe it fails silently, no candidate survives, and EVERY reviewer is reported FLIP — a
+# verdict /mesh-review acts on by re-dispatching all of them. config-loader.sh and
+# watch-runs.sh carry the same probe for GNU stat, for the same reason.
+find / -maxdepth 0 -printf '' >/dev/null 2>&1 || {
+    echo "verify-delegation: GNU find required (BSD find has no -printf). On macOS: 'brew install findutils' and put gnubin first in PATH." >&2
+    exit 1
+}
+
 resolve_plugin_data() {
     if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then printf '%s\n' "$CLAUDE_PLUGIN_DATA"; return; fi
     local d
