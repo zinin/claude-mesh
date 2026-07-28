@@ -16,7 +16,15 @@ All notable changes to claude-mesh will be documented here.
   self-retries into a new directory is followed instead of being reported dead. Freshness
   is the newest mtime across `raw.jsonl`, `log.jsonl`, `watchdog.log` and
   `attempt-*/raw.jsonl`, so a supervised run between watchdog retries reads as `RUN` on
-  its heartbeat. Recovery is deliberately not signalled: the baseline is virtual — every
+  its heartbeat. Finishing is deliberately not judged on `output.txt` alone, in either
+  direction. `watchdog.sh` never writes that file — the `*-exec` skill extracts it from
+  `raw.jsonl` after the watchdog returns, 0-33s later across 249 archived runs — so a run
+  that exited 0 with nothing yet on disk stays `RUN` for a settle minute instead of being
+  called `FAILED` over a file still being written. Without a watchdog a non-empty
+  `output.txt` is not a finish either: `gemini-exec` appends to it inside its stream loop,
+  so a live run would read `DONE` and hand back half a review. `report.md`, which all three
+  `*-exec` skills write only after that loop ends, is the stop signal there. Recovery is
+  deliberately not signalled: the baseline is virtual — every
   roster entry is assumed `RUN`, so an already-dead run is caught on the first tick after
   every restart, and an executor that recovers on its own produces no event. Both prompts
   now call the script instead of describing a poll loop in prose; the improvised

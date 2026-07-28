@@ -52,6 +52,11 @@ LOADER="$SELF_DIR/config-loader.sh"
 
 STALL_FLOOR=600
 DEADLINE_MARGIN=300
+# How long after a supervised run stops writing we still expect its output.txt to appear.
+# watchdog.sh never writes that file — the *-exec skill extracts it from raw.jsonl after the
+# watchdog returns. Measured across 249 archived successful runs the gap is 0-33s, so 60
+# clears the worst observed case with margin while staying far under the stall threshold.
+SETTLE_SEC=60
 
 SINCE=""
 STALL_SEC=""
@@ -237,25 +242,47 @@ classify() {
     has_out=0
     [ -s "$out" ] && has_out=1
 
-    if [ -n "$rc" ] || { [ ! -f "$wl" ] && [ "$has_out" = 1 ]; }; then
-        if [ "${rc:-0}" = 0 ] && [ "$has_out" = 1 ]; then
-            STATUS=DONE
-        else
-            STATUS=FAILED
-            if [ -f "$d/watchdog.exit" ] &&
-               [[ "$(cat "$d/watchdog.exit" 2>/dev/null)" =~ \"reason\":[[:space:]]*\"([a-z_]+)\" ]]; then
-                DETAIL="${BASH_REMATCH[1]}"
-            fi
-        fi
-        return
-    fi
-
+    # Both terminal branches below need freshness now, so resolve it before either.
     newest_mtime "$d"
     # NOW is stamped once per evaluation, so a run still writing while we walk the roster can
     # carry an mtime past it. The classification is unaffected, but a negative duration on the
     # row reads to an LLM orchestrator as a broken watcher.
     QUIET=$(( NOW - NEWEST )); [ "$QUIET" -lt 0 ] && QUIET=0
     printf -v LAST '%(%H:%M:%S)T' "$NEWEST"
+
+    if [ -n "$rc" ]; then
+        # Supervised: the watchdog recorded its own exit, so rc is the authority.
+        if [ "$rc" != 0 ]; then
+            STATUS=FAILED
+            if [ -f "$d/watchdog.exit" ] &&
+               [[ "$(cat "$d/watchdog.exit" 2>/dev/null)" =~ \"reason\":[[:space:]]*\"([a-z_]+)\" ]]; then
+                DETAIL="${BASH_REMATCH[1]}"
+            fi
+            return
+        fi
+        [ "$has_out" = 1 ] && { STATUS=DONE; return; }
+        # rc=0 with nothing to read is usually not a failure — it is the extraction window.
+        # Declaring FAILED inside it discards a finished review, and design review's failure
+        # path never re-dispatches, so the loss is permanent. Let the window close first.
+        if [ "$QUIET" -gt "$SETTLE_SEC" ]; then
+            STATUS=FAILED; DETAIL="exit 0, no output.txt ${SETTLE_SEC}s after the last write"
+        else
+            STATUS=RUN
+        fi
+        return
+    fi
+
+    # Unsupervised: nothing recorded an exit, and a non-empty output.txt is NOT by itself
+    # finalization — gemini-exec appends to it inside the stream loop, so it goes non-empty
+    # seconds after launch and a live run would read DONE. All three *-exec skills write
+    # report.md only after that loop ends, which makes it the positive stop signal. The
+    # stall-threshold fallback keeps a run whose report was skipped from hanging in RUN.
+    if [ ! -f "$wl" ] && [ "$has_out" = 1 ] &&
+       { [ -s "$d/report.md" ] || [ "$QUIET" -gt "$STALL_SEC" ]; }; then
+        STATUS=DONE
+        return
+    fi
+
     if [ "$QUIET" -gt "$STALL_SEC" ]; then STATUS=SILENT; else STATUS=RUN; fi
 }
 

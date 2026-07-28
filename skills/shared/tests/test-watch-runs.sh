@@ -104,20 +104,33 @@ run --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex
 assert_match "row is FAILED" "FAILED" "$(row codex)"
 rm -rf "$TDIR"
 
-# === Test 4: rc 0 but empty output.txt → FAILED ===
-# codex-exec/gemini-exec "leave empty" when extraction finds nothing, so rc=0 alone is not proof
-# that there is anything to read. DONE must mean the orchestrator's next action can succeed.
-echo "=== Test 4: cleanup exit_code 0 but empty output.txt → FAILED ==="
+# === Test 4: rc 0 with nothing to read — the extraction window vs a real failure ===
+# watchdog.sh never writes output.txt: the *-exec skill extracts it from raw.jsonl AFTER the
+# watchdog returns, 0-33s later across 249 archived successful runs. The fixture that used to
+# live here asserted FAILED on exactly that window, so it blessed a false FAILED — and design
+# review's failure path never re-dispatches, which makes such a loss permanent. rc=0 alone is
+# still not proof there is anything to read, so the FAILED verdict survives; it just waits.
+echo "=== Test 4a: cleanup exit_code 0, output.txt not extracted yet → RUN ==="
 TDIR=$(mktemp -d)
 a=$(mk_run "$TDIR" codex -60); wd_log "$a" 0; : > "$a/output.txt"
 run --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex
+assert_eq "reason SNAPSHOT" "SNAPSHOT" "$REASON"
+assert_match "row is RUN" "RUN" "$(row codex)"
+rm -rf "$TDIR"
+
+echo "=== Test 4b: cleanup exit_code 0, still no output.txt past the settle window → FAILED ==="
+TDIR=$(mktemp -d)
+a=$(mk_run "$TDIR" codex -600); wd_log "$a" 0; : > "$a/output.txt"
+touch -d '10 minutes ago' "$a/watchdog.log" "$a/output.txt" "$a"
+run --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" codex
 assert_match "row is FAILED" "FAILED" "$(row codex)"
+assert_match "row says why" "no output.txt" "$(row codex)"
 rm -rf "$TDIR"
 
 # === Test 5: unsupervised finish → DONE ===
 echo "=== Test 5: no watchdog.log, non-empty output.txt → DONE ==="
 TDIR=$(mktemp -d)
-a=$(mk_run "$TDIR" ext-claude/zai/glm -60); echo 'review' > "$a/output.txt"
+a=$(mk_run "$TDIR" ext-claude/zai/glm -60); echo 'review' > "$a/output.txt"; echo '# report' > "$a/report.md"
 run --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" ext-claude/zai/glm
 assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
 assert_match "row is DONE" "DONE" "$(row ext-claude/zai/glm)"
@@ -441,6 +454,33 @@ TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
 run --since "$SINCE_OK" --once --data-dir "$TDIR" ''
 assert_eq "exit 64" "64" "$RC"
 assert_match "stderr names the entry" "invalid roster entry" "$ERR"
+rm -rf "$TDIR"
+
+# --- the unsupervised branch: a non-empty output.txt is not a finish ----------------------
+# gemini-exec appends to output.txt INSIDE its stream-reading loop, so the file goes non-empty
+# seconds after launch. Treating "no watchdog.log + non-empty output.txt" as terminal reported
+# a live run DONE, and the orchestrator then pinged its executor for a half-written review —
+# the one failure mode here that corrupts the merged result instead of losing it.
+
+echo ""
+echo "Test 32: an unsupervised run still streaming into output.txt is RUN, not DONE"
+TDIR="$(mktemp -d)"
+a=$(mk_run "$TDIR" gemini -60)
+printf 'partial answer so far' > "$a/output.txt"
+: > "$a/log.jsonl"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" gemini
+assert_eq "reason SNAPSHOT" "SNAPSHOT" "$REASON"
+assert_match "row is RUN" "RUN" "$(row gemini)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 33: report.md is the stop signal — the same run with it present is DONE"
+TDIR="$(mktemp -d)"
+a=$(mk_run "$TDIR" gemini -60)
+printf 'full answer' > "$a/output.txt"; : > "$a/log.jsonl"; printf '# report\n' > "$a/report.md"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" gemini
+assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_match "row is DONE" "DONE" "$(row gemini)"
 rm -rf "$TDIR"
 
 echo ""

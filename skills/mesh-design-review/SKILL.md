@@ -445,7 +445,7 @@ Collect output paths from every **executor** (codex / gemini / ext-claude) — b
    | Status | Meaning |
    |---|---|
    | `DONE` | finished, and there is a non-empty `output.txt` to read |
-   | `FAILED` | finished without usable output — the watchdog exited non-zero, or nothing was produced |
+   | `FAILED` | finished without usable output — the watchdog exited non-zero, or nothing appeared in the minute after the run stopped writing |
    | `RUN` | still producing, or still starting up |
    | `SILENT` | nothing written to any stream for longer than the stall threshold |
    | `MISSING` | no run dir for this executor at all |
