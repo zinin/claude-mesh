@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.6.0] - 2026-07-28
 
 ### Fixed
 - The `/mesh-review` and `/mesh-design-review` watch loops could not tell a slow
