@@ -65,6 +65,20 @@ All notable changes to claude-mesh will be documented here.
   when the file holds only the model's narration. It now runs `verify-delegation.sh` — the
   guard `/mesh-review` has used since Step 6.0 existed — before asking an executor to
   extract findings.
+- A watcher or content gate could resolve a run directory belonging to a different
+  orchestration. Both pick the newest run dir under `runs/<engine>[/provider/model]`, and the
+  plugin's data dir is global, so two `/mesh-review` or `/mesh-design-review` sessions on the
+  same engine/model — in two different repositories — saw each other's runs: the earlier
+  session could report `DONE`/`SILENT` about a run it never dispatched, ping its wrapper
+  early, and hand `verify-delegation.sh` the wrong directory, discarding a finished review.
+  The four skills that create a run dir now stamp `$CLAUDE_CODE_SESSION_ID` into
+  `<run dir>/.session_id`, and both consumers walk their existing newest-first order until
+  they reach a run of their own. The identity is ambient rather than passed down the dispatch:
+  the variable is inherited across the agent boundary, so an executor cannot fail to forward
+  it and an improvised re-run inherits it automatically. A directory with no stamp stays
+  eligible — legacy runs, direct `/claude-mesh:*-exec` invocations and a harness without the
+  variable must keep working, and reporting `MISSING` for a live unstamped run would be worse
+  than the collision. Two orchestrations inside one session remain indistinguishable.
 
 ### Configuration
 - No new keys. `runtime.timeouts.stall_sec` gains a second consumer: the orchestrator's

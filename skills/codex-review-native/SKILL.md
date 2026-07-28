@@ -117,6 +117,7 @@ MODEL="${MODEL:-gpt-5.5}" && \
 REASONING_LEVEL="${REASONING_LEVEL:-xhigh}" && \
 WORK_DIR="$PLUGIN_DATA/runs/codex/${TIMESTAMP}-native-review-${BRANCH}" && \
 mkdir -p "$WORK_DIR" && \
+printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}" > "$WORK_DIR/.session_id" && \
 LOG_FILE="$WORK_DIR/log.jsonl" && \
 OUTPUT_FILE="$WORK_DIR/output.txt" && \
 MD_FILE="$WORK_DIR/report.md" && \
