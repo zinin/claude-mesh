@@ -23,8 +23,9 @@ prompt written outside it.
 2. **Reachability is unknown until probed.** git remote, `gh` and `glab` are typically
    unreachable there; `codex` / `gemini` CLIs may be absent, or present with no route to their
    API. A dispatched-but-dead reviewer is not a cheap mistake:
-   `skills/mesh-design-review/SKILL.md` Step 6 records a run where four of five executors died
-   mid-stream and nothing noticed for 38 minutes.
+   `skills/mesh-design-review/SKILL.md` Step 6 records a 2026-07-26 run where four of six
+   executors — none supervised by a watchdog — died mid-stream and nothing noticed for
+   38 minutes, and a 2026-07-27 run where four of five died again.
 3. **A fresh session handed a plan implements it.** That is the default reading of "here is a
    design and a plan", and it is exactly what must not happen before the review.
 
@@ -93,9 +94,15 @@ past the point where the gate is cheap.
 ### 4. Iteration numbering reuses the skill's own rule
 
 `TOPIC` is derived from the design filename exactly as `skills/mesh-design-review/SKILL.md`
-Step 1 derives it (extract from `YYYY-MM-DD-<topic>-design.md`, strip a trailing `-review` or
-`-design`). The iteration number is `max(N in docs/superpowers/specs/*-<TOPIC>-review-iter-N.md) + 1`,
-which is Step 2's rule.
+Step 1 derives it: extract from `YYYY-MM-DD-<topic>-design.md`, then **repeatedly** strip
+trailing `-review` / `-design` suffixes — Step 1's own example removes two in sequence,
+`iterative-review-design.md` → `iterative`. The iteration number is
+`max(N in docs/superpowers/specs/*-<TOPIC>-review-iter-N.md) + 1`, which is Step 2's rule.
+
+The "matching plan" lookup is ordered and explicit — three plan-naming conventions coexist in
+this repo, so an undefined "matching" would derive differently in two places:
+`plans/<date>-<topic>-implementation.md`, then `plans/<date>-<topic>-plan.md`, then
+`plans/<date>-<topic>.md`, then the newest `plans/*<topic>*.md`; nothing found → ask.
 
 Both are copies, so both carry a sync note naming the step they mirror. A generator that
 derives a different topic counts a different set of iteration files, and would hand the review
@@ -109,7 +116,10 @@ one topic sort together.
 
 Models of one provider share an endpoint, so the probe runs one check per provider and expands
 the verdict back into model ids in its `SUMMARY` line — in the exact spelling the selection UI
-of `mesh-review` / `mesh-design-review` uses, so the reading session has nothing to map.
+of `mesh-review` / `mesh-design-review` uses, so the reading session has nothing to map. The
+built-in reviewer follows the same rule: with a `claude.models` catalog the SUMMARY expands it
+as `claude:opus, claude:fable` — the spelling the confirmation page uses — and prints plain
+`claude` only in the no-catalog fallback.
 
 Every verdict — including "everything is unreachable" — exits 0. A non-zero exit means the
 probe itself is broken. This is the contract `shared/watch-runs.sh` already established
@@ -159,10 +169,14 @@ clipboard utility exists, print generated prompts into the chat instead.
 ## PREFLIGHT — run this first
 ```bash
 PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
-[ -x "$PF" ] || { echo "preflight-env.sh not found — is claude-mesh installed here?" >&2; exit 1; }
-"$PF"
+[ -f "$PF" ] || { echo "preflight-env.sh not found — older claude-mesh here; expected degradation, NOT a broken environment"; exit 0; }
+bash "$PF"
 ```
-Print the table verbatim. Do not soften a verdict into "probably fine".
+Print the table verbatim. Do not soften a verdict into "probably fine". The not-found branch
+exits 0 on purpose: an old plugin is a fact about the environment, not a failed tool call —
+a non-zero exit would send the session repairing the probe instead of following the
+degradation instructions. (`bash "$PF"`, not `"$PF"`: a shared-folder mount may drop the
+exec bit.)
 
 ## CONTEXT
 What is not in the documents: decisions and why, rejected alternatives, known constraints,
@@ -175,7 +189,7 @@ sharp edges. <= 40 lines. Not a retelling of the documents.
 4. Wait. Do not start the review on your own.
 
 ## WHEN THE USER SAYS GO
-Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<path> PLAN_PATH=<path>`
+Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<path> PLAN_PATH=<path> TOPIC=<topic>`
 (code-review tail: `/claude-mesh:mesh-review`), selecting only reviewers the preflight
 marked OK.
 ````
@@ -185,7 +199,11 @@ marked OK.
 - Arguments: `DESIGN_PATH=`, `PLAN_PATH=`, `TOPIC=` (all optional; discovery mirrors
   `exec-plan-fresh-session` Step 1, and asks when nothing is found).
 - Iteration 1: `CONTEXT` is the brainstorming residue — decisions, rejected alternatives,
-  constraints.
+  constraints. Its only source is the generating session itself: when that session does not
+  hold the residue (standalone invocation, or the discussion already evicted from context),
+  the generator asks the user for the key decisions — it never fabricates them — or, if the
+  user declines, writes `CONTEXT` with an explicit note that it is limited to what the
+  documents imply.
 - Iteration N > 1: `DOCUMENTS` additionally states that `*-<TOPIC>-review-iter-*.md` files
   exist and where. Their content is **not** copied: Step 3 of the skill reads them itself and
   builds the PREVIOUS DECISIONS table. `CONTEXT` becomes what the previous iteration decided
@@ -209,8 +227,15 @@ marked OK.
   suffix `-2`, `-3`.
 - Code review is the one case where the documents may legitimately not exist — a branch can be
   implemented without a written design. Ask once; if the user confirms there are none, take
-  `TOPIC` and the output date from the branch name and today's date, omit the missing entries
-  from `DOCUMENTS`, and keep the git range. Never invent a document path.
+  `TOPIC` from the branch name **normalised to a slug**: drop everything up to the last `/`
+  (`feat/x-y` → `x-y`), apply the usual trailing `-design` / `-review` strip, then map any
+  character outside `[a-z0-9-]` to `-`; detached HEAD (`git symbolic-ref --short HEAD` fails)
+  falls back to `git rev-parse --short HEAD`; an empty result asks the user. `DATE` is today.
+  Omit the missing entries from `DOCUMENTS`, and keep the git range. Never invent a document
+  path.
+- The generator checks `git status --porcelain` before writing the file: a dirty worktree is
+  warned to the operator and named in the prompt ("uncommitted changes existed at generation —
+  the review covers commits only"); it is never silently ignored.
 
 Neither generator commits the prompt file. Writing it is enough — `docs/superpowers/` is
 removed before a PR anyway, and the sandbox shares the working copy, so the file is visible on
@@ -219,10 +244,16 @@ both sides the moment it is written.
 ## `skills/shared/preflight-env.sh`
 
 **Invocation:** no arguments. `PREFLIGHT_HTTP_TIMEOUT` (default 5) and `PREFLIGHT_GIT_TIMEOUT`
-(default 8) override the per-probe budgets. `PREFLIGHT_CURL_BIN` (default `curl`) and
-`PREFLIGHT_GIT_BIN` (default `git`) name the binaries — the probe resolves both through a
-variable so that "the tool is absent" is a testable state rather than an exercise in PATH
-surgery, and so an environment with an oddly-installed curl stays usable.
+(default 8) override the per-probe budgets — the ollama precheck receives the same budget
+through env knobs (`OLLAMA_PRECHECK_TRIES=1`, attempt/tags timeouts = `PREFLIGHT_HTTP_TIMEOUT`);
+the knobs are added to `ollama-precheck.sh` by this work, with defaults that preserve its
+current behaviour for every other caller. `PREFLIGHT_CURL_BIN` (default `curl`),
+`PREFLIGHT_GIT_BIN` (default `git`), `PREFLIGHT_YQ_BIN` (default `yq`) and `PREFLIGHT_JQ_BIN`
+(default `jq`) name the binaries — resolved through a variable so that "the tool is absent" is
+a testable state rather than an exercise in PATH surgery. `PREFLIGHT_CURL_BIN` governs only the
+probe's **own** HTTP checks (the codex / gemini heuristics): the reused prechecks resolve
+`curl` from `PATH`, so when the resolved curl is absent the probe does not invoke them at all —
+provider rows report `UNKNOWN — no curl` instead of a fake network verdict.
 
 **Output:** one line per capability, `name`, status, detail — fixed order, so a test can assert
 on it:
@@ -233,20 +264,23 @@ builtin-claude   OK           always available, needs no config section
 claude-models    OK           opus, fable
 codex            NO-NETWORK   CLI present, api.openai.com unreachable in 5s (heuristic)
 gemini           MISSING      no gemini: section in config — the UI will not offer it
-provider:zai     OK           HTTP 200, token accepted
+provider:zai     OK           endpoint answered, credentials accepted (https://api.z.ai/api/anthropic)
 provider:ollama  NO-NETWORK   http://localhost:11434 timed out after 5s
 git-remote       NO-NETWORK   git ls-remote origin timed out after 8s
 gh               MISSING      not on PATH
 glab             MISSING      not on PATH
 clipboard        MISSING      no xclip/xsel/pbcopy
 
-SUMMARY available: claude, zai/glm, zai/glm-air
+SUMMARY available: claude:opus, claude:fable, zai/glm, zai/glm-air
 SUMMARY unavailable: codex (NO-NETWORK), gemini (MISSING), ollama/kimi (NO-NETWORK)
 ```
 
-Order: `config`, `builtin-claude`, `claude-models`, `curl` (only when missing), `codex`,
-`gemini`, `provider:*` in config order, `git-remote`, `gh`, `glab`, `clipboard`, then the two
-`SUMMARY` lines.
+Order: `yq` / `jq` (only when missing), `config`, `builtin-claude`, `claude-models`, `curl`
+(only when missing), `ext-claude-deps` (only when something is missing), `codex`, `gemini`,
+`provider:*` in order of first appearance in `models` — a provider with no models gets no row,
+there is nothing it could offer the selection UI; the aggregate row `provider` replaces
+`provider:*` when providers are not probed at all (no usable config, or no models) — then
+`git-remote`, `gh`, `glab`, `clipboard`, and the two `SUMMARY` lines.
 
 **Status set (closed):** `OK`, `MISSING` (tool or section absent), `NO-NETWORK` (present but
 its endpoint did not answer), `AUTH-FAILED` (endpoint answered, credentials rejected),
@@ -255,12 +289,19 @@ when there is no config), `UNKNOWN` (the probe could not decide, e.g. `curl` abs
 
 **`codex` / `gemini` rows report what the selection UI will actually offer**, which is a
 config question before it is a network one: `mesh-review` Step 2 and `mesh-design-review`
-Step 5.2 show those options only when `get-flag has_codex` / `has_gemini` returns 1. A row
-therefore reads `MISSING — no codex: section in config` when the section is absent, whatever
-the CLI on PATH says, and only reaches the network heuristic when the gate is open.
+Step 5.2 show those options only when `get-flag has_codex` / `has_gemini` returns 1 — but the
+UI's consumers then read the section through the **typed getters** (`get-codex` /
+`get-gemini`), which validate it and die on a malformed one, while the bare `has_*` probe
+validates nothing. The probe mirrors both gates: section absent (`has_*` = 0) →
+`MISSING — no codex: section in config`, whatever the CLI on PATH says; section present but
+the typed getter exits non-zero → `INVALID` with the first line of the validator's stderr
+(`broken-codex-valid-gemini.yaml` exists for exactly this class); only a present-and-valid
+section reaches the network heuristic.
 `claude-models` reports the sandbox's `claude.models` catalog (or `MISSING`, meaning one
 claude reviewer on the dispatch model) — a local read, no network, and the operator otherwise
-learns how many Claude reviewers exist there only after entering the selection UI.
+learns how many Claude reviewers exist there only after entering the selection UI. That read
+is rc-aware too: a broken `claude:` section is `INVALID` with the validator's reason — the
+same read `mesh-review` Step 1 refuses to start on — never conflated with an absent catalog.
 
 **Reuse, do not reimplement:** providers are probed through the existing
 `skills/ext-claude-exec/token-precheck.sh` (exit 0 → `OK`, 5 → `AUTH-FAILED`, 6 →
@@ -268,10 +309,14 @@ learns how many Claude reviewers exist there only after entering the selection U
 `ext-claude-exec` routes it. Model and provider data come only through `config-loader.sh`
 (`list-models`, `export`) — never raw `yq`.
 
-**Config states:** loader rc=2 → `config MISSING`, providers `SKIPPED`, `SUMMARY available`
+**Config states:** before touching the loader the probe checks the loader's own toolchain
+(`PREFLIGHT_YQ_BIN` / `PREFLIGHT_JQ_BIN`): a missing tool prints its own `MISSING` row and
+`config UNKNOWN cannot evaluate — <tool> not installed`, providers `SKIPPED`, and the loader
+is never invoked — rc=1 from a dead toolchain must not impersonate a rejected config. With the
+toolchain present: loader rc=2 → `config MISSING`, providers `SKIPPED`, `SUMMARY available`
 still contains `claude`. Loader rc=1 → `config INVALID <first line of the validator's message>`,
 providers `SKIPPED`. Loader script itself not found → `config MISSING (config-loader.sh not
-found)`. All three exit 0: they are facts about the environment, not failures of the probe.
+found)`. All of these exit 0: they are facts about the environment, not failures of the probe.
 
 **Secrets:** `config-loader.sh export <model>` writes an env file containing the provider
 token and prints its path. The probe sources it in a subshell and deletes it from a
@@ -280,15 +325,39 @@ intention. The prechecks are invoked through `env -u SKIP_TOKEN_PRECHECK`: that 
 exists so a caller can skip the check, and inherited from the surrounding shell it would turn
 every provider row into a false `OK`.
 
+`probe_provider` reports through globals and is called as its own command, **never inside a
+command substitution**: an assignment made in `$()` dies with its subshell, which is exactly
+how `CURRENT_ENVF` — and with it the trap guarantee — would silently vanish (the `cli_row`
+rule exists for the same reason). The sourcing subshell hands back only `rc|base_url`:
+`base_url` is not a secret and goes into the row's detail; the token never crosses the
+boundary. On INT / TERM the trap removes the file and the probe exits **non-zero** — an
+interrupt is not a verdict; "every verdict exits 0" covers completed runs only.
+
 **Providers with no usable token:** `export` fails (rc≠0) when the token is still
 `REPLACE_ME`. That is `MISSING — token not configured for this provider`, not a network
-verdict.
+verdict. `export` also dies on things that are no token problem at all — a `runtime:` section
+its validator rejects, a model id it cannot find, a failed `mktemp` — so the probe captures
+its stderr: a message naming the token / `REPLACE_ME` stays `MISSING`, anything else becomes
+`UNKNOWN — export refused: <first stderr line>` rather than a lie about the token.
 
-**Cost:** probes are sequential — five providers is a ~35 s worst case. That is the price of
+**Cost:** probes are sequential. Per provider the worst case is `PREFLIGHT_HTTP_TIMEOUT` for
+anthropic-kind and ~2×`PREFLIGHT_HTTP_TIMEOUT` for ollama-kind (reachability + tags, one
+attempt each under the probe's env knobs), so five providers land in the 25–50 s range at
+default budgets, plus up to `PREFLIGHT_GIT_TIMEOUT` for the remote. That is still the price of
 one check, against six reviewers hanging for minutes.
 
-**Dependencies:** bash 4.0+, `timeout` (GNU coreutils, already required by this repo), `git`
-and `curl` optional — their absence produces `MISSING` / `UNKNOWN` rows rather than an error.
+**Dependencies:** bash 4.0+, `timeout` (GNU coreutils, already required by this repo);
+Python-yq and `jq` are hard requirements of the loader and are probed **before** it — their
+absence degrades `config` to `UNKNOWN`, it does not error. `git` and `curl` stay optional —
+their absence produces `MISSING` / `UNKNOWN` rows. `ext-claude-deps` reports `claude` / `bc` /
+`python3` (the ext-claude executors STOP without them), printed only when something is
+missing; provider rows then read `MISSING — ext-claude prerequisites absent: <list>` and skip
+the network.
+
+**Authority and lifetime:** the probe is the single source of truth about this environment —
+no other shared script probes the network or the git remote on its own; consumers read the
+table instead of re-checking. Its output is a snapshot at invocation: a config edited after
+the run is not reflected until the probe is re-run.
 
 ## Edits to existing files
 
@@ -312,6 +381,7 @@ Short paragraph; no behavioural change to the rest of `/do-plan`.
 | `config.yaml` absent or invalid in the sandbox | Probe reports it and continues; `claude` remains available |
 | Clipboard utility absent | Print the prompt and its path; note it, do not fail |
 | `git` absent, or no `origin` remote | `git-remote MISSING (no remote configured)`; code-review generator falls back to `master` and says so in the prompt |
+| `/claude-mesh:design-review-fresh-session` not found (sandbox on an older plugin) | `mesh-design-review` Step 15 falls back to `/claude-mesh:continue-plan-fresh-session` with a warning that the plugin needs an update for the review-generator flow |
 
 ## Testing
 
@@ -332,7 +402,14 @@ Per `superpowers:writing-skills`, the guidance is tested before it is trusted.
    editing, assumes a reviewer set, offers to push. Then the same scenario with the generated
    prompt: it must touch no files, run the probe block, print the table and stop.
 4. **Wording micro-test** for the `DO NOT` block — 5+ repetitions against a no-guidance
-   control, every flagged match read by hand, before the full scenario runs.
+   control, every flagged match read by hand, before the full scenario runs. Pass criterion is
+   positive, not only negative: the candidate holds in ≥4 of 5 runs **and** the control fails
+   in ≥2 of 3; a control that never fails sends the block back to decision 3 for
+   reconsideration — it is never silently dropped.
+5. **Subagent runs are a proxy, not the acceptance test** — system prompt, defaults and loaded
+   context all differ from a real fresh session. Acceptance is one manual run of a generated
+   prompt in a real sandbox session on an updated plugin, recorded in the baseline file under
+   an `ACCEPTANCE` heading.
 
 ## Assumptions and risks
 
@@ -347,4 +424,7 @@ Per `superpowers:writing-skills`, the guidance is tested before it is trusted.
 - **The shared-folder mount means commits land in the host repository.** Nothing needs to be
   exported from the sandbox, and no part of this design tries to.
 - **The plugin version inside the sandbox may lag the host's.** Handled by decision 6, but it
-  stays the most likely reason a generated prompt underperforms.
+  stays the most likely reason a generated prompt underperforms. Decision 6 covers the probe;
+  the missing-**command** case (`design-review-fresh-session` not resolving in Step 15) is
+  covered by the fallback row in Error handling — an older plugin lacks both, and each has its
+  own degradation.

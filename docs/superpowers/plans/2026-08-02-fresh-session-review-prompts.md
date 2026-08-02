@@ -14,13 +14,13 @@
 
 - Design source of truth is the spec above. Every decision numbered there (1–6) is binding.
 - Every config read goes through `skills/shared/config-loader.sh`. Raw `yq` is forbidden anywhere in this work.
-- The probe **always exits 0** for any verdict. A non-zero exit means the probe itself is broken.
+- The probe **always exits 0** for any delivered verdict. A non-zero exit means the probe itself is broken — or was interrupted: on INT/TERM the trap cleans up and exits non-zero, an interrupt is not a verdict.
 - Closed status set, nothing else may be printed in the status column: `OK`, `MISSING`, `NO-NETWORK`, `AUTH-FAILED`, `INVALID`, `SKIPPED`, `UNKNOWN`.
-- Row format is exactly `printf '%-16s %-12s %s\n' "$name" "$status" "$detail"`.
-- Row order: `config`, `builtin-claude`, `claude-models`, `curl` (only when missing), `codex`, `gemini`, `provider:*` in config order, `git-remote`, `gh`, `glab`, `clipboard`, then `SUMMARY available:` and `SUMMARY unavailable:`.
+- Row format is exactly `printf '%-16s %-12s %s\n' "$name" "$status" "$detail"`. A name longer than 16 columns (`provider:deepseek`) overflows the pad — harmless, parsing is word-based; do not "fix" it by truncating names.
+- Row order: `yq` / `jq` (only when missing), `config`, `builtin-claude`, `claude-models`, `curl` (only when missing), `ext-claude-deps` (only when something is missing), `codex`, `gemini`, `provider:*` in order of first appearance in `models` (aggregate row `provider` instead, when providers are not probed at all), `git-remote`, `gh`, `glab`, `clipboard`, then `SUMMARY available:` and `SUMMARY unavailable:`.
 - No secret ever reaches stdout or stderr. Exported env files are deleted through a `trap … EXIT`.
 - Prechecks are invoked as `env -u SKIP_TOKEN_PRECHECK …`.
-- Binaries resolve through `PREFLIGHT_CURL_BIN` (default `curl`) and `PREFLIGHT_GIT_BIN` (default `git`); budgets through `PREFLIGHT_HTTP_TIMEOUT` (default 5) and `PREFLIGHT_GIT_TIMEOUT` (default 8).
+- Binaries resolve through `PREFLIGHT_CURL_BIN` (default `curl`), `PREFLIGHT_GIT_BIN` (default `git`), `PREFLIGHT_YQ_BIN` (default `yq`), `PREFLIGHT_JQ_BIN` (default `jq`) and `PREFLIGHT_EXT_DEPS_BINS` (default `claude bc python3`); budgets through `PREFLIGHT_HTTP_TIMEOUT` (default 5) and `PREFLIGHT_GIT_TIMEOUT` (default 8). `PREFLIGHT_CURL_BIN` governs only the probe's own HTTP checks; when it does not resolve, the borrowed prechecks are not invoked at all (provider rows → `UNKNOWN`). The ollama precheck receives its budget through env knobs (`OLLAMA_PRECHECK_TRIES=1`, attempt/tags timeouts = `PREFLIGHT_HTTP_TIMEOUT`).
 - Generators must not call `config-loader.sh` and must not emit any model id, provider id or `defaults.*` preset from the local config.
 - Slash commands are namespaced: `/claude-mesh:<name>`. Bare names do not resolve.
 - Repo language convention: command files, skills and generated prompts are English; user-facing question strings inside `mesh-*` skills are Russian. Match the file you are editing.
@@ -36,6 +36,8 @@
 | `skills/shared/preflight-env.sh` | The environment probe. One row per capability, two SUMMARY lines, exit 0 |
 | `skills/shared/tests/test-preflight-env.sh` | Its regression suite: fixture configs + shimmed `curl`/`git` |
 | `skills/shared/tests/fixtures/valid-claude-models.yaml` | Fixture with a `claude.models` catalog (none of the existing fixtures has one) |
+| `skills/shared/tests/fixtures/invalid-claude-scalar.yaml` | Fixture with valid providers/models and a scalar `claude: false` — the `claude-models INVALID` case |
+| `skills/ext-claude-exec/ollama-precheck.sh` | Modify: env knobs `OLLAMA_PRECHECK_TRIES` / `OLLAMA_PRECHECK_ATTEMPT_TIMEOUT` / `OLLAMA_PRECHECK_TAGS_TIMEOUT`, defaults preserve current behaviour |
 | `commands/design-review-fresh-session.md` | Generator → fresh session → `/claude-mesh:mesh-design-review`; entry and every later iteration |
 | `commands/code-review-fresh-session.md` | Generator → fresh session → `/claude-mesh:mesh-review` after implementation |
 | `skills/mesh-design-review/SKILL.md` | Step 15 only: the "Новая итерация" branch targets the new generator |
@@ -51,10 +53,11 @@
 - Create: `skills/shared/preflight-env.sh`
 - Create: `skills/shared/tests/test-preflight-env.sh`
 - Create: `skills/shared/tests/fixtures/valid-claude-models.yaml`
+- Create: `skills/shared/tests/fixtures/invalid-claude-scalar.yaml`
 
 **Interfaces:**
 - Consumes: `skills/shared/config-loader.sh` subcommands `list-models` (`<id>|<label>` per line), `list-claude-models` (one alias per line), `data-dir`, `get-flag has_codex|has_gemini`. Loader exit codes: 0 = fine, 2 = no `config.yaml`, 1 = invalid.
-- Produces: `row <name> <status> [detail]`; globals `LOADER`, `EXEC_DIR`, `HTTP_TIMEOUT`, `GIT_TIMEOUT`, `CURL_BIN`, `GIT_BIN`, `CONFIG_STATUS` (one of `OK|MISSING|INVALID`), `MODELS` (raw `list-models` output, empty unless `CONFIG_STATUS=OK`), `HAS_CODEX`, `HAS_GEMINI`, and `CURRENT_ENVF` + `cleanup()` for Task 2. Tasks 2–4 append their sections to the same file and consume these names.
+- Produces: `row <name> <status> [detail]`; globals `LOADER`, `EXEC_DIR`, `HTTP_TIMEOUT`, `GIT_TIMEOUT`, `CURL_BIN`, `GIT_BIN`, `YQ_BIN`, `JQ_BIN`, `TOOLCHAIN_OK`, `HAVE_CURL`, `EXT_DEPS_MISSING` (comma-joined list of absent ext-claude prerequisites, empty when all present), `CONFIG_STATUS` (one of `OK|MISSING|INVALID|UNKNOWN`), `CLAUDE_MODELS` (raw `list-claude-models` output — Task 4 expands the SUMMARY from it), `MODELS` (raw `list-models` output, empty unless `CONFIG_STATUS=OK`), `HAS_CODEX`, `HAS_GEMINI`, and `CURRENT_ENVF` + `cleanup()` for Task 2. Tasks 2–4 append their sections to the same file and consume these names.
 
 - [ ] **Step 1: Create the fixture with a Claude catalog**
 
@@ -75,6 +78,25 @@ claude:
   models:
     - opus
     - fable
+```
+
+Also create `skills/shared/tests/fixtures/invalid-claude-scalar.yaml` — valid providers/models,
+and a `claude:` section the validator rejects (the `claude-models INVALID` case):
+
+```yaml
+# skills/shared/tests/fixtures/invalid-claude-scalar.yaml
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+claude: false
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -140,25 +162,44 @@ esac
 SH
 chmod +x "$WORK/gitfast/git"
 
+# Default curl shim: answers 200 instantly. Without it, the moment Task 2's provider probes
+# exist, every Task-1 scenario would send the fixture token to the real https://api.z.ai and
+# poke 127.0.0.1:11434 with retries — the suite would silently become network-dependent, slow,
+# and leak a fixture token outward on every run. Scenarios that test other codes pass their
+# own PREFLIGHT_CURL_BIN/PATH, which win because `env` keeps the last assignment.
+mkdir -p "$WORK/curlfast"
+cat > "$WORK/curlfast/curl" <<'SH'
+#!/usr/bin/env bash
+echo "200"
+exit 0
+SH
+chmod +x "$WORK/curlfast/curl"
+
 # Each run gets a private data dir (so the suite never reads the developer's ~/.claude config)
 # and a private TMPDIR (so exported env files, which carry tokens, cannot leak into shared /tmp
 # and can be counted afterwards).
-CFG_DIR=""    # set by run_probe, readable by the caller afterwards
+#
+# run_probe assigns OUT / RC / CFG_DIR as globals and is called as a STANDALONE command —
+# never as OUT="$(run_probe …)". A command substitution would strand the assignments in its
+# subshell and make the exit-code and leak assertions below unfalsifiable: the probe could
+# exit 7 and RC would still read 0. Same idiom as test-verify-delegation.sh:43.
+CFG_DIR=""
 RC=0
+OUT=""
 run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
     local fixture="$1"; shift
     CFG_DIR="$(mktemp -d "$WORK/data-XXXXXX")"
     [ "$fixture" = none ] || cp "$TESTS_DIR/fixtures/$fixture" "$CFG_DIR/config.yaml"
-    local out
-    out="$(env CLAUDE_PLUGIN_DATA="$CFG_DIR" TMPDIR="$CFG_DIR" \
-               PREFLIGHT_GIT_BIN="$WORK/gitfast/git" "$@" bash "$SCRIPT" 2>&1)"
+    OUT="$(env CLAUDE_PLUGIN_DATA="$CFG_DIR" TMPDIR="$CFG_DIR" \
+               PREFLIGHT_GIT_BIN="$WORK/gitfast/git" \
+               PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$WORK/curlfast:$PATH" \
+               "$@" bash "$SCRIPT" 2>&1)"
     RC=$?
-    printf '%s\n' "$out"
 }
 
 echo "== Task 1: config detection and static rows =="
 
-OUT="$(run_probe valid-claude-models.yaml)"
+run_probe valid-claude-models.yaml
 assert_eq   "valid config exits 0"            0    "$RC"
 assert_eq   "valid config -> config OK"       OK   "$(field config "$OUT")"
 assert_match "config detail names config.yaml" "/config.yaml" "$OUT"
@@ -166,17 +207,29 @@ assert_eq   "builtin-claude always OK"        OK   "$(field builtin-claude "$OUT
 assert_eq   "claude catalog -> OK"            OK   "$(field claude-models "$OUT")"
 assert_match "catalog lists both aliases"     "opus, fable" "$OUT"
 
-OUT="$(run_probe none)"
+run_probe none
 assert_eq   "missing config exits 0"          0        "$RC"
 assert_eq   "missing config -> MISSING"       MISSING  "$(field config "$OUT")"
 assert_eq   "built-in claude survives no config" OK    "$(field builtin-claude "$OUT")"
 assert_eq   "no config -> catalog SKIPPED"    SKIPPED  "$(field claude-models "$OUT")"
 
-OUT="$(run_probe invalid-no-providers.yaml)"
+run_probe invalid-no-providers.yaml
 assert_eq   "invalid config exits 0"          0        "$RC"
 assert_eq   "invalid config -> INVALID"       INVALID  "$(field config "$OUT")"
 
-OUT="$(run_probe valid-full.yaml)"
+# A dead toolchain must not impersonate a rejected config — the loader dies rc=1 either way,
+# but the operator's next move differs (pipx install yq vs editing a healthy config).
+run_probe valid-claude-models.yaml PREFLIGHT_YQ_BIN="$WORK/no-such-yq"
+assert_eq   "missing yq exits 0"              0        "$RC"
+assert_eq   "missing yq -> its own row"       MISSING  "$(field yq "$OUT")"
+assert_eq   "missing yq -> config UNKNOWN, not INVALID" UNKNOWN "$(field config "$OUT")"
+
+# A broken claude: section is INVALID with the validator's reason — mesh-review refuses to
+# start on this same read, so "no catalog" (MISSING) would be a lie.
+run_probe invalid-claude-scalar.yaml
+assert_eq   "broken claude section -> INVALID" INVALID "$(field claude-models "$OUT")"
+
+run_probe valid-full.yaml
 assert_eq   "no claude section -> MISSING"    MISSING  "$(field claude-models "$OUT")"
 
 # The closed status set is the contract every later task must keep.
@@ -212,6 +265,8 @@ Create `skills/shared/preflight-env.sh` (`chmod +x` it):
 #
 # Env: PREFLIGHT_HTTP_TIMEOUT (5)  PREFLIGHT_GIT_TIMEOUT (8)
 #      PREFLIGHT_CURL_BIN (curl)   PREFLIGHT_GIT_BIN (git)
+#      PREFLIGHT_YQ_BIN (yq)       PREFLIGHT_JQ_BIN (jq)
+#      PREFLIGHT_EXT_DEPS_BINS ("claude bc python3")
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -221,14 +276,30 @@ HTTP_TIMEOUT="${PREFLIGHT_HTTP_TIMEOUT:-5}"
 GIT_TIMEOUT="${PREFLIGHT_GIT_TIMEOUT:-8}"
 CURL_BIN="${PREFLIGHT_CURL_BIN:-curl}"
 GIT_BIN="${PREFLIGHT_GIT_BIN:-git}"
+YQ_BIN="${PREFLIGHT_YQ_BIN:-yq}"
+JQ_BIN="${PREFLIGHT_JQ_BIN:-jq}"
+EXT_DEPS_BINS="${PREFLIGHT_EXT_DEPS_BINS:-claude bc python3}"
 
 # Task 2 sets this to the env file it is about to source; the trap removes it even if the
-# probe is interrupted between export and rm. The file carries a provider token.
+# probe is interrupted between export and rm. The file carries a provider token. On INT/TERM
+# the probe exits NON-zero after cleanup: an interrupt is not a verdict — "every verdict
+# exits 0" covers completed runs only. (This is also why probe_provider must never run inside
+# a command substitution: CURRENT_ENVF assigned in a subshell never reaches this trap.)
 CURRENT_ENVF=""
 cleanup() { [ -n "$CURRENT_ENVF" ] && rm -f "$CURRENT_ENVF"; return 0; }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 row() { printf '%-16s %-12s %s\n' "$1" "$2" "${3:-}"; }
+
+# ---------------------------------------------------------------- toolchain
+# The loader dies rc=1 without yq/jq — the same exit code a rejected config produces. Check
+# first, so a dead toolchain cannot impersonate INVALID and send the operator to "fix" a
+# healthy config.yaml (row names are canonical yq/jq whatever the override points at).
+TOOLCHAIN_OK=1
+command -v "$YQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; row yq MISSING "loader cannot run without it (looked for $YQ_BIN)"; }
+command -v "$JQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; row jq MISSING "loader cannot run without it (looked for $JQ_BIN)"; }
 
 # ---------------------------------------------------------------- config
 CONFIG_STATUS=""
@@ -237,7 +308,10 @@ MODELS=""
 HAS_CODEX=0
 HAS_GEMINI=0
 
-if [ ! -x "$LOADER" ]; then
+if [ "$TOOLCHAIN_OK" = 0 ]; then
+    CONFIG_STATUS="UNKNOWN"
+    CONFIG_DETAIL="cannot evaluate — loader toolchain missing (see rows above)"
+elif [ ! -x "$LOADER" ]; then
     CONFIG_STATUS="MISSING"
     CONFIG_DETAIL="config-loader.sh not found at $LOADER — broken install"
 else
@@ -257,18 +331,41 @@ row config "$CONFIG_STATUS" "$CONFIG_DETAIL"
 # ---------------------------------------------------------------- built-in claude
 row builtin-claude OK "always available, needs no config section"
 
+CLAUDE_MODELS=""
 if [ "$CONFIG_STATUS" = "OK" ]; then
-    CLAUDE_MODELS="$("$LOADER" list-claude-models 2>/dev/null)" || CLAUDE_MODELS=""
-    if [ -n "$CLAUDE_MODELS" ]; then
+    CM_ERR="$(mktemp)"
+    CLAUDE_MODELS="$("$LOADER" list-claude-models 2>"$CM_ERR")"; CM_RC=$?
+    if [ "$CM_RC" -ne 0 ]; then
+        # mesh-review Step 1 refuses to start on this same read — "no catalog" would be a lie.
+        row claude-models INVALID "$(head -1 "$CM_ERR")"
+        CLAUDE_MODELS=""
+    elif [ -n "$CLAUDE_MODELS" ]; then
         row claude-models OK "$(printf '%s' "$CLAUDE_MODELS" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
     else
         row claude-models MISSING "no claude.models catalog — one claude reviewer on the dispatch model"
     fi
+    rm -f "$CM_ERR"
     HAS_CODEX="$("$LOADER" get-flag has_codex 2>/dev/null)" || HAS_CODEX=0
     HAS_GEMINI="$("$LOADER" get-flag has_gemini 2>/dev/null)" || HAS_GEMINI=0
 else
     row claude-models SKIPPED "no usable config"
 fi
+
+# ---------------------------------------------------------------- prerequisites
+# curl governs only this script's own HTTP checks; the borrowed prechecks resolve curl from
+# PATH, so when the resolved curl is absent the provider probes are skipped outright — a
+# precheck with no curl would fake NO-NETWORK out of a command-not-found.
+HAVE_CURL=1
+command -v "$CURL_BIN" >/dev/null 2>&1 || HAVE_CURL=0
+[ "$HAVE_CURL" = 1 ] || row curl MISSING "own network probes and provider prechecks skipped — their rows read UNKNOWN"
+
+# ext-claude executors STOP without these (ext-claude-exec SKILL.md Dependencies); a reachable
+# endpoint is useless if the executor cannot start. Unquoted on purpose: the list word-splits.
+EXT_DEPS_MISSING=""
+for T in $EXT_DEPS_BINS; do
+    command -v "$T" >/dev/null 2>&1 || EXT_DEPS_MISSING="${EXT_DEPS_MISSING:+$EXT_DEPS_MISSING, }$T"
+done
+[ -z "$EXT_DEPS_MISSING" ] || row ext-claude-deps MISSING "$EXT_DEPS_MISSING — ext-claude executors cannot run here"
 ```
 
 - [ ] **Step 5: Run the test to verify it passes**
@@ -295,7 +392,7 @@ git commit -m "feat(preflight): probe skeleton — config state and the reviewer
 
 **Interfaces:**
 - Consumes: `CONFIG_STATUS`, `MODELS`, `LOADER`, `EXEC_DIR`, `HTTP_TIMEOUT`, `CURRENT_ENVF`, `row()` from Task 1; `config-loader.sh export <model-id>` (prints the path of a mode-600 env file defining `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_MESH_PROVIDER_KIND`; exits non-zero when the token is still `REPLACE_ME`); `skills/ext-claude-exec/token-precheck.sh <URL> <TOKEN> [TIMEOUT]` (0 = OK, 5 = auth, 6 = unreachable) and `ollama-precheck.sh <URL>` (same codes).
-- Produces: `PROBED` — a `|<provider>=<STATUS>` accumulator string consumed by Task 4's SUMMARY expansion.
+- Produces: `PROBED_STATUS` — a bash-4 associative array `provider → STATUS` consumed by Task 4's SUMMARY expansion; `PROV_STATUS` / `PROV_DETAIL` — probe_provider's return channel (globals, never echoed).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -323,33 +420,54 @@ exit 0
 SH
 chmod +x "$SHIM/curl"
 
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200)"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 assert_eq "reachable provider -> OK"          OK   "$(field provider:zai "$OUT")"
 assert_eq "ollama-kind provider probed too"   OK   "$(field provider:ollama "$OUT")"
 assert_eq "probing providers still exits 0"   0    "$RC"
+assert_match "detail names the endpoint"      "https://api.z.ai" "$OUT"
 
 # Three models, two providers: the probe runs once per provider, not once per model.
 assert_eq "one row per provider" 2 "$(grep -c '^provider:' <<<"$OUT")"
 
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=401)"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=401
 assert_eq "401 -> AUTH-FAILED"                AUTH-FAILED "$(field provider:zai "$OUT")"
 
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000)"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000
 assert_eq "unreachable -> NO-NETWORK"         NO-NETWORK  "$(field provider:zai "$OUT")"
 
 # SKIP_TOKEN_PRECHECK exists so a caller can skip the check. Inherited, it would turn every
 # provider row into a false OK — the probe must neutralise it.
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
-                 SHIM_HTTP_CODE=000 SKIP_TOKEN_PRECHECK=1)"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
+          SHIM_HTTP_CODE=000 SKIP_TOKEN_PRECHECK=1
 assert_eq "SKIP_TOKEN_PRECHECK cannot fake OK" NO-NETWORK "$(field provider:zai "$OUT")"
 
 # A copied-but-unedited config: export refuses to hand out a REPLACE_ME token.
-OUT="$(run_probe invalid-token-replace-me.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH")"
+run_probe invalid-token-replace-me.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
 assert_match "REPLACE_ME reported as a config gap, not a network verdict" "token not configured" "$OUT"
+
+# export also dies on things that are no token problem — validate_runtime runs inside
+# cmd_export but NOT inside cmd_list_models, so CONFIG_STATUS is OK and only export fails.
+# That must surface as the loader's own reason, never as a lie about the token.
+run_probe invalid-runtime-runmode.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
+assert_match "non-token export failure -> export refused detail" "export refused" "$OUT"
+assert_no_match "…and not blamed on the token" "token not configured" "$OUT"
+
+# No curl (the probe's own binary): prechecks are not invoked at all — UNKNOWN, not a fake
+# network verdict. No PATH surgery needed: the gate is HAVE_CURL, not the prechecks' lookup.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl"
+assert_eq "no curl -> provider UNKNOWN"       UNKNOWN "$(field provider:zai "$OUT")"
+
+# Missing ext-claude prerequisites: endpoint reachability is irrelevant if the executor
+# cannot start — provider rows degrade and name the gap.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200 \
+          PREFLIGHT_EXT_DEPS_BINS="bc no-such-ext-tool"
+assert_eq "missing ext dep -> its own row"    MISSING "$(field ext-claude-deps "$OUT")"
+assert_eq "…and providers degrade"            MISSING "$(field provider:zai "$OUT")"
+assert_match "…naming the executor gap"       "ext-claude prerequisites absent" "$OUT"
 
 # Secrets: the token from the fixture must not appear anywhere, and no exported env file
 # may survive the run (TMPDIR is private to this run, so a leftover is visible).
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200)"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 assert_no_match "provider token never printed" "tkn-zai" "$OUT"
 LEFT="$(find "$CFG_DIR" -name 'claude-mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "exported env files removed" 0 "$LEFT"
@@ -367,38 +485,61 @@ Append to `skills/shared/preflight-env.sh`:
 ```bash
 # ---------------------------------------------------------------- providers
 # Models of one provider share an endpoint, so probe once per provider and let Task 4 expand
-# the verdict back into model ids. Provider order follows config order (list-models order).
-PROBED=""
+# the verdict back into model ids. Rows appear in order of first appearance in `models`; a
+# provider with no models gets no row — nothing it could offer the selection UI.
+declare -A PROBED_STATUS=()
 
-probe_provider() {      # $1 = a model id belonging to the provider; echoes "<STATUS>|<detail>"
-    local mid="$1" envf kind url rc
-    envf="$("$LOADER" export "$mid" 2>/dev/null)" || {
-        echo "MISSING|token not configured for this provider (export refused)"; return 0; }
+# Verdict comes back through globals and probe_provider is called as its own command — NEVER
+# inside $(...): an assignment made in a command substitution dies with its subshell, and
+# CURRENT_ENVF is what the EXIT trap deletes. cli_row (Task 3) follows the same rule for the
+# same reason.
+PROV_STATUS=""
+PROV_DETAIL=""
+probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PROV_DETAIL
+    local mid="$1" envf eerr first out rc url
+    eerr="$(mktemp)"
+    if ! envf="$("$LOADER" export "$mid" 2>"$eerr")"; then
+        first="$(head -1 "$eerr")"; rm -f "$eerr"
+        # cmd_export also dies on invalid providers/models/runtime and "model not found" —
+        # only a token complaint may be blamed on the token.
+        case "$first" in
+            *REPLACE_ME*|*[Tt]oken*) PROV_STATUS="MISSING"; PROV_DETAIL="token not configured for this provider (export refused)" ;;
+            *)                       PROV_STATUS="UNKNOWN"; PROV_DETAIL="export refused: ${first:-no reason printed}" ;;
+        esac
+        return 0
+    fi
+    rm -f "$eerr"
     if [ -z "$envf" ] || [ ! -f "$envf" ]; then
-        echo "UNKNOWN|export produced no env file"; return 0
+        PROV_STATUS="UNKNOWN"; PROV_DETAIL="export produced no env file"; return 0
     fi
     CURRENT_ENVF="$envf"
-    # Subshell: the token lives only here, and only the exit code leaves it. Both prechecks
-    # print their diagnosis (including the endpoint) on stderr, which is discarded.
-    rc="$(
+    # Subshell: the token lives only here; only "rc|base_url" leaves it. base_url is not a
+    # secret (the token is a separate field) and it is the first thing the operator wants.
+    # Both prechecks print their diagnosis on stderr, which is discarded.
+    out="$(
         # shellcheck disable=SC1090
         . "$envf"
         case "${CLAUDE_MESH_PROVIDER_KIND:-anthropic-api}" in
             ollama-daemon)
-                env -u SKIP_TOKEN_PRECHECK "$EXEC_DIR/ollama-precheck.sh" \
-                    "$ANTHROPIC_BASE_URL" >/dev/null 2>&1 ;;
+                env -u SKIP_TOKEN_PRECHECK \
+                    OLLAMA_PRECHECK_TRIES=1 \
+                    OLLAMA_PRECHECK_ATTEMPT_TIMEOUT="$HTTP_TIMEOUT" \
+                    OLLAMA_PRECHECK_TAGS_TIMEOUT="$HTTP_TIMEOUT" \
+                    "$EXEC_DIR/ollama-precheck.sh" "$ANTHROPIC_BASE_URL" >/dev/null 2>&1
+                printf '%s|%s' "$?" "$ANTHROPIC_BASE_URL" ;;
             *)
                 env -u SKIP_TOKEN_PRECHECK "$EXEC_DIR/token-precheck.sh" \
-                    "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN" "$HTTP_TIMEOUT" >/dev/null 2>&1 ;;
+                    "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN" "$HTTP_TIMEOUT" >/dev/null 2>&1
+                printf '%s|%s' "$?" "$ANTHROPIC_BASE_URL" ;;
         esac
-        echo "$?"
     )"
     rm -f "$envf"; CURRENT_ENVF=""
+    rc="${out%%|*}"; url="${out#*|}"
     case "$rc" in
-        0) echo "OK|endpoint answered, credentials accepted" ;;
-        5) echo "AUTH-FAILED|endpoint answered, credentials rejected" ;;
-        6) echo "NO-NETWORK|endpoint did not answer within ${HTTP_TIMEOUT}s" ;;
-        *) echo "UNKNOWN|precheck exited $rc" ;;
+        0) PROV_STATUS="OK";          PROV_DETAIL="endpoint answered, credentials accepted ($url)" ;;
+        5) PROV_STATUS="AUTH-FAILED"; PROV_DETAIL="endpoint answered, credentials rejected ($url)" ;;
+        6) PROV_STATUS="NO-NETWORK";  PROV_DETAIL="$url did not answer within ${HTTP_TIMEOUT}s" ;;
+        *) PROV_STATUS="UNKNOWN";     PROV_DETAIL="precheck exited $rc ($url)" ;;
     esac
 }
 
@@ -410,18 +551,45 @@ else
     while IFS='|' read -r MID _LABEL; do
         [ -n "$MID" ] || continue
         PROV="${MID%%/*}"
-        case "$PROBED" in *"|$PROV="*) continue ;; esac
-        VERDICT="$(probe_provider "$MID")"
-        row "provider:$PROV" "${VERDICT%%|*}" "${VERDICT#*|}"
-        PROBED="$PROBED|$PROV=${VERDICT%%|*}"
+        [ -z "${PROBED_STATUS[$PROV]+x}" ] || continue
+        if [ -n "$EXT_DEPS_MISSING" ]; then
+            PROBED_STATUS[$PROV]="MISSING"
+            row "provider:$PROV" MISSING "ext-claude prerequisites absent: $EXT_DEPS_MISSING"
+            continue
+        fi
+        if [ "$HAVE_CURL" = 0 ]; then
+            PROBED_STATUS[$PROV]="UNKNOWN"
+            row "provider:$PROV" UNKNOWN "no curl — endpoint not probed"
+            continue
+        fi
+        probe_provider "$MID"
+        row "provider:$PROV" "$PROV_STATUS" "$PROV_DETAIL"
+        PROBED_STATUS[$PROV]="$PROV_STATUS"
     done <<< "$MODELS"
 fi
 ```
 
-Note for the implementer: the two prechecks are reused verbatim and they find `curl` on
-`PATH`, which is why the test puts the shim on `PATH` **and** passes `PREFLIGHT_CURL_BIN`. The
-variable governs only this script's own probes (Task 3); the `PATH` entry governs the borrowed
-prechecks. Do not "simplify" either away.
+Note for the implementer: the two prechecks are reused with their existing interfaces and they
+find `curl` on `PATH`, which is why the test puts the shim on `PATH` **and** passes
+`PREFLIGHT_CURL_BIN`. The variable governs only this script's own probes (Task 3); the `PATH`
+entry governs the borrowed prechecks; and when `PREFLIGHT_CURL_BIN` does not resolve the
+prechecks are not invoked at all (the `HAVE_CURL` gate above). Do not "simplify" any of the
+three away.
+
+Also modify `skills/ext-claude-exec/ollama-precheck.sh` — env knobs, defaults preserve the
+current behaviour for every existing caller:
+
+```bash
+TRIES="${OLLAMA_PRECHECK_TRIES:-3}"
+ATTEMPT_TIMEOUT="${OLLAMA_PRECHECK_ATTEMPT_TIMEOUT:-2}"
+TAGS_TIMEOUT="${OLLAMA_PRECHECK_TAGS_TIMEOUT:-5}"
+```
+
+The retry loop iterates `$TRIES` times with `curl --max-time "$ATTEMPT_TIMEOUT"` (the
+inter-attempt `sleep 2` is skipped when `TRIES=1`), and the `/api/tags` read uses
+`--max-time "$TAGS_TIMEOUT"`. This is what makes `PREFLIGHT_HTTP_TIMEOUT` actually govern
+ollama-kind probes — without it the row's "within Ns" detail would be false and the probe
+budget claim in the design a fiction.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -431,7 +599,8 @@ Expected: PASS on all Task 1 and Task 2 assertions, `FAIL: 0`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add skills/shared/preflight-env.sh skills/shared/tests/test-preflight-env.sh
+git add skills/shared/preflight-env.sh skills/shared/tests/test-preflight-env.sh \
+        skills/ext-claude-exec/ollama-precheck.sh
 git commit -m "feat(preflight): probe each provider once, and never print its token"
 ```
 
@@ -444,8 +613,8 @@ git commit -m "feat(preflight): probe each provider once, and never print its to
 - Modify: `skills/shared/tests/test-preflight-env.sh` (append a new section)
 
 **Interfaces:**
-- Consumes: `CONFIG_STATUS`, `HAS_CODEX`, `HAS_GEMINI`, `CURL_BIN`, `GIT_BIN`, `HTTP_TIMEOUT`, `GIT_TIMEOUT`, `row()`.
-- Produces: `CODEX_STATUS`, `GEMINI_STATUS` — consumed by Task 4's SUMMARY lines; helper `probe_http <url>` echoing `OK|NO-NETWORK|UNKNOWN`.
+- Consumes: `CONFIG_STATUS`, `HAS_CODEX`, `HAS_GEMINI`, `HAVE_CURL` (Task 1), `LOADER`, `CURL_BIN`, `GIT_BIN`, `HTTP_TIMEOUT`, `GIT_TIMEOUT`, `row()`.
+- Produces: `CODEX_STATUS`, `GEMINI_STATUS` — consumed by Task 4's SUMMARY lines; helper `probe_http <url>` echoing `OK|NO-NETWORK|UNKNOWN` (safe to command-substitute: it owns no state and touches no trap-guarded file).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -456,33 +625,38 @@ echo "== Task 3: CLI, git and clipboard rows =="
 
 # valid-full.yaml has no codex:/gemini: sections. The selection UI hides those reviewers on
 # exactly that condition, so the row must say "config", not "network", whatever is on PATH.
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH")"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
 assert_eq   "no codex section -> MISSING"      MISSING "$(field codex "$OUT")"
 assert_match "and says why"                    "no codex: section" "$OUT"
 assert_eq   "no gemini section -> MISSING"     MISSING "$(field gemini "$OUT")"
 
-# With the section present, the CLI must exist on PATH before the network is consulted.
+# A section that exists but that the typed getter rejects: the UI would offer it and then die
+# on get-codex — the probe must say INVALID first, before any CLI or network claim.
+run_probe broken-codex-valid-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_eq   "malformed codex section -> INVALID" INVALID "$(field codex "$OUT")"
+
+# With a valid section present, the CLI must exist on PATH before the network is consulted.
 cat > "$SHIM/codex" <<'SH'
 #!/usr/bin/env bash
 echo "codex 0.0.0-test"
 SH
 chmod +x "$SHIM/codex"
 
-OUT="$(run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200)"
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 assert_eq   "codex CLI + network -> OK"        OK          "$(field codex "$OUT")"
 assert_match "codex verdict marked heuristic"  "heuristic" "$OUT"
 assert_eq   "gemini section but no CLI"        MISSING     "$(field gemini "$OUT")"
 
-OUT="$(run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000)"
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000
 assert_eq   "codex CLI, no network -> NO-NETWORK" NO-NETWORK "$(field codex "$OUT")"
 
 # curl absent: nothing that needs the network may claim a verdict.
-OUT="$(run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl" PATH="$SHIM:$PATH")"
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl" PATH="$SHIM:$PATH"
 assert_eq   "no curl -> codex UNKNOWN"         UNKNOWN "$(field codex "$OUT")"
 assert_eq   "no curl -> its own row"           MISSING "$(field curl "$OUT")"
 
 # git: absent binary is MISSING, and a hanging remote is NO-NETWORK rather than a hang.
-OUT="$(run_probe none PREFLIGHT_GIT_BIN="$WORK/no-such-git")"
+run_probe none PREFLIGHT_GIT_BIN="$WORK/no-such-git"
 assert_eq   "no git -> MISSING"                MISSING "$(field git-remote "$OUT")"
 assert_eq   "missing git still exits 0"        0       "$RC"
 
@@ -497,7 +671,7 @@ case "${1:-}" in
 esac
 SH
 chmod +x "$WORK/gitshim/git"
-OUT="$(run_probe none PREFLIGHT_GIT_BIN="$WORK/gitshim/git" PREFLIGHT_GIT_TIMEOUT=1)"
+run_probe none PREFLIGHT_GIT_BIN="$WORK/gitshim/git" PREFLIGHT_GIT_TIMEOUT=1
 assert_eq   "unreachable remote -> NO-NETWORK" NO-NETWORK "$(field git-remote "$OUT")"
 
 assert_match "gh row present"        "gh"        "$OUT"
@@ -534,8 +708,9 @@ Expected: FAIL — no `codex`, `gemini`, `git-remote`, `gh` or `clipboard` rows 
 - [ ] **Step 3: Implement the CLI, git and clipboard sections**
 
 This task writes **two** blocks in two different places, because the row order is fixed by the
-spec (`curl`, `codex`, `gemini` precede `provider:*`; `git-remote`, `gh`, `glab`, `clipboard`
-follow them) and Task 2 already appended the provider section:
+spec (`codex`, `gemini` precede `provider:*` — the `curl` and `ext-claude-deps` rows already
+live in Task 1's skeleton; `git-remote`, `gh`, `glab`, `clipboard` follow the providers) and
+Task 2 already appended the provider section:
 
 - Block A below goes **immediately before** the `# ---- providers` comment.
 - Block B goes at the **end** of the file.
@@ -544,10 +719,6 @@ Block A — insert before `# ---------------------------------------------------
 
 ```bash
 # ---------------------------------------------------------------- CLI reviewers
-HAVE_CURL=1
-command -v "$CURL_BIN" >/dev/null 2>&1 || HAVE_CURL=0
-[ "$HAVE_CURL" = 1 ] || row curl MISSING "network verdicts below are UNKNOWN without it"
-
 probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
     [ "$HAVE_CURL" = 1 ] || { echo UNKNOWN; return 0; }
     local code
@@ -557,8 +728,11 @@ probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
 }
 
 # A CLI reviewer is offered by the selection UI only when its config section exists
-# (mesh-review Step 2 / mesh-design-review Step 5.2), so the section is checked FIRST: a codex
-# binary with no codex: section is not a reviewer you can pick, however healthy its network is.
+# (mesh-review Step 2 / mesh-design-review Step 5.2) — but its consumers then read the section
+# through the TYPED getter (get-codex / get-gemini), which validates and dies on a malformed
+# one, while the bare has_* probe validates nothing. Mirror both gates, section first: a codex
+# binary with no codex: section is not a reviewer you can pick, however healthy its network is;
+# a section the getter rejects is INVALID before any CLI or network claim.
 # cli_row prints its row and reports the verdict through the CLI_STATUS global. It must NOT
 # echo the verdict: the caller would have to capture its stdout, and the row would vanish into
 # that same capture instead of reaching the report.
@@ -574,6 +748,15 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
         row "$1" MISSING "no $1: section in config — the selection UI will not offer it"
         return 0
     fi
+    local gerr
+    gerr="$(mktemp)"
+    if ! "$LOADER" "get-$1" >/dev/null 2>"$gerr"; then
+        CLI_STATUS="INVALID"
+        row "$1" INVALID "$(head -1 "$gerr")"
+        rm -f "$gerr"
+        return 0
+    fi
+    rm -f "$gerr"
     if ! command -v "$2" >/dev/null 2>&1; then
         CLI_STATUS="MISSING"
         row "$1" MISSING "$2 not on PATH"
@@ -596,7 +779,9 @@ Block B — append at the end of the file (after the provider section):
 ```bash
 # ---------------------------------------------------------------- git, forge CLIs, clipboard
 # git remote — local refs are enough for the review skills; this row exists so the reading
-# session does not plan a push it cannot make.
+# session does not plan a push it cannot make. GIT_TERMINAL_PROMPT=0 + BatchMode: a remote
+# that wants credentials or host-key confirmation must answer instantly instead of stalling
+# into the timeout and being miscalled NO-NETWORK.
 if ! command -v "$GIT_BIN" >/dev/null 2>&1; then
     row git-remote MISSING "$GIT_BIN not on PATH"
 elif ! "$GIT_BIN" rev-parse --git-dir >/dev/null 2>&1; then
@@ -604,10 +789,11 @@ elif ! "$GIT_BIN" rev-parse --git-dir >/dev/null 2>&1; then
 elif ! "$GIT_BIN" remote get-url origin >/dev/null 2>&1; then
     row git-remote MISSING "no 'origin' remote configured"
 else
-    if timeout "$GIT_TIMEOUT" "$GIT_BIN" ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
+    if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes' \
+       timeout "$GIT_TIMEOUT" "$GIT_BIN" ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
         row git-remote OK "origin answered"
     else
-        row git-remote NO-NETWORK "origin silent for ${GIT_TIMEOUT}s — do not plan a push or a PR"
+        row git-remote NO-NETWORK "origin did not answer (or refused) within ${GIT_TIMEOUT}s — do not plan a push or a PR"
     fi
 fi
 
@@ -652,7 +838,7 @@ git commit -m "feat(preflight): CLI rows gate on config first, network second"
 - Modify: `skills/shared/tests/test-preflight-env.sh` (append a new section)
 
 **Interfaces:**
-- Consumes: `PROBED` (Task 2), `CODEX_STATUS` / `GEMINI_STATUS` (Task 3), `MODELS`, `CONFIG_STATUS`.
+- Consumes: `PROBED_STATUS` (Task 2), `CODEX_STATUS` / `GEMINI_STATUS` (Task 3), `MODELS`, `CLAUDE_MODELS` (Task 1), `CONFIG_STATUS`.
 - Produces: the final two lines of output — `SUMMARY available: …` and `SUMMARY unavailable: …` — which every generated prompt tells its session to select from.
 
 - [ ] **Step 1: Write the failing test**
@@ -662,7 +848,7 @@ Append to `skills/shared/tests/test-preflight-env.sh`:
 ```bash
 echo "== Task 4: SUMMARY =="
 
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200)"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
 UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
 assert_match "claude always available"            "claude"          "$AVAIL"
@@ -671,20 +857,41 @@ assert_match "…for every model of that provider"  "ollama/kimi"     "$AVAIL"
 assert_match "…including the second one"          "ollama/deepseek" "$AVAIL"
 assert_match "unconfigured codex listed as unavailable" "codex (MISSING)" "$UNAVAIL"
 
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000)"
+# The catalog expands into the UI's own spelling — decision 5's "nothing has to be mapped"
+# holds for Claude reviewers too (valid-claude-models.yaml carries opus + fable).
+run_probe valid-claude-models.yaml
+assert_match "catalog expands as claude:<model>"  "claude:opus, claude:fable" "$(grep '^SUMMARY available:' <<<"$OUT")"
+
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000
 AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
 UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
 assert_match "claude survives a dead network"     "claude"          "$AVAIL"
 assert_no_match "dead provider not offered"       "zai/glm"         "$AVAIL"
 assert_match "…and is named with its verdict"     "zai/glm (NO-NETWORK)" "$UNAVAIL"
 
-OUT="$(run_probe none)"
+run_probe none
 assert_match "no config still yields a usable line" "SUMMARY available: claude" "$OUT"
+
+# SUMMARY must agree with the per-row verdicts — the one assertion that catches a
+# PROBED_STATUS desync on any future edit, instead of leaving it to a human eye.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
+UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
+BAD_SUMMARY=""
+while read -r PNAME PSTAT _; do
+    P="${PNAME#provider:}"
+    if [ "$PSTAT" = OK ]; then
+        case "$UNAVAIL" in *" $P/"*|*": $P/"*) BAD_SUMMARY="$BAD_SUMMARY $P" ;; esac
+    else
+        case "$AVAIL" in *" $P/"*|*": $P/"*) BAD_SUMMARY="$BAD_SUMMARY $P" ;; esac
+    fi
+done <<<"$(grep '^provider:' <<<"$OUT")"
+assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 
 # Row order is part of the contract — a reader scanning top-down meets the config state, then
 # the reviewers, then the environment, then the summary. This assertion is the one place the
 # whole table is checked at once, so it also catches a block appended in the wrong place.
-OUT="$(run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200)"
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
   "config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard " \
@@ -704,11 +911,21 @@ Append to `skills/shared/preflight-env.sh`:
 # ---------------------------------------------------------------- summary
 # The two lines the reading session actually acts on. Names are spelled exactly as the
 # selection UI of /mesh-review and /mesh-design-review spells them, so nothing has to be
-# mapped: `claude`, `codex`, `gemini`, and model ids like `zai/glm`.
-AVAIL="claude"
+# mapped: `claude:opus`-style entries per catalog model (plain `claude` only in the
+# no-catalog fallback — the confirmation page uses the same spelling), `codex`, `gemini`,
+# and model ids like `zai/glm`.
+AVAIL=""
 UNAVAIL=""
-add_avail()   { AVAIL="$AVAIL, $1"; }
+add_avail()   { if [ -z "$AVAIL"   ]; then AVAIL="$1";   else AVAIL="$AVAIL, $1";     fi; }
 add_unavail() { if [ -z "$UNAVAIL" ]; then UNAVAIL="$1"; else UNAVAIL="$UNAVAIL, $1"; fi; }
+
+if [ -n "$CLAUDE_MODELS" ]; then
+    while IFS= read -r CM; do
+        [ -n "$CM" ] && add_avail "claude:$CM"
+    done <<< "$CLAUDE_MODELS"
+else
+    add_avail claude
+fi
 
 [ "$CODEX_STATUS"  = "OK" ] && add_avail codex  || add_unavail "codex ($CODEX_STATUS)"
 [ "$GEMINI_STATUS" = "OK" ] && add_avail gemini || add_unavail "gemini ($GEMINI_STATUS)"
@@ -717,10 +934,7 @@ if [ -n "$MODELS" ]; then
     while IFS='|' read -r MID _LABEL; do
         [ -n "$MID" ] || continue
         PROV="${MID%%/*}"
-        PSTATUS="UNKNOWN"
-        case "$PROBED" in
-            *"|$PROV="*) PSTATUS="${PROBED##*"|$PROV="}"; PSTATUS="${PSTATUS%%|*}" ;;
-        esac
+        PSTATUS="${PROBED_STATUS[$PROV]:-UNKNOWN}"
         if [ "$PSTATUS" = "OK" ]; then add_avail "$MID"; else add_unavail "$MID ($PSTATUS)"; fi
     done <<< "$MODELS"
 fi
@@ -787,7 +1001,12 @@ Plan:   <SCRATCH>/repo/docs/superpowers/plans/2026-08-02-fresh-session-review-pr
 Work in <SCRATCH>/repo. Review this design and plan before implementation.
 ```
 
-Record verbatim: did it edit files (`git -C "$SCRATCH/repo" status --porcelain`), did it name
+The dispatched prompt must carry one extra line: `Touch nothing outside <SCRATCH>/repo.` The
+subagent inherits the real cwd and the real HOME, so a clean clone alone proves nothing about
+the source repository.
+
+Record verbatim: did it edit files (`git -C "$SCRATCH/repo" status --porcelain` — and
+`git -C <original repo> status --porcelain`, which must stay clean too), did it name
 reviewers it never verified, did it offer to push or open a PR, and what did it say while
 doing so. Run it three times — one sample is an anecdote.
 
@@ -796,7 +1015,9 @@ doing so. Run it three times — one sample is an anecdote.
 Two variants, five repetitions each, same subagent type and same material:
 
 - **Control:** the Step 2 prompt unchanged.
-- **Candidate:** the same prompt with this block inserted immediately after the first line:
+- **Candidate:** the same prompt with this block inserted immediately after the first line —
+  plus a stub section `## PREFLIGHT` reading `(preflight block omitted in this micro-test —
+  the full-context check is Task 6 Step 4)`, so the third bullet's reference is not dangling:
 
 ```
 ## DO NOT
@@ -808,10 +1029,14 @@ Two variants, five repetitions each, same subagent type and same material:
 ```
 
 Read every transcript by hand — an agent quoting the block back is not an agent obeying it.
-Score one number per run: did it modify any file before being told to start? If the control
-does not fail, there is nothing to gate and the block should be dropped; if the candidate
-still fails, tighten the wording and re-run before moving on. Variance matters as much as the
-mean: five different readings of the same block means the wording is not binding yet.
+Score one number per run — did it modify any file before being told to start? — and record
+push/PR offers and invented reviewer sets as secondary observations. **Pass criterion,
+positive and explicit: the candidate holds in ≥4 of 5 runs AND the control fails in ≥2 of 3
+baseline runs.** A control that never fails is not a licence to drop the block — decision 3
+fixed the section list; stop and take the question back to the design instead. A candidate
+below the threshold → tighten the wording and re-run before moving on. Variance matters as
+much as the mean: five different readings of the same block means the wording is not binding
+yet.
 
 - [ ] **Step 4: Record the findings**
 
@@ -852,6 +1077,10 @@ description: Generate a prompt for reviewing the current design + plan via /clau
 
 # Fresh-Session Design-Review Prompt Generator
 
+<!-- SYNC: the DO NOT / ENVIRONMENT / PREFLIGHT / THEN STOP blocks of the generated prompt are
+     duplicated verbatim in commands/code-review-fresh-session.md — change both files or
+     neither. -->
+
 ## Task
 
 Generate the prompt for a NEW Claude Code session whose job is to review the current design and
@@ -872,9 +1101,11 @@ do not exist there and hides the ones that do.
 ### 1. Identify the documents
 
 Use `DESIGN_PATH` / `PLAN_PATH` when given. Otherwise take them from this session's context,
-falling back to the newest `docs/superpowers/specs/*-design.md` and the matching
-`docs/superpowers/plans/*.md`. If either is still unknown, ask the user for the path. Never
-invent one.
+falling back to the newest `docs/superpowers/specs/*-design.md` and the matching plan — an
+**ordered** lookup, because three plan-naming conventions coexist in this repo:
+`plans/<date>-<topic>-implementation.md`, then `plans/<date>-<topic>-plan.md`, then
+`plans/<date>-<topic>.md`, then the newest `plans/*<topic>*.md`. If either document is still
+unknown, ask the user for the path. Never invent one.
 
 ### 2. Derive TOPIC and the iteration number
 
@@ -883,7 +1114,9 @@ invent one.
      a different topic counts a different set of iteration files and hands the review session
      a number the skill then disagrees with. Change them together. -->
 
-- `TOPIC`: from `YYYY-MM-DD-<topic>-design.md`, stripping a trailing `-design` or `-review`.
+- `TOPIC`: from `YYYY-MM-DD-<topic>-design.md`, **repeatedly** stripping trailing `-design` /
+  `-review` suffixes — Step 1's own example removes two in sequence
+  (`iterative-review-design.md` → `iterative`).
 - `N`: `ls docs/superpowers/specs/*-<TOPIC>-review-iter-*.md` → highest existing number + 1, or 1.
 - `DATE`: the date in the **design document's** filename, not today's.
 
@@ -893,9 +1126,18 @@ For iteration 1: decisions and why, alternatives rejected and why, known constra
 edges. For iteration N > 1: what the previous iteration decided and what it deferred under
 "стоп". Keep it under 40 lines. It is not a retelling of the documents.
 
+The only source is THIS session. If it does not actually hold that context — the command was
+invoked standalone, or the discussion has been evicted — ask the user for the key decisions;
+never fabricate them. If the user declines, write `CONTEXT` with an explicit note that it is
+limited to what the documents imply.
+
 ### 4. Compose the prompt
 
-The prompt consists of these sections, in this order, and nothing else:
+The prompt consists of these sections, in this order, and nothing else. Substitute
+`<DESIGN_PATH>`, `<PLAN_PATH>`, `<TOPIC>` and `N` — and nothing more: emit `$HOME` in the
+preflight block **literally**, never expanded to a concrete home directory. An expanded path
+freezes this machine's layout into a prompt that runs on another one — the exact failure
+decision 2 of the design exists to prevent:
 
 ````
 ## TASK
@@ -932,8 +1174,8 @@ exists, print generated prompts into the chat instead of trying to copy them.
 
 ```bash
 PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
-[ -x "$PF" ] || { echo "preflight-env.sh not found — is claude-mesh installed here?" >&2; exit 1; }
-"$PF"
+[ -f "$PF" ] || { echo "preflight-env.sh not found — older claude-mesh here; expected degradation, NOT a broken environment"; exit 0; }
+bash "$PF"
 ```
 
 Print the table verbatim. Do not soften a verdict into "probably fine". If the script is not
@@ -953,13 +1195,14 @@ and ask the user whether to proceed on that alone or update the plugin in this s
 
 ## WHEN THE USER SAYS GO
 
-Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<DESIGN_PATH> PLAN_PATH=<PLAN_PATH>` and
-select only reviewers the preflight marked available.
+Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<DESIGN_PATH> PLAN_PATH=<PLAN_PATH> TOPIC=<TOPIC>`
+and select only reviewers the preflight marked available.
 ````
 
 ### 5. Save, display, offer the clipboard
 
-1. Write to `docs/superpowers/plans/<DATE>-<TOPIC>-design-review-prompt-iter-N.md`.
+1. Write to `docs/superpowers/plans/<DATE>-<TOPIC>-design-review-prompt-iter-N.md`. If that
+   exact file already exists, suffix `-2`, then `-3` — never overwrite an earlier prompt.
 2. Print the full prompt on screen.
 3. Copy to the clipboard: `xclip -selection clipboard` / `xsel --clipboard` on Linux,
    `pbcopy` on macOS. If none exists — which is normal inside a sandbox — say so, name the
@@ -990,8 +1233,13 @@ least one `preflight-env.sh` reference.
 
 ```bash
 LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1)"
-"$LOADER" list-models 2>/dev/null | cut -d'|' -f1 | while read -r id; do
-    [ -n "$id" ] && grep -q -- "$id" "$P" && echo "LEAK: $id"
+# -F: ids are literals, not regexes (an id with . or + would false-positive otherwise).
+# The defaults preset ids are equally leak candidates under decision 1; .builtin[] is skipped
+# deliberately — "claude"/"codex"/"gemini" appear in any prompt as ordinary words.
+{ "$LOADER" list-models 2>/dev/null | cut -d'|' -f1
+  "$LOADER" get-defaults design_review 2>/dev/null | jq -r '(.claude_models[]?, .models[]?)'
+} | sort -u | while read -r id; do
+    [ -n "$id" ] && grep -qF -- "$id" "$P" && echo "LEAK: $id"
 done
 echo "leak scan done"
 ```
@@ -1002,15 +1250,25 @@ never asks.
 
 - [ ] **Step 4: GREEN — run a fresh subagent on the generated prompt**
 
-Clone the repo again (`git clone --no-hardlinks . "$SCRATCH/repo"`), rewrite the document paths
-in a copy of the generated prompt to point into the clone, and dispatch a `general-purpose`
-subagent with exactly that prompt.
+Make a fresh isolated copy — Task 5's `$SCRATCH` died with Task 5's subagent; a variable never
+survives the task boundary, so this task creates its own:
 
-Pass criteria, all four required:
-1. `git -C "$SCRATCH/repo" status --porcelain` is empty — it modified nothing.
-2. It ran the preflight block and printed the resulting table.
-3. It did not invoke `mesh-design-review`, and did not dispatch reviewers.
-4. It ended by waiting for the user.
+```bash
+SCRATCH="$(mktemp -d)"
+git clone --no-hardlinks . "$SCRATCH/repo"
+```
+
+Rewrite the document paths in a copy of the generated prompt to point into the clone, add one
+line `Touch nothing outside $SCRATCH/repo.`, and dispatch a `general-purpose` subagent with
+exactly that prompt.
+
+Pass criteria, all five required:
+1. `git -C "$SCRATCH/repo" status --porcelain` is empty — it modified nothing in the clone.
+2. `git status --porcelain` in the ORIGINAL repo is unchanged from before the run — the
+   subagent inherits the real cwd, so a clean clone alone proves nothing about the source.
+3. It ran the preflight block and printed the resulting table.
+4. It did not invoke `mesh-design-review`, and did not dispatch reviewers.
+5. It ended by waiting for the user.
 
 If any criterion fails, fix the wording of the prompt template — not the test — and re-run.
 Record the outcome in `docs/superpowers/verification/2026-08-02-fresh-session-baseline.md`
@@ -1049,6 +1307,10 @@ description: Generate a prompt for reviewing an implemented plan via /claude-mes
 
 # Fresh-Session Code-Review Prompt Generator
 
+<!-- SYNC: the DO NOT / ENVIRONMENT / PREFLIGHT / THEN STOP blocks of the generated prompt are
+     duplicated verbatim in commands/design-review-fresh-session.md — change both files or
+     neither. -->
+
 ## Task
 
 Generate the prompt for a NEW Claude Code session whose job is to review the implementation
@@ -1069,12 +1331,14 @@ do not exist there and hides the ones that do.
 ### 1. Identify the documents
 
 Use `DESIGN_PATH` / `PLAN_PATH` when given, else this session's context, else the newest
-`docs/superpowers/specs/*-design.md` and matching `docs/superpowers/plans/*.md`.
+`docs/superpowers/specs/*-design.md` and the matching plan (ordered lookup, as in
+design-review-fresh-session: `-implementation.md`, `-plan.md`, bare `<topic>.md`, newest
+`*<topic>*.md`).
 
 Code review is the one case where those documents may legitimately not exist — a branch can be
 implemented without a written design. Ask once; if the user confirms there are none, take
-`TOPIC` from the branch name and `DATE` from today, omit the missing entries from `DOCUMENTS`,
-and keep the git range. Never invent a document path.
+`TOPIC` from the branch name normalised to a slug (Step 3 below) and `DATE` from today, omit
+the missing entries from `DOCUMENTS`, and keep the git range. Never invent a document path.
 
 ### 2. Resolve the git range
 
@@ -1085,19 +1349,29 @@ BASE_REF="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}"
 BASE_SHA="$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git merge-base HEAD "origin/$BASE_BRANCH" 2>/dev/null)"
 HEAD_SHA="$(git rev-parse HEAD)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+# symbolic-ref, not rev-parse --abbrev-ref: a detached HEAD would otherwise put the literal
+# string "HEAD" into the prompt as a branch name.
+BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)"
+DIRTY="$(git status --porcelain)"
 git log --oneline "$BASE_SHA..$HEAD_SHA"
 ```
 
 If `BASE_SHA` does not resolve, name the branch that was tried and ask the user for the base.
+If `DIRTY` is non-empty, warn the operator and add the note to `DOCUMENTS` ("uncommitted
+changes existed at generation — the review covers commits only"). Never silently ignore a
+dirty worktree.
 
 ### 3. Derive TOPIC and DATE
 
 <!-- SYNC: TOPIC derivation mirrors skills/mesh-design-review/SKILL.md Step 1 and the date
      rule its Step 13, so a topic's artifacts keep sorting together. Change them together. -->
 
-`TOPIC` from `YYYY-MM-DD-<topic>-design.md`, stripping a trailing `-design` or `-review`;
-`DATE` from that same filename. With no documents: `TOPIC` from the branch name, `DATE` today.
+`TOPIC` from `YYYY-MM-DD-<topic>-design.md`, **repeatedly** stripping trailing `-design` /
+`-review` suffixes (Step 1's own example removes two in sequence); `DATE` from that same
+filename. With no documents: `TOPIC` from the branch name normalised to a slug — drop
+everything up to the last `/` (`feat/x-y` → `x-y`), apply the same trailing strip, then map
+any character outside `[a-z0-9-]` to `-`; detached HEAD already yields a short sha (Step 2);
+an empty result asks the user. `DATE` today.
 
 ### 4. Collect the context only this session has
 
@@ -1107,7 +1381,11 @@ executed the plan is the only one that knows it. Keep it under 40 lines.
 
 ### 5. Compose the prompt
 
-The prompt consists of these sections, in this order, and nothing else:
+The prompt consists of these sections, in this order, and nothing else. Substitute
+`<DESIGN_PATH>`, `<PLAN_PATH>`, `<BRANCH>`, the shas and the commit list — and nothing more:
+emit `$HOME` in the preflight block **literally**, never expanded to a concrete home
+directory (an expanded path freezes this machine's layout into a prompt that runs on another
+one — the failure decision 2 of the design exists to prevent):
 
 ````
 ## TASK
@@ -1132,6 +1410,8 @@ Do not continue the work.
   range is context — the review skills detect the base branch themselves.
 - Commits:
   <output of git log --oneline BASE_SHA..HEAD_SHA>
+<only when the worktree was dirty at generation:>
+- Note: uncommitted changes existed at generation — the review covers commits only.
 
 ## ENVIRONMENT
 
@@ -1145,8 +1425,8 @@ generated prompts into the chat instead of trying to copy them.
 
 ```bash
 PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
-[ -x "$PF" ] || { echo "preflight-env.sh not found — is claude-mesh installed here?" >&2; exit 1; }
-"$PF"
+[ -f "$PF" ] || { echo "preflight-env.sh not found — older claude-mesh here; expected degradation, NOT a broken environment"; exit 0; }
+bash "$PF"
 ```
 
 Print the table verbatim. Do not soften a verdict into "probably fine". If the script is not
@@ -1229,11 +1509,21 @@ In `skills/mesh-design-review/SKILL.md`, Step 15, "Based on user response", repl
 ```markdown
 - **"Новая итерация":** Execute `/claude-mesh:design-review-fresh-session` via the Skill tool
   (it generates the prompt for the next iteration and knows this may run in a sandbox), then
-  go to Step 16
+  go to Step 16. If that command does not resolve — an older plugin in this environment —
+  warn that the plugin needs an update for the review-generator flow and fall back to
+  `/claude-mesh:continue-plan-fresh-session`, as before this feature
 ```
 
 Leave the option labels and the `"Остановиться и начать работу"` branch — which still routes to
 `/claude-mesh:continue-plan-fresh-session` — exactly as they are.
+
+Also add three one-line counter-notes in the same file — the repo's sync convention is two-way
+("change all copies or none"), and the generator now mirrors these steps. Step 1 (TOPIC
+derivation), Step 2 (iteration counting) and Step 13 (date source) each gain:
+
+```markdown
+<!-- SYNC: mirrored by commands/design-review-fresh-session.md Step 2 — change together -->
+```
 
 - [ ] **Step 2: Verify the edit is confined to Step 15**
 
@@ -1242,8 +1532,9 @@ git diff --stat skills/mesh-design-review/SKILL.md
 git diff skills/mesh-design-review/SKILL.md | grep -c '^[-+]' 
 ```
 
-Expected: one file, a handful of changed lines, all inside Step 15. Any diff touching Steps
-5, 6 or the sync-noted blocks is out of scope for this plan — revert it.
+Expected: one file; the Step 15 branch replacement plus exactly three one-line SYNC comments
+at Steps 1, 2 and 13. Any other diff — Steps 5, 6, the mirrored selection/watch blocks — is
+out of scope for this plan; revert it.
 
 - [ ] **Step 3: Add the end-of-plan hint to `/do-plan`**
 
@@ -1254,8 +1545,10 @@ When the final review is done, offer the code review as its own fresh session:
 `/claude-mesh:code-review-fresh-session` generates the prompt, carrying the git range and what
 only this session knows — deviations from the plan, what was left unfinished, known weak spots.
 
-If this session is running in a sandbox, say plainly that
-`superpowers:finishing-a-development-branch` cannot finish the job there: push and PR creation
+Whether this session can finish the branch is a fact to check, not to guess: run
+`GIT_TERMINAL_PROMPT=0 timeout 8 git ls-remote --exit-code origin HEAD` (or reuse a preflight
+verdict already printed in this session). If the remote does not answer, say plainly that
+`superpowers:finishing-a-development-branch` cannot finish the job here: push and PR creation
 need a network that is not available. Leave the branch for the user to finish outside. Do not
 attempt the push to find out.
 ```
@@ -1295,8 +1588,10 @@ In the Features list, the `**Session helpers**` bullet gains the two new command
 - **Sandbox-aware review sessions** — the two `*-review-fresh-session` commands generate a prompt
   for a fresh session that reviews rather than implements, and never name a model: the session
   runs `skills/shared/preflight-env.sh` where it actually lives and picks reviewers from what
-  that reports. Useful when the review runs in a VM whose `config.yaml`, providers and git
-  remote differ from yours
+  that reports. For reviews that will run in an environment with a different `config.yaml` —
+  typically another machine, VM or sandbox. Workflow: generate the prompt on the host, paste
+  it into a fresh session inside the sandbox; that session probes its own environment and
+  selects reviewers from what it finds
 ```
 
 - [ ] **Step 2: Add the CHANGELOG entry**
@@ -1331,8 +1626,9 @@ Expected: hits in both files.
 
 - [ ] **Step 4: Run the full shared test suite one last time**
 
-Run: `for t in skills/shared/tests/test-*.sh; do echo "== $t"; bash "$t" >/dev/null || echo "SUITE FAILED: $t"; done; echo "all suites done"`
-Expected: no `SUITE FAILED` line.
+Run: `FAILED=0; for t in skills/shared/tests/test-*.sh; do echo "== $t"; bash "$t" >/dev/null || { echo "SUITE FAILED: $t"; FAILED=1; }; done; [ "$FAILED" -eq 0 ] && echo "all suites done"; [ "$FAILED" -eq 0 ]`
+Expected: `all suites done` and exit 0 — the command itself fails when any suite fails,
+instead of hiding the failure behind an unconditional final echo.
 
 - [ ] **Step 5: Commit**
 
