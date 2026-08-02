@@ -219,7 +219,10 @@ both sides the moment it is written.
 ## `skills/shared/preflight-env.sh`
 
 **Invocation:** no arguments. `PREFLIGHT_HTTP_TIMEOUT` (default 5) and `PREFLIGHT_GIT_TIMEOUT`
-(default 8) override the per-probe budgets.
+(default 8) override the per-probe budgets. `PREFLIGHT_CURL_BIN` (default `curl`) and
+`PREFLIGHT_GIT_BIN` (default `git`) name the binaries — the probe resolves both through a
+variable so that "the tool is absent" is a testable state rather than an exercise in PATH
+surgery, and so an environment with an oddly-installed curl stays usable.
 
 **Output:** one line per capability, `name`, status, detail — fixed order, so a test can assert
 on it:
@@ -227,8 +230,9 @@ on it:
 ```
 config           OK           /home/u/.claude/plugins/data/claude-mesh-zinin/config.yaml
 builtin-claude   OK           always available, needs no config section
+claude-models    OK           opus, fable
 codex            NO-NETWORK   CLI present, api.openai.com unreachable in 5s (heuristic)
-gemini           MISSING      not on PATH
+gemini           MISSING      no gemini: section in config — the UI will not offer it
 provider:zai     OK           HTTP 200, token accepted
 provider:ollama  NO-NETWORK   http://localhost:11434 timed out after 5s
 git-remote       NO-NETWORK   git ls-remote origin timed out after 8s
@@ -240,14 +244,23 @@ SUMMARY available: claude, zai/glm, zai/glm-air
 SUMMARY unavailable: codex (NO-NETWORK), gemini (MISSING), ollama/kimi (NO-NETWORK)
 ```
 
-Order: `config`, `builtin-claude`, `curl` (only when missing), `codex`, `gemini`,
-`provider:*` in config order, `git-remote`, `gh`, `glab`, `clipboard`, then the two `SUMMARY`
-lines.
+Order: `config`, `builtin-claude`, `claude-models`, `curl` (only when missing), `codex`,
+`gemini`, `provider:*` in config order, `git-remote`, `gh`, `glab`, `clipboard`, then the two
+`SUMMARY` lines.
 
 **Status set (closed):** `OK`, `MISSING` (tool or section absent), `NO-NETWORK` (present but
 its endpoint did not answer), `AUTH-FAILED` (endpoint answered, credentials rejected),
-`SKIPPED` (not probed — e.g. providers when there is no config), `UNKNOWN` (the probe could
-not decide, e.g. `curl` absent).
+`INVALID` (config only — the validator rejected it), `SKIPPED` (not probed — e.g. providers
+when there is no config), `UNKNOWN` (the probe could not decide, e.g. `curl` absent).
+
+**`codex` / `gemini` rows report what the selection UI will actually offer**, which is a
+config question before it is a network one: `mesh-review` Step 2 and `mesh-design-review`
+Step 5.2 show those options only when `get-flag has_codex` / `has_gemini` returns 1. A row
+therefore reads `MISSING — no codex: section in config` when the section is absent, whatever
+the CLI on PATH says, and only reaches the network heuristic when the gate is open.
+`claude-models` reports the sandbox's `claude.models` catalog (or `MISSING`, meaning one
+claude reviewer on the dispatch model) — a local read, no network, and the operator otherwise
+learns how many Claude reviewers exist there only after entering the selection UI.
 
 **Reuse, do not reimplement:** providers are probed through the existing
 `skills/ext-claude-exec/token-precheck.sh` (exit 0 → `OK`, 5 → `AUTH-FAILED`, 6 →
@@ -263,7 +276,13 @@ found)`. All three exit 0: they are facts about the environment, not failures of
 **Secrets:** `config-loader.sh export <model>` writes an env file containing the provider
 token and prints its path. The probe sources it in a subshell and deletes it from a
 `trap … EXIT`; no byte of that file reaches stdout or stderr. This is a test assertion, not an
-intention.
+intention. The prechecks are invoked through `env -u SKIP_TOKEN_PRECHECK`: that variable
+exists so a caller can skip the check, and inherited from the surrounding shell it would turn
+every provider row into a false `OK`.
+
+**Providers with no usable token:** `export` fails (rc≠0) when the token is still
+`REPLACE_ME`. That is `MISSING — token not configured for this provider`, not a network
+verdict.
 
 **Cost:** probes are sequential — five providers is a ~35 s worst case. That is the price of
 one check, against six reviewers hanging for minutes.
