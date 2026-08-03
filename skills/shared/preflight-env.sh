@@ -51,6 +51,10 @@ SKIP_NET="${PREFLIGHT_SKIP_NETWORK:-0}"
 # exits 0" covers completed runs only. (This is also why probe_provider must never run inside
 # a command substitution: CURRENT_ENVF assigned in a subshell never reaches this trap.)
 CURRENT_ENVF=""
+# SC2317: reached only through the traps below, and since the summary section ends the file in
+# an explicit `exit 0` shellcheck 0.9's reachability pass stops seeing that. Deleting the body
+# on the strength of that note would leave a mode-600 token file behind on every interrupt.
+# shellcheck disable=SC2317
 cleanup() { [ -n "$CURRENT_ENVF" ] && rm -f "$CURRENT_ENVF"; return 0; }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
@@ -120,6 +124,10 @@ row config "$CONFIG_STATUS" "$CONFIG_DETAIL"
 row builtin-claude OK "needs no config section (orchestrators still need config.yaml)"
 
 CLAUDE_MODELS=""
+# A rejected catalog and an absent one both leave CLAUDE_MODELS empty, and the summary at the
+# bottom has to tell them apart: "no catalog" means one claude reviewer on the dispatch model,
+# "rejected" means the orchestrator exits on this very read and offers nothing at all.
+CLAUDE_CATALOG_OK=1
 if [ "$CONFIG_STATUS" = "OK" ]; then
     CM_ERR="$(mktemp)"
     CLAUDE_MODELS="$("$LOADER" list-claude-models 2>"$CM_ERR")"; CM_RC=$?
@@ -127,6 +135,7 @@ if [ "$CONFIG_STATUS" = "OK" ]; then
         # mesh-review Step 1 refuses to start on this same read — "no catalog" would be a lie.
         row claude-models INVALID "$(head -1 "$CM_ERR")"
         CLAUDE_MODELS=""
+        CLAUDE_CATALOG_OK=0
     elif [ -n "$CLAUDE_MODELS" ]; then
         row claude-models OK "$(printf '%s' "$CLAUDE_MODELS" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
     else
@@ -398,3 +407,113 @@ if [ -n "$CLIP" ]; then
 else
     row clipboard MISSING "no xclip/xsel/pbcopy — print generated prompts into the chat"
 fi
+
+# ---------------------------------------------------------------- summary
+# The two lines the reading session actually acts on. Names are spelled exactly as the
+# selection UI of /mesh-review and /mesh-design-review spells them, so nothing has to be
+# mapped: `claude:opus`-style entries per catalog model (plain `claude` only in the
+# no-catalog fallback — the confirmation page uses the same spelling), `codex`, `gemini`,
+# and model ids like `zai/glm`.
+AVAIL=""
+UNAVAIL=""
+
+# TWO reads decide whether the orchestrators ever REACH their selection step, and neither of
+# them belongs to a single reviewer: config.yaml (mesh-review Step 0/1, mesh-design-review
+# Step 5.0) and the claude: catalog (commands/mesh-review.md:71 and
+# skills/mesh-design-review/SKILL.md:256 both `|| exit 1` on the same list-claude-models read
+# the claude-models row reports above). Either one exits BEFORE anything is offered, so either
+# one makes EVERY reviewer unselectable — including a provider whose endpoint just answered.
+# Offering one here sends the reading session into a dead end it cannot debug from the table.
+BLOCKER=""
+if [ "$CONFIG_STATUS" != "OK" ]; then
+    BLOCKER="config.yaml required for the orchestrators to start"
+elif [ "$CLAUDE_CATALOG_OK" = 0 ]; then
+    BLOCKER="the claude: section is rejected and both orchestrators exit on that read"
+fi
+
+add_unavail() { if [ -z "$UNAVAIL" ]; then UNAVAIL="$1"; else UNAVAIL="$UNAVAIL, $1"; fi; }
+add_avail() {
+    # One switch instead of one test per reviewer type: while a blocker stands nothing is
+    # selectable, whatever the individual rows say. Redirecting HERE rather than at each call
+    # site means a reviewer type added to this section later cannot forget the gate.
+    if [ -n "$BLOCKER" ]; then add_unavail "$1 (blocked)"; return 0; fi
+    if [ -z "$AVAIL" ]; then AVAIL="$1"; else AVAIL="$AVAIL, $1"; fi
+}
+
+# claude is unconditionally available as a REVIEWER — it needs no config section of its own —
+# but see BLOCKER above: promising it in an environment where the orchestrator exits before the
+# selection UI is the one thing this line must never do. The one-line fix is hinted at the end.
+if [ -z "$BLOCKER" ]; then
+    if [ -n "$CLAUDE_MODELS" ]; then
+        while IFS= read -r CM; do
+            [ -n "$CM" ] && add_avail "claude:$CM"
+        done <<< "$CLAUDE_MODELS"
+    else
+        add_avail claude
+    fi
+else
+    add_unavail "claude ($BLOCKER)"
+fi
+
+# if/else, not `A && add_avail || add_unavail`: in that form C also runs when B fails, so the
+# day add_avail grows a non-zero path a reviewer gets listed on BOTH lines. Same reason cli_row
+# spells out its progress gate rather than chaining it (SC2015).
+if [ "$CODEX_STATUS"  = "OK" ]; then add_avail codex;  else add_unavail "codex ($CODEX_STATUS)";   fi
+if [ "$GEMINI_STATUS" = "OK" ]; then add_avail gemini; else add_unavail "gemini ($GEMINI_STATUS)"; fi
+
+if [ -n "$MODELS" ]; then
+    while IFS='|' read -r MID _LABEL; do
+        [ -n "$MID" ] || continue
+        PROV="${MID%%/*}"
+        PSTATUS="${PROBED_STATUS[$PROV]:-UNKNOWN}"
+        if [ "$PSTATUS" = "OK" ]; then add_avail "$MID"; else add_unavail "$MID ($PSTATUS)"; fi
+    done <<< "$MODELS"
+fi
+
+echo
+printf 'SUMMARY available: %s\n' "${AVAIL:-—}"
+printf 'SUMMARY unavailable: %s\n' "${UNAVAIL:-—}"
+# PREFLIGHT_SKIP_NETWORK turns every network verdict into UNKNOWN, and UNKNOWN is not a
+# degraded OK: on a fast re-run a perfectly working machine reports as "claude only". The
+# reading session did not set that flag and cannot see it from the table, so the summary says
+# so itself. SUMMARY-prefixed like the lines above — that is what the report's non-row prose
+# is prefixed with, and what the suite's closed-set gate skips.
+if [ "$SKIP_NET" = 1 ]; then
+    printf 'SUMMARY note: PREFLIGHT_SKIP_NETWORK was set, so nothing was probed — every (UNKNOWN) above is unestablished, not broken; re-run without it before concluding a reviewer is unusable\n'
+fi
+# The presets, in the same UI spelling — "default mode is safe here" becomes a mechanical
+# check: every name on a defaults line must appear in SUMMARY available. jq is present
+# whenever CONFIG_STATUS=OK (the toolchain gate ran first).
+for PRESET in design_review code_review; do
+    DLIST="—"
+    if [ "$CONFIG_STATUS" = "OK" ] && DJ="$("$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
+        DLIST="$("$JQ_BIN" -r '
+            ((.builtin // []) | map(select(. != "claude"))) +
+            (if ((.builtin // []) | index("claude")) then
+                 (if ((.claude_models // []) | length) > 0
+                  then (.claude_models | map("claude:" + .))
+                  else ["claude"] end)
+             else [] end) +
+            (.models // []) | join(", ")' <<<"$DJ")"
+        # "—" alone would be read as "not answered", which is what the no-config case above
+        # means. A preset that WAS read and is empty is a different fact: `default` mode will
+        # refuse to start (mesh-design-review Step 5.1), and the fix is to write the preset.
+        [ -n "$DLIST" ] || DLIST="— (preset empty)"
+    fi
+    printf 'SUMMARY defaults %s: %s\n' "$PRESET" "$DLIST"
+done
+if [ -n "$BLOCKER" ]; then
+    DATA_DIR="$("$LOADER" data-dir 2>/dev/null)"
+    # Never print a bare "/config.yaml": data-dir is skipped entirely when the loader is
+    # missing or its toolchain is dead, and a path that starts at the filesystem root is a
+    # fix instruction pointing at a file nobody has.
+    [ -n "$DATA_DIR" ] || DATA_DIR="<plugin-data-dir>"
+    if [ "$CONFIG_STATUS" != "OK" ]; then
+        printf 'hint: cp config.example.yaml %s/config.yaml — the review skills need it even for the built-in claude reviewer\n' \
+            "$DATA_DIR"
+    else
+        printf 'hint: fix the claude: section of %s/config.yaml (the claude-models row above carries the validator'"'"'s reason) — both orchestrators exit on that read before offering anything\n' \
+            "$DATA_DIR"
+    fi
+fi
+exit 0

@@ -469,6 +469,146 @@ for TOOLROW in gh glab clipboard; do
         "$(grep -Ec '^(OK|MISSING)$' <<<"$(field "$TOOLROW" "$OUT")")"
 done
 
+echo "== Task 4: SUMMARY =="
+
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
+UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
+assert_match "claude available when config is usable" "claude"      "$AVAIL"
+assert_match "reachable provider expands to model ids" "zai/glm"    "$AVAIL"
+assert_match "…for every model of that provider"  "ollama/kimi"     "$AVAIL"
+assert_match "…including the second one"          "ollama/deepseek" "$AVAIL"
+assert_match "unconfigured codex listed as unavailable" "codex (MISSING)" "$UNAVAIL"
+assert_match "defaults lines present"             "SUMMARY defaults design_review:" "$OUT"
+# valid-full.yaml has no defaults: section at all. A bare "—" would be ambiguous with the
+# no-config run further down, where the preset was never read — this fixture DID read it and
+# found it empty, and a session deciding whether `default` mode is usable must tell the two
+# apart. Both presets are asserted: reading one and printing it twice would pass on one line.
+assert_match "empty preset says which kind of empty" "SUMMARY defaults design_review: — (preset empty)" "$OUT"
+assert_match "…and code_review is read separately"  "SUMMARY defaults code_review: — (preset empty)"   "$OUT"
+# The one-line fix belongs to a broken environment only. Printed on every run it becomes noise
+# the reading session learns to skip, and here it would contradict the healthy rows above it.
+assert_no_match "no fix hint when the config is usable" "hint:" "$OUT"
+# Everything WAS probed here, so the skip-network note must be absent. Without this assertion
+# the note below could be unconditional and no scenario would notice.
+assert_no_match "…and no skip-network note on a probed run" "SUMMARY note:" "$OUT"
+
+# The catalog expands into the UI's own spelling — decision 5's "nothing has to be mapped"
+# holds for Claude reviewers too (valid-claude-models.yaml carries opus + fable).
+run_probe valid-claude-models.yaml
+assert_match "catalog expands as claude:<model>"  "claude:opus, claude:fable" "$(grep '^SUMMARY available:' <<<"$OUT")"
+
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000
+AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
+UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
+assert_match "claude survives a dead network"     "claude"          "$AVAIL"
+assert_no_match "dead provider not offered"       "zai/glm"         "$AVAIL"
+assert_match "…and is named with its verdict"     "zai/glm (NO-NETWORK)" "$UNAVAIL"
+
+run_probe none
+assert_match "no config -> nothing selectable"       "SUMMARY available: —" "$OUT"
+assert_match "…claude named with the reason"         "claude (config.yaml required" "$OUT"
+assert_match "…and the one-line fix is hinted"       "hint: cp config.example.yaml" "$OUT"
+# The presets cannot be read without a config, and saying so is not the same as saying the
+# preset is empty — the loader was never asked.
+assert_match "…and the preset lines degrade, not crash" "SUMMARY defaults design_review: —" "$OUT"
+assert_match "…both of them"                            "SUMMARY defaults code_review: —"   "$OUT"
+
+# A populated defaults: preset — the only way to exercise the expansion end to end. The two
+# presets differ on purpose: reading design_review twice, or reading the wrong one, cannot pass
+# both assertions. This is also the first exercise of `get-defaults code_review`, which the plan
+# left flagged for verification here.
+run_probe valid-defaults-preset.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
+assert_match "design_review preset in UI spelling" \
+    "SUMMARY defaults design_review: codex, claude:opus, zai/glm" "$OUT"
+assert_match "code_review is a different preset, read separately" \
+    "SUMMARY defaults code_review: claude:fable, zai/glm" "$OUT"
+# THE point of the defaults lines: "is `default` mode safe here" must be a membership check a
+# session can do by eye, not a mapping exercise. Every name on either preset line must appear
+# verbatim on the available line — asserted mechanically, so a future spelling drift on either
+# side fails here instead of being discovered by a session that trusted the summary.
+MISSING_FROM_AVAIL=""
+for DLINE in design_review code_review; do
+    while read -r DNAME; do
+        [ -n "$DNAME" ] || continue
+        case "$AVAIL" in
+            *"$DNAME"*) ;;
+            *) MISSING_FROM_AVAIL="$MISSING_FROM_AVAIL $DLINE/$DNAME" ;;
+        esac
+    done <<<"$(grep "^SUMMARY defaults $DLINE:" <<<"$OUT" \
+               | sed 's/^SUMMARY defaults [a-z_]*: //' | tr ',' '\n' | sed 's/^ *//; s/ *$//')"
+done
+assert_eq "every default name is spelled as the available line spells it" "" "$MISSING_FROM_AVAIL"
+
+# The no-catalog fallback of the same expansion: `builtin: [claude]` with no claude.models
+# means ONE reviewer literally named `claude` (mesh-design-review Step 5.1), and that is the
+# spelling the available line uses too. Silently dropping claude here would tell a session that
+# `default` mode runs without the reviewer it actually runs first.
+run_probe valid-defaults-no-catalog.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "no catalog -> the preset says plain claude" \
+    "SUMMARY defaults design_review: claude, zai/glm" "$OUT"
+assert_match "…and a preset of claude alone is not empty" \
+    "SUMMARY defaults code_review: claude" "$OUT"
+assert_match "…which is exactly how the available line spells it" \
+    "SUMMARY available: claude, zai/glm" "$OUT"
+
+# A fast re-run probes nothing, so every network verdict is UNKNOWN. UNKNOWN is not a degraded
+# OK — treating it as unavailable reports a fully working machine as "claude only", and the
+# reading session cannot see the flag it did not set. The summary has to say so itself.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" PREFLIGHT_SKIP_NETWORK=1
+AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
+UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
+assert_eq   "skip-network still offers claude"      "SUMMARY available: claude" "$AVAIL"
+assert_match "…and names the unprobed model UNKNOWN" "zai/glm (UNKNOWN)"        "$UNAVAIL"
+assert_match "…with the summary saying nothing was probed" "SUMMARY note: PREFLIGHT_SKIP_NETWORK" "$OUT"
+
+# A rejected `claude:` section is not just the claude-models row: commands/mesh-review.md:71 and
+# skills/mesh-design-review/SKILL.md:256 both `|| exit 1` on that same list-claude-models read,
+# BEFORE any reviewer is offered. So nothing is selectable — not claude, not a reachable model —
+# and offering any of it sends the session into the dead end the config gate exists to prevent.
+run_probe invalid-claude-scalar.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
+assert_eq   "rejected claude: catalog -> nothing selectable" \
+    "SUMMARY available: —" "$(grep '^SUMMARY available:' <<<"$OUT")"
+assert_match "…claude named with the orchestrator's own reason" "claude (the claude: section is rejected" "$UNAVAIL"
+assert_match "…and a REACHABLE model is blocked, not offered"   "zai/glm (blocked)" "$UNAVAIL"
+assert_match "…with a fix that points at the row above"         "hint: fix the claude: section" "$OUT"
+
+# SUMMARY must agree with the per-row verdicts — the one assertion that catches a
+# PROBED_STATUS desync on any future edit, instead of leaving it to a human eye.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
+UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
+BAD_SUMMARY=""
+while read -r PNAME PSTAT _; do
+    P="${PNAME#provider:}"
+    if [ "$PSTAT" = OK ]; then
+        case "$UNAVAIL" in *" $P/"*|*": $P/"*) BAD_SUMMARY="$BAD_SUMMARY $P" ;; esac
+    else
+        case "$AVAIL" in *" $P/"*|*": $P/"*) BAD_SUMMARY="$BAD_SUMMARY $P" ;; esac
+    fi
+done <<<"$(grep '^provider:' <<<"$OUT")"
+assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
+
+# Row order is part of the contract — a reader scanning top-down meets the config state, then
+# the reviewers, then the environment, then the summary. This assertion is the one place the
+# whole table is checked at once, so it also catches a block appended in the wrong place.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
+assert_eq "row order is the documented one" \
+  "plugin config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard " \
+  "$ORDER"
+
+# Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines
+# every generated prompt tells its session to read must exist in EVERY scenario, including the
+# ones whose answer is "nothing". Per-scenario assertions only cover the runs someone thought
+# about; by here ALL_OUT holds all of them, broken toolchain and missing config included.
+assert_eq "every scenario printed exactly one 'SUMMARY available:'" \
+    "$PROBE_N" "$(grep -c '^SUMMARY available: ' <<<"$ALL_OUT")"
+assert_eq "…and exactly one 'SUMMARY unavailable:'" \
+    "$PROBE_N" "$(grep -c '^SUMMARY unavailable: ' <<<"$ALL_OUT")"
+
 # ============================================================================
 # FINAL GATES — must stay LAST. Tasks 2-4 append their scenario sections ABOVE
 # this banner. Both gates read every scenario's output, not just the last one.
