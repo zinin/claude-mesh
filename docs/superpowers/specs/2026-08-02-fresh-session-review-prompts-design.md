@@ -64,7 +64,7 @@ This is what makes one prompt correct in two environments. It also means generat
 machine where claude-mesh has no config at all — the generating session and the sandbox are
 configured independently, and neither is authoritative about the other.
 
-### 2. The probe is discovered by glob, never by `${CLAUDE_PLUGIN_ROOT}`
+### 2. The probe is discovered working-copy-first, then by glob — never by `${CLAUDE_PLUGIN_ROOT}`
 
 The harness substitutes that placeholder into a *command file's text* (`commands/mesh-review.md`
 Step 1 documents this), so baking it into the generated prompt would freeze the **host's**
@@ -72,12 +72,19 @@ plugin path into a file that is executed on another machine. The prompt therefor
 discovery block:
 
 ```bash
-PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
+PF="./skills/shared/preflight-env.sh"
+[ -f "$PF" ] || PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
 ```
 
-Version-sorted for the reason `commands/mesh-review.md` already records: a plain
-`find | head -1` returns directory order, and was observed picking a stale cached 0.4.0 over
-an installed 0.4.2.
+The working-copy candidate comes first for two reasons: when the repo under review is
+claude-mesh itself, the freshest probe is by construction right there — and it is the only
+thing that lets the plan's own GREEN/ACCEPTANCE runs execute the probe at all before the
+feature is released (no cache contains it yet). Version-sorted for the reason
+`commands/mesh-review.md` already records: a plain `find | head -1` returns directory order,
+and was observed picking a stale cached 0.4.0 over an installed 0.4.2. Dev loads
+(`--plugin-dir`) are out of scope for a pasted prompt — the find sees only the cache; the
+probe's own `plugin` row names the version and path that actually ran, so a stale pick is
+visible instead of silent.
 
 ### 3. The prompt is a recipe; it holds exactly one prohibition block, and that block comes second
 
@@ -131,9 +138,11 @@ starts repairing the probe instead of reporting the environment.
 Two failures are expected often enough to be part of the design rather than the error table:
 
 - **The sandbox runs an older plugin with no `preflight-env.sh`.** The discovery block prints
-  a named error; the prompt instructs the session to report it, treat only `claude` as
-  available (the built-in reviewer needs no config section), and ask the operator whether to
-  proceed on that alone or update the plugin inside the sandbox.
+  a named message and exits 0; the prompt instructs the session to report it and ask the
+  operator whether to update the plugin inside the sandbox or proceed on the built-in `claude`
+  reviewer alone — offering the latter only after checking that a `config.yaml` exists in the
+  plugin data dir: claude needs no config section, but the review skills refuse to start
+  without a usable config.yaml at all.
 - **No clipboard utility.** `xclip` / `xsel` / `pbcopy` are usually absent in a sandbox, and
   iterations 2..N generate their prompt *there*. The generators print the prompt in full and
   name the file path; a missing clipboard is a note, never a failure.
@@ -168,11 +177,15 @@ clipboard utility exists, print generated prompts into the chat instead.
 
 ## PREFLIGHT — run this first
 ```bash
-PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
+PF="./skills/shared/preflight-env.sh"
+[ -f "$PF" ] || PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$PF" ] || { echo "preflight-env.sh not found — older claude-mesh here; expected degradation, NOT a broken environment"; exit 0; }
 bash "$PF"
 ```
-Print the table verbatim. Do not soften a verdict into "probably fine". The not-found branch
+Print the table verbatim. Do not soften a verdict into "probably fine". `OK` on the codex /
+gemini rows is a heuristic — binary present, section valid, public endpoint answered; it is
+NOT an auth check and does not prove the CLI points at that endpoint. `OK` on gh / glab means
+presence on PATH only. The not-found branch
 exits 0 on purpose: an old plugin is a fact about the environment, not a failed tool call —
 a non-zero exit would send the session repairing the probe instead of following the
 degradation instructions. (`bash "$PF"`, not `"$PF"`: a shared-folder mount may drop the
@@ -191,7 +204,8 @@ sharp edges. <= 40 lines. Not a retelling of the documents.
 ## WHEN THE USER SAYS GO
 Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<path> PLAN_PATH=<path> TOPIC=<topic>`
 (code-review tail: `/claude-mesh:mesh-review`), selecting only reviewers the preflight
-marked OK.
+marked OK. The `default` argument is allowed only when every entry on the matching
+`SUMMARY defaults` line appears in `SUMMARY available`; otherwise invoke interactively.
 ````
 
 ### Tail — `design-review-fresh-session`
@@ -254,13 +268,19 @@ a testable state rather than an exercise in PATH surgery. `PREFLIGHT_CURL_BIN` g
 probe's **own** HTTP checks (the codex / gemini heuristics): the reused prechecks resolve
 `curl` from `PATH`, so when the resolved curl is absent the probe does not invoke them at all —
 provider rows report `UNKNOWN — no curl` instead of a fake network verdict.
+`PREFLIGHT_SKIP_NETWORK=1` skips every network probe (provider prechecks, the codex / gemini
+heuristics, `git ls-remote`): local rows compute instantly and the skipped ones read
+`UNKNOWN skipped by PREFLIGHT_SKIP_NETWORK` — built for re-runs inside a long session. Each
+network probe announces itself on stderr (`probing zai…`), so the sequential wait never reads
+as a hang; stdout stays table-only.
 
 **Output:** one line per capability, `name`, status, detail — fixed order, so a test can assert
 on it:
 
 ```
+plugin           OK           0.7.0 @ /home/u/.claude/plugins/cache/zinin/claude-mesh/0.7.0
 config           OK           /home/u/.claude/plugins/data/claude-mesh-zinin/config.yaml
-builtin-claude   OK           always available, needs no config section
+builtin-claude   OK           needs no config section (orchestrators still need config.yaml)
 claude-models    OK           opus, fable
 codex            NO-NETWORK   CLI present, api.openai.com unreachable in 5s (heuristic)
 gemini           MISSING      no gemini: section in config — the UI will not offer it
@@ -273,14 +293,18 @@ clipboard        MISSING      no xclip/xsel/pbcopy
 
 SUMMARY available: claude:opus, claude:fable, zai/glm, zai/glm-air
 SUMMARY unavailable: codex (NO-NETWORK), gemini (MISSING), ollama/kimi (NO-NETWORK)
+SUMMARY defaults design_review: claude:opus, claude:fable, zai/glm
+SUMMARY defaults code_review: —
 ```
 
-Order: `yq` / `jq` (only when missing), `config`, `builtin-claude`, `claude-models`, `curl`
+Order: `plugin`, then `yq` / `jq` (only when missing), `config`, `builtin-claude`, `claude-models`, `curl`
 (only when missing), `ext-claude-deps` (only when something is missing), `codex`, `gemini`,
 `provider:*` in order of first appearance in `models` — a provider with no models gets no row,
 there is nothing it could offer the selection UI; the aggregate row `provider` replaces
 `provider:*` when providers are not probed at all (no usable config, or no models) — then
-`git-remote`, `gh`, `glab`, `clipboard`, and the two `SUMMARY` lines.
+`git-remote`, `gh`, `glab`, `clipboard`, and the `SUMMARY` block: `available`, `unavailable`,
+then one `defaults <preset>` line per preset in the same UI spelling — so "is `default` mode
+safe here" is a mechanical membership check against `available`, not a guess.
 
 **Status set (closed):** `OK`, `MISSING` (tool or section absent), `NO-NETWORK` (present but
 its endpoint did not answer), `AUTH-FAILED` (endpoint answered, credentials rejected),
@@ -313,10 +337,27 @@ same read `mesh-review` Step 1 refuses to start on — never conflated with an a
 (`PREFLIGHT_YQ_BIN` / `PREFLIGHT_JQ_BIN`): a missing tool prints its own `MISSING` row and
 `config UNKNOWN cannot evaluate — <tool> not installed`, providers `SKIPPED`, and the loader
 is never invoked — rc=1 from a dead toolchain must not impersonate a rejected config. With the
-toolchain present: loader rc=2 → `config MISSING`, providers `SKIPPED`, `SUMMARY available`
-still contains `claude`. Loader rc=1 → `config INVALID <first line of the validator's message>`,
-providers `SKIPPED`. Loader script itself not found → `config MISSING (config-loader.sh not
-found)`. All of these exit 0: they are facts about the environment, not failures of the probe.
+toolchain present: loader rc=2 → `config MISSING`, providers `SKIPPED`. Loader rc=1 →
+`config INVALID <first line of the validator's message>`, providers `SKIPPED`. Loader script
+itself not found → `config MISSING (config-loader.sh not found)`. All of these exit 0: they
+are facts about the environment, not failures of the probe.
+
+Whenever `config` is not `OK`, `SUMMARY available` prints `—` and claude moves to
+`SUMMARY unavailable` with the reason (`config.yaml required for the orchestrators to
+start`): the built-in reviewer itself needs no config section, but **neither orchestrator
+starts without a usable config.yaml** — `mesh-review` Step 0/1 and `mesh-design-review`
+Step 5.0 exit before any reviewer can be selected, so promising `claude` there would send the
+session into a dead end. After the SUMMARY the probe prints the one-line fix:
+`hint: cp config.example.yaml <data-dir>/config.yaml`.
+
+`config OK` asserts exactly one thing: **the orchestrator will start here.** `list-models`
+alone validates only `providers` and `models`, while Step 5.0 also dies on `defaults`,
+`runtime` and `claude` — so after rc=0 the probe additionally runs
+`get-defaults design_review` and `get-flag dispatch_model` (the `claude` section is already
+covered by this probe's own `list-claude-models` read); the first failure turns the row into
+`config INVALID <first stderr line>`, providers `SKIPPED`. The `codex` / `gemini` sections are
+deliberately **not** part of this gate: a broken optional section fails its own row through
+the typed-getter gate, never the whole environment.
 
 **Secrets:** `config-loader.sh export <model>` writes an env file containing the provider
 token and prints its path. The probe sources it in a subshell and deletes it from a
@@ -335,8 +376,8 @@ interrupt is not a verdict; "every verdict exits 0" covers completed runs only.
 
 **Providers with no usable token:** `export` fails (rc≠0) when the token is still
 `REPLACE_ME`. That is `MISSING — token not configured for this provider`, not a network
-verdict. `export` also dies on things that are no token problem at all — a `runtime:` section
-its validator rejects, a model id it cannot find, a failed `mktemp` — so the probe captures
+verdict. `export` also dies on things that are no token problem at all — a model id it cannot
+find, a failed `mktemp` (`runtime:` is already gated at the `config` row) — so the probe captures
 its stderr: a message naming the token / `REPLACE_ME` stays `MISSING`, anything else becomes
 `UNKNOWN — export refused: <first stderr line>` rather than a lie about the token.
 
@@ -344,7 +385,8 @@ its stderr: a message naming the token / `REPLACE_ME` stays `MISSING`, anything 
 anthropic-kind and ~2×`PREFLIGHT_HTTP_TIMEOUT` for ollama-kind (reachability + tags, one
 attempt each under the probe's env knobs), so five providers land in the 25–50 s range at
 default budgets, plus up to `PREFLIGHT_GIT_TIMEOUT` for the remote. That is still the price of
-one check, against six reviewers hanging for minutes.
+one check, against six reviewers hanging for minutes — and it is paid once: re-runs use
+`PREFLIGHT_SKIP_NETWORK=1` and answer in about a second from local facts alone.
 
 **Dependencies:** bash 4.0+, `timeout` (GNU coreutils, already required by this repo);
 Python-yq and `jq` are hard requirements of the loader and are probed **before** it — their
@@ -366,7 +408,10 @@ invokes `/claude-mesh:design-review-fresh-session` instead of
 `/claude-mesh:continue-plan-fresh-session`. Option labels and the second branch are unchanged.
 
 **`commands/do-plan.md`, Step 7 "End of plan".** After the final full-implementation review,
-suggest `/claude-mesh:code-review-fresh-session`. State plainly that inside a sandbox
+suggest `/claude-mesh:code-review-fresh-session` — **before**
+`superpowers:finishing-a-development-branch`, and when the user takes the review, finishing
+waits (push, PR and local merge alike: a merged-and-deleted branch cannot absorb review
+fixes) until the external review has run. State plainly that inside a sandbox
 `superpowers:finishing-a-development-branch` cannot finish the job — push and PR creation need
 the network that is not there — so the branch is left for the operator to finish outside.
 Short paragraph; no behavioural change to the rest of `/do-plan`.
@@ -377,8 +422,8 @@ Short paragraph; no behavioural change to the rest of `/do-plan`.
 |---|---|
 | Design or plan document not found | Ask the user for the path, as `exec-plan-fresh-session` does. Never invent one |
 | No `*-review-iter-*.md` files | Iteration 1 |
-| `preflight-env.sh` not found in the sandbox | Prompt-side: report, treat only `claude` as available, ask whether to proceed |
-| `config.yaml` absent or invalid in the sandbox | Probe reports it and continues; `claude` remains available |
+| `preflight-env.sh` not found in the sandbox | Prompt-side: report; offer claude-only review only when a `config.yaml` exists in the data dir (the orchestrators refuse to start without one); otherwise ask to update the plugin or create the config first |
+| `config.yaml` absent or invalid in the sandbox | Probe reports it and continues; `SUMMARY available` prints `—`, claude is listed unavailable with the reason, and a `hint:` line names the fix (`cp config.example.yaml …`) |
 | Clipboard utility absent | Print the prompt and its path; note it, do not fail |
 | `git` absent, or no `origin` remote | `git-remote MISSING (no remote configured)`; code-review generator falls back to `master` and says so in the prompt |
 | `/claude-mesh:design-review-fresh-session` not found (sandbox on an older plugin) | `mesh-design-review` Step 15 falls back to `/claude-mesh:continue-plan-fresh-session` with a warning that the plugin needs an update for the review-generator flow |
@@ -396,7 +441,9 @@ Per `superpowers:writing-skills`, the guidance is tested before it is trusted.
    left behind.
 2. **Generator output test** — run each command against fixture documents and assert the
    section order, that `DO NOT` precedes `DOCUMENTS`, and that no model or provider id from
-   the local config appears anywhere in the output.
+   the local config appears anywhere in the output. Until the plugin is reinstalled the slash
+   names do not resolve — the command files are prompts, and the implementing session
+   executes their steps directly from the working copy.
 3. **RED baseline, then GREEN** — dispatch a subagent with a naive prompt ("here is the design
    and the plan, review them in this fresh session") and record verbatim what it does: starts
    editing, assumes a reviewer set, offers to push. Then the same scenario with the generated
@@ -421,6 +468,11 @@ Per `superpowers:writing-skills`, the guidance is tested before it is trusted.
 - **`/mesh-review` has no cross-run memory of earlier reviews.** By decision, the code-review
   prompt does not carry links to previous review files: if that matters, it is the skill's job
   to find them, not the prompt's.
+- **Provider probes stay sequential by design.** Parallelising them (wall-clock ≈ one probe)
+  is deferred until the trap/cleanup contract has soaked: N background probes each holding a
+  token env file under interruption is exactly the failure class this review removed
+  (probe_provider/command-substitution). The shipped mitigations are the stderr progress line
+  and `PREFLIGHT_SKIP_NETWORK=1` for re-runs.
 - **The shared-folder mount means commits land in the host repository.** Nothing needs to be
   exported from the sandbox, and no part of this design tries to.
 - **The plugin version inside the sandbox may lag the host's.** Handled by decision 6, but it

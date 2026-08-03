@@ -17,10 +17,10 @@
 - The probe **always exits 0** for any delivered verdict. A non-zero exit means the probe itself is broken — or was interrupted: on INT/TERM the trap cleans up and exits non-zero, an interrupt is not a verdict.
 - Closed status set, nothing else may be printed in the status column: `OK`, `MISSING`, `NO-NETWORK`, `AUTH-FAILED`, `INVALID`, `SKIPPED`, `UNKNOWN`.
 - Row format is exactly `printf '%-16s %-12s %s\n' "$name" "$status" "$detail"`. A name longer than 16 columns (`provider:deepseek`) overflows the pad — harmless, parsing is word-based; do not "fix" it by truncating names.
-- Row order: `yq` / `jq` (only when missing), `config`, `builtin-claude`, `claude-models`, `curl` (only when missing), `ext-claude-deps` (only when something is missing), `codex`, `gemini`, `provider:*` in order of first appearance in `models` (aggregate row `provider` instead, when providers are not probed at all), `git-remote`, `gh`, `glab`, `clipboard`, then `SUMMARY available:` and `SUMMARY unavailable:`.
+- Row order: `plugin`, `yq` / `jq` (only when missing), `config`, `builtin-claude`, `claude-models`, `curl` (only when missing), `ext-claude-deps` (only when something is missing), `codex`, `gemini`, `provider:*` in order of first appearance in `models` (aggregate row `provider` instead, when providers are not probed at all), `git-remote`, `gh`, `glab`, `clipboard`, then `SUMMARY available:` and `SUMMARY unavailable:`.
 - No secret ever reaches stdout or stderr. Exported env files are deleted through a `trap … EXIT`.
 - Prechecks are invoked as `env -u SKIP_TOKEN_PRECHECK …`.
-- Binaries resolve through `PREFLIGHT_CURL_BIN` (default `curl`), `PREFLIGHT_GIT_BIN` (default `git`), `PREFLIGHT_YQ_BIN` (default `yq`), `PREFLIGHT_JQ_BIN` (default `jq`) and `PREFLIGHT_EXT_DEPS_BINS` (default `claude bc python3`); budgets through `PREFLIGHT_HTTP_TIMEOUT` (default 5) and `PREFLIGHT_GIT_TIMEOUT` (default 8). `PREFLIGHT_CURL_BIN` governs only the probe's own HTTP checks; when it does not resolve, the borrowed prechecks are not invoked at all (provider rows → `UNKNOWN`). The ollama precheck receives its budget through env knobs (`OLLAMA_PRECHECK_TRIES=1`, attempt/tags timeouts = `PREFLIGHT_HTTP_TIMEOUT`).
+- Binaries resolve through `PREFLIGHT_CURL_BIN` (default `curl`), `PREFLIGHT_GIT_BIN` (default `git`), `PREFLIGHT_YQ_BIN` (default `yq`), `PREFLIGHT_JQ_BIN` (default `jq`) and `PREFLIGHT_EXT_DEPS_BINS` (default `claude bc python3`); budgets through `PREFLIGHT_HTTP_TIMEOUT` (default 5) and `PREFLIGHT_GIT_TIMEOUT` (default 8). `PREFLIGHT_CURL_BIN` governs only the probe's own HTTP checks; when it does not resolve, the borrowed prechecks are not invoked at all (provider rows → `UNKNOWN`). The ollama precheck receives its budget through env knobs (`OLLAMA_PRECHECK_TRIES=1`, attempt/tags timeouts = `PREFLIGHT_HTTP_TIMEOUT`). `PREFLIGHT_SKIP_NETWORK=1` skips every network probe (providers, codex/gemini heuristics, `git ls-remote`) — those rows read `UNKNOWN skipped by PREFLIGHT_SKIP_NETWORK`; each live network probe announces itself on stderr, stdout stays table-only.
 - Generators must not call `config-loader.sh` and must not emit any model id, provider id or `defaults.*` preset from the local config.
 - Slash commands are namespaced: `/claude-mesh:<name>`. Bare names do not resolve.
 - Repo language convention: command files, skills and generated prompts are English; user-facing question strings inside `mesh-*` skills are Russian. Match the file you are editing.
@@ -201,6 +201,7 @@ echo "== Task 1: config detection and static rows =="
 
 run_probe valid-claude-models.yaml
 assert_eq   "valid config exits 0"            0    "$RC"
+assert_eq   "plugin identity row present"     OK   "$(field plugin "$OUT")"
 assert_eq   "valid config -> config OK"       OK   "$(field config "$OUT")"
 assert_match "config detail names config.yaml" "/config.yaml" "$OUT"
 assert_eq   "builtin-claude always OK"        OK   "$(field builtin-claude "$OUT")"
@@ -216,6 +217,11 @@ assert_eq   "no config -> catalog SKIPPED"    SKIPPED  "$(field claude-models "$
 run_probe invalid-no-providers.yaml
 assert_eq   "invalid config exits 0"          0        "$RC"
 assert_eq   "invalid config -> INVALID"       INVALID  "$(field config "$OUT")"
+
+# config OK must predict "the orchestrator starts": Step 5.0 validates defaults and runtime
+# too, so a config whose models parse but whose defaults: section is broken is INVALID here.
+run_probe invalid-defaults-runmode.yaml
+assert_eq   "broken defaults -> config INVALID" INVALID "$(field config "$OUT")"
 
 # A dead toolchain must not impersonate a rejected config — the loader dies rc=1 either way,
 # but the operator's next move differs (pipx install yq vs editing a healthy config).
@@ -267,6 +273,7 @@ Create `skills/shared/preflight-env.sh` (`chmod +x` it):
 #      PREFLIGHT_CURL_BIN (curl)   PREFLIGHT_GIT_BIN (git)
 #      PREFLIGHT_YQ_BIN (yq)       PREFLIGHT_JQ_BIN (jq)
 #      PREFLIGHT_EXT_DEPS_BINS ("claude bc python3")
+#      PREFLIGHT_SKIP_NETWORK (0)  — 1 skips every network probe (fast re-runs)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -279,6 +286,7 @@ GIT_BIN="${PREFLIGHT_GIT_BIN:-git}"
 YQ_BIN="${PREFLIGHT_YQ_BIN:-yq}"
 JQ_BIN="${PREFLIGHT_JQ_BIN:-jq}"
 EXT_DEPS_BINS="${PREFLIGHT_EXT_DEPS_BINS:-claude bc python3}"
+SKIP_NET="${PREFLIGHT_SKIP_NETWORK:-0}"
 
 # Task 2 sets this to the env file it is about to source; the trap removes it even if the
 # probe is interrupted between export and rm. The file carries a provider token. On INT/TERM
@@ -292,6 +300,15 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 row() { printf '%-16s %-12s %s\n' "$1" "$2" "${3:-}"; }
+
+# ---------------------------------------------------------------- identity
+# Which probe is this? The reading session must be able to tell "the probe is old" from
+# "the capability is absent", and a stale cache pick must be visible instead of silent.
+# sed, not jq: this row prints before the toolchain check.
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PLUGIN_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1)"
+row plugin OK "${PLUGIN_VERSION:-unknown} @ $PLUGIN_ROOT"
 
 # ---------------------------------------------------------------- toolchain
 # The loader dies rc=1 without yq/jq — the same exit code a rejected config produces. Check
@@ -320,8 +337,22 @@ else
     # misread as rc=1 (config rejected) — the same distinction every caller in this repo makes.
     MODELS="$("$LOADER" list-models 2>"$LERR")"; LRC=$?
     case "$LRC" in
-        0) CONFIG_STATUS="OK";      CONFIG_DETAIL="$("$LOADER" data-dir 2>/dev/null)/config.yaml" ;;
-        2) CONFIG_STATUS="MISSING"; CONFIG_DETAIL="no config.yaml here — only the built-in claude reviewer is available"; MODELS="" ;;
+        0) CONFIG_STATUS="OK";      CONFIG_DETAIL="$("$LOADER" data-dir 2>/dev/null)/config.yaml"
+           # config OK must mean "the orchestrator starts here": mesh-design-review Step 5.0
+           # dies on defaults/runtime too, not only on providers/models. One preset name is
+           # enough — get-defaults runs validate_defaults for the whole defaults: section.
+           # codex/gemini stay out of this gate on purpose: a broken optional section fails
+           # its own row (typed getter in Task 3), never the whole environment.
+           for CHECK in "get-defaults design_review" "get-flag dispatch_model"; do
+               CH_ERR="$(mktemp)"
+               # shellcheck disable=SC2086
+               if ! "$LOADER" $CHECK >/dev/null 2>"$CH_ERR"; then
+                   CONFIG_STATUS="INVALID"; CONFIG_DETAIL="$(head -1 "$CH_ERR")"; MODELS=""
+                   rm -f "$CH_ERR"; break
+               fi
+               rm -f "$CH_ERR"
+           done ;;
+        2) CONFIG_STATUS="MISSING"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; cp config.example.yaml into the data dir"; MODELS="" ;;
         *) CONFIG_STATUS="INVALID"; CONFIG_DETAIL="$(head -1 "$LERR")"; MODELS="" ;;
     esac
     rm -f "$LERR"
@@ -329,7 +360,7 @@ fi
 row config "$CONFIG_STATUS" "$CONFIG_DETAIL"
 
 # ---------------------------------------------------------------- built-in claude
-row builtin-claude OK "always available, needs no config section"
+row builtin-claude OK "needs no config section (orchestrators still need config.yaml)"
 
 CLAUDE_MODELS=""
 if [ "$CONFIG_STATUS" = "OK" ]; then
@@ -445,12 +476,13 @@ assert_eq "SKIP_TOKEN_PRECHECK cannot fake OK" NO-NETWORK "$(field provider:zai 
 run_probe invalid-token-replace-me.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
 assert_match "REPLACE_ME reported as a config gap, not a network verdict" "token not configured" "$OUT"
 
-# export also dies on things that are no token problem — validate_runtime runs inside
-# cmd_export but NOT inside cmd_list_models, so CONFIG_STATUS is OK and only export fails.
-# That must surface as the loader's own reason, never as a lie about the token.
+# runtime: is gated at the config row (config OK = the orchestrator starts), so a broken
+# runtime can no longer masquerade as a per-provider token gap. probe_provider keeps its
+# UNKNOWN/export-refused branch as defence-in-depth (mktemp failure, races, future loader
+# changes) — no fixture can reach it any more, and that is the point.
 run_probe invalid-runtime-runmode.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
-assert_match "non-token export failure -> export refused detail" "export refused" "$OUT"
-assert_no_match "…and not blamed on the token" "token not configured" "$OUT"
+assert_eq "broken runtime -> config INVALID"  INVALID "$(field config "$OUT")"
+assert_no_match "…not blamed on any token"    "token not configured" "$OUT"
 
 # No curl (the probe's own binary): prechecks are not invoked at all — UNKNOWN, not a fake
 # network verdict. No PATH surgery needed: the gate is HAVE_CURL, not the prechecks' lookup.
@@ -464,6 +496,13 @@ run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHI
 assert_eq "missing ext dep -> its own row"    MISSING "$(field ext-claude-deps "$OUT")"
 assert_eq "…and providers degrade"            MISSING "$(field provider:zai "$OUT")"
 assert_match "…naming the executor gap"       "ext-claude prerequisites absent" "$OUT"
+
+# Re-runs inside a session: PREFLIGHT_SKIP_NETWORK answers from local facts alone — the
+# prechecks are never invoked, so this must hold even with a broken shim on PATH.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
+          SHIM_HTTP_CODE=000 PREFLIGHT_SKIP_NETWORK=1
+assert_eq "skip-network -> provider UNKNOWN"  UNKNOWN "$(field provider:zai "$OUT")"
+assert_match "…and says why"                  "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
 
 # Secrets: the token from the fixture must not appear anywhere, and no exported env file
 # may survive the run (TMPDIR is private to this run, so a leftover is visible).
@@ -562,6 +601,12 @@ else
             row "provider:$PROV" UNKNOWN "no curl — endpoint not probed"
             continue
         fi
+        if [ "$SKIP_NET" = 1 ]; then
+            PROBED_STATUS[$PROV]="UNKNOWN"
+            row "provider:$PROV" UNKNOWN "skipped by PREFLIGHT_SKIP_NETWORK"
+            continue
+        fi
+        echo "probing $PROV…" >&2
         probe_provider "$MID"
         row "provider:$PROV" "$PROV_STATUS" "$PROV_DETAIL"
         PROBED_STATUS[$PROV]="$PROV_STATUS"
@@ -720,6 +765,7 @@ Block A — insert before `# ---------------------------------------------------
 ```bash
 # ---------------------------------------------------------------- CLI reviewers
 probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
+    [ "$SKIP_NET" = 0 ] || { echo UNKNOWN; return 0; }
     [ "$HAVE_CURL" = 1 ] || { echo UNKNOWN; return 0; }
     local code
     code="$("$CURL_BIN" -sS -o /dev/null -w '%{http_code}' --max-time "$HTTP_TIMEOUT" "$1" 2>/dev/null)" \
@@ -762,11 +808,12 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
         row "$1" MISSING "$2 not on PATH"
         return 0
     fi
+    [ "$SKIP_NET" = 1 ] || echo "probing $1 ($3)…" >&2
     CLI_STATUS="$(probe_http "$3")"
     case "$CLI_STATUS" in
         OK)         row "$1" OK         "CLI present, $3 answered (heuristic: not an auth check)" ;;
         NO-NETWORK) row "$1" NO-NETWORK "CLI present, $3 silent for ${HTTP_TIMEOUT}s (heuristic)" ;;
-        *)          row "$1" UNKNOWN    "CLI present, no curl — network not probed" ;;
+        *)          row "$1" UNKNOWN    "CLI present, network not probed (no curl, or PREFLIGHT_SKIP_NETWORK)" ;;
     esac
 }
 
@@ -788,6 +835,8 @@ elif ! "$GIT_BIN" rev-parse --git-dir >/dev/null 2>&1; then
     row git-remote MISSING "not inside a git repository"
 elif ! "$GIT_BIN" remote get-url origin >/dev/null 2>&1; then
     row git-remote MISSING "no 'origin' remote configured"
+elif [ "$SKIP_NET" = 1 ]; then
+    row git-remote UNKNOWN "skipped by PREFLIGHT_SKIP_NETWORK"
 else
     if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes' \
        timeout "$GIT_TIMEOUT" "$GIT_BIN" ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
@@ -851,11 +900,12 @@ echo "== Task 4: SUMMARY =="
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
 UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
-assert_match "claude always available"            "claude"          "$AVAIL"
+assert_match "claude available when config is usable" "claude"      "$AVAIL"
 assert_match "reachable provider expands to model ids" "zai/glm"    "$AVAIL"
 assert_match "…for every model of that provider"  "ollama/kimi"     "$AVAIL"
 assert_match "…including the second one"          "ollama/deepseek" "$AVAIL"
 assert_match "unconfigured codex listed as unavailable" "codex (MISSING)" "$UNAVAIL"
+assert_match "defaults lines present"             "SUMMARY defaults design_review:" "$OUT"
 
 # The catalog expands into the UI's own spelling — decision 5's "nothing has to be mapped"
 # holds for Claude reviewers too (valid-claude-models.yaml carries opus + fable).
@@ -870,7 +920,9 @@ assert_no_match "dead provider not offered"       "zai/glm"         "$AVAIL"
 assert_match "…and is named with its verdict"     "zai/glm (NO-NETWORK)" "$UNAVAIL"
 
 run_probe none
-assert_match "no config still yields a usable line" "SUMMARY available: claude" "$OUT"
+assert_match "no config -> nothing selectable"       "SUMMARY available: —" "$OUT"
+assert_match "…claude named with the reason"         "claude (config.yaml required" "$OUT"
+assert_match "…and the one-line fix is hinted"       "hint: cp config.example.yaml" "$OUT"
 
 # SUMMARY must agree with the per-row verdicts — the one assertion that catches a
 # PROBED_STATUS desync on any future edit, instead of leaving it to a human eye.
@@ -894,7 +946,7 @@ assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard " \
+  "plugin config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard " \
   "$ORDER"
 ```
 
@@ -919,12 +971,20 @@ UNAVAIL=""
 add_avail()   { if [ -z "$AVAIL"   ]; then AVAIL="$1";   else AVAIL="$AVAIL, $1";     fi; }
 add_unavail() { if [ -z "$UNAVAIL" ]; then UNAVAIL="$1"; else UNAVAIL="$UNAVAIL, $1"; fi; }
 
-if [ -n "$CLAUDE_MODELS" ]; then
-    while IFS= read -r CM; do
-        [ -n "$CM" ] && add_avail "claude:$CM"
-    done <<< "$CLAUDE_MODELS"
+# claude is unconditionally available as a REVIEWER, but the orchestrators refuse to start
+# without a usable config.yaml (mesh-review Step 0/1, mesh-design-review Step 5.0 — both exit
+# before any selection). Promising claude in a config-less environment sends the reading
+# session into a dead end, so availability follows CONFIG_STATUS, and the fix is hinted.
+if [ "$CONFIG_STATUS" = "OK" ]; then
+    if [ -n "$CLAUDE_MODELS" ]; then
+        while IFS= read -r CM; do
+            [ -n "$CM" ] && add_avail "claude:$CM"
+        done <<< "$CLAUDE_MODELS"
+    else
+        add_avail claude
+    fi
 else
-    add_avail claude
+    add_unavail "claude (config.yaml required for the orchestrators to start)"
 fi
 
 [ "$CODEX_STATUS"  = "OK" ] && add_avail codex  || add_unavail "codex ($CODEX_STATUS)"
@@ -940,8 +1000,30 @@ if [ -n "$MODELS" ]; then
 fi
 
 echo
-printf 'SUMMARY available: %s\n' "$AVAIL"
+printf 'SUMMARY available: %s\n' "${AVAIL:-—}"
 printf 'SUMMARY unavailable: %s\n' "${UNAVAIL:-—}"
+# The presets, in the same UI spelling — "default mode is safe here" becomes a mechanical
+# check: every name on a defaults line must appear in SUMMARY available. jq is present
+# whenever CONFIG_STATUS=OK (the toolchain gate ran first).
+for PRESET in design_review code_review; do
+    DLIST="—"
+    if [ "$CONFIG_STATUS" = "OK" ] && DJ="$("$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
+        DLIST="$(jq -r '
+            ((.builtin // []) | map(select(. != "claude"))) +
+            (if ((.builtin // []) | index("claude")) then
+                 (if ((.claude_models // []) | length) > 0
+                  then (.claude_models | map("claude:" + .))
+                  else ["claude"] end)
+             else [] end) +
+            (.models // []) | join(", ")' <<<"$DJ")"
+        [ -n "$DLIST" ] || DLIST="— (preset empty)"
+    fi
+    printf 'SUMMARY defaults %s: %s\n' "$PRESET" "$DLIST"
+done
+if [ "$CONFIG_STATUS" != "OK" ]; then
+    printf 'hint: cp config.example.yaml %s/config.yaml — the review skills need it even for the built-in claude reviewer\n' \
+        "$("$LOADER" data-dir 2>/dev/null || echo '<plugin-data-dir>')"
+fi
 exit 0
 ```
 
@@ -1173,14 +1255,20 @@ exists, print generated prompts into the chat instead of trying to copy them.
 ## PREFLIGHT — run this before anything else
 
 ```bash
-PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
+PF="./skills/shared/preflight-env.sh"
+[ -f "$PF" ] || PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$PF" ] || { echo "preflight-env.sh not found — older claude-mesh here; expected degradation, NOT a broken environment"; exit 0; }
 bash "$PF"
 ```
 
-Print the table verbatim. Do not soften a verdict into "probably fine". If the script is not
-found, say so, treat `claude` as the only available reviewer — it needs no config section —
-and ask the user whether to proceed on that alone or update the plugin in this sandbox first.
+Print the table verbatim. Do not soften a verdict into "probably fine". `OK` on the codex /
+gemini rows is a heuristic — binary present, section valid, endpoint answered; NOT an auth
+check, and it does not prove the CLI points at that endpoint. `OK` on gh / glab means
+presence on PATH only. If the script is not
+found, say so and ask the user whether to update the plugin in this sandbox first or proceed
+on the built-in `claude` reviewer alone — and before offering that, check a `config.yaml`
+exists in the plugin data dir: claude needs no config section, but the review skills refuse
+to start without a usable config.yaml at all.
 
 ## CONTEXT
 
@@ -1196,7 +1284,9 @@ and ask the user whether to proceed on that alone or update the plugin in this s
 ## WHEN THE USER SAYS GO
 
 Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<DESIGN_PATH> PLAN_PATH=<PLAN_PATH> TOPIC=<TOPIC>`
-and select only reviewers the preflight marked available.
+and select only reviewers the preflight marked available. Use the `default` argument only if
+every entry on the `SUMMARY defaults design_review` line appears in `SUMMARY available`;
+otherwise select interactively.
 ````
 
 ### 5. Save, display, offer the clipboard
@@ -1215,8 +1305,11 @@ shares this working copy, so the file is visible on both sides the moment it is 
 
 - [ ] **Step 2: Verify the generator against this branch's own documents**
 
-Run the command in this session against the real documents (`DESIGN_PATH` and `PLAN_PATH` of
-this plan), then assert on the file it wrote:
+Until the plugin is reinstalled, `/claude-mesh:design-review-fresh-session` does not resolve
+in this session — the active plugin is the installed cache, not this working copy. The
+command file is a prompt: open `commands/design-review-fresh-session.md` and execute its
+steps directly against the real documents (`DESIGN_PATH` and `PLAN_PATH` of this plan), then
+assert on the file it wrote:
 
 ```bash
 P="docs/superpowers/plans/2026-08-02-fresh-session-review-prompts-design-review-prompt-iter-1.md"
@@ -1424,14 +1517,20 @@ generated prompts into the chat instead of trying to copy them.
 ## PREFLIGHT — run this before anything else
 
 ```bash
-PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
+PF="./skills/shared/preflight-env.sh"
+[ -f "$PF" ] || PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$PF" ] || { echo "preflight-env.sh not found — older claude-mesh here; expected degradation, NOT a broken environment"; exit 0; }
 bash "$PF"
 ```
 
-Print the table verbatim. Do not soften a verdict into "probably fine". If the script is not
-found, say so, treat `claude` as the only available reviewer — it needs no config section —
-and ask the user whether to proceed on that alone or update the plugin in this sandbox first.
+Print the table verbatim. Do not soften a verdict into "probably fine". `OK` on the codex /
+gemini rows is a heuristic — binary present, section valid, endpoint answered; NOT an auth
+check, and it does not prove the CLI points at that endpoint. `OK` on gh / glab means
+presence on PATH only. If the script is not
+found, say so and ask the user whether to update the plugin in this sandbox first or proceed
+on the built-in `claude` reviewer alone — and before offering that, check a `config.yaml`
+exists in the plugin data dir: claude needs no config section, but the review skills refuse
+to start without a usable config.yaml at all.
 
 ## CONTEXT
 
@@ -1447,6 +1546,8 @@ and ask the user whether to proceed on that alone or update the plugin in this s
 ## WHEN THE USER SAYS GO
 
 Invoke `/claude-mesh:mesh-review` and select only reviewers the preflight marked available.
+Use the `default` argument only if every entry on the `SUMMARY defaults code_review` line
+appears in `SUMMARY available`; otherwise select interactively.
 ````
 
 ### 6. Save, display, offer the clipboard
@@ -1464,7 +1565,9 @@ Do not commit the file.
 
 - [ ] **Step 2: Verify the generator on this branch**
 
-Run the command against this branch (which has real commits by now), then:
+Execute `commands/code-review-fresh-session.md` directly, as in Task 6 Step 2 (the slash name
+resolves only after a plugin reinstall), against this branch (which has real commits by now),
+then:
 
 ```bash
 P="$(ls -t docs/superpowers/plans/*-code-review-prompt*.md | head -1)"
@@ -1478,7 +1581,7 @@ Expected: sections in order, `GATE BEFORE DOCUMENTS: ok`, `range present`, `targ
 
 - [ ] **Step 3: Verify the collision suffix**
 
-Run the command a second time without deleting the first file. Expected: a `-2` file is
+Execute it a second time without deleting the first file. Expected: a `-2` file is
 created and the first one is left untouched (`git status --porcelain` shows two untracked
 prompt files, not a modified one).
 
@@ -1541,7 +1644,12 @@ out of scope for this plan; revert it.
 In `commands/do-plan.md`, Step 7 "End of plan", append:
 
 ```markdown
-When the final review is done, offer the code review as its own fresh session:
+Offer the code review BEFORE `superpowers:finishing-a-development-branch`, and if the user
+takes it, hold finishing entirely — no push, no PR, and no local merge either (finishing
+deletes the branch after merging, and review fixes need somewhere to land) — until that
+external review has run and its findings are applied. The order is the point: a
+merged-and-deleted branch cannot absorb what the review finds.
+
 `/claude-mesh:code-review-fresh-session` generates the prompt, carrying the git range and what
 only this session knows — deviations from the plan, what was left unfinished, known weak spots.
 
