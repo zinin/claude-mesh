@@ -36,6 +36,14 @@ YQ_BIN="${PREFLIGHT_YQ_BIN:-yq}"
 JQ_BIN="${PREFLIGHT_JQ_BIN:-jq}"
 EXT_DEPS_BINS="${PREFLIGHT_EXT_DEPS_BINS:-claude bc python3}"
 SKIP_NET="${PREFLIGHT_SKIP_NETWORK:-0}"
+# Normalise ONCE, here, so the flag cannot be half-honoured. Its three consumers do not test it
+# the same way — probe_http asks "is it 0?" (skips on anything else), the provider loop and the
+# git row ask "is it 1?" (probe on anything else) — so PREFLIGHT_SKIP_NETWORK=true used to skip
+# the CLI probes and still spend the git budget on the operator's real remote. Anything that is
+# not exactly 0 now means 1: a flag whose whole purpose is "touch nothing" must fail toward
+# touching nothing. (Fixing it here rather than at the three call sites keeps them literally as
+# the plan wrote them, and keeps the next consumer from having to know which convention to pick.)
+[ "$SKIP_NET" = 0 ] || SKIP_NET=1
 
 # Task 2 sets this to the env file it is about to source; the trap removes it even if the
 # probe is interrupted between export and rm. The file carries a provider token. On INT/TERM
@@ -162,7 +170,15 @@ probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
     local code
     code="$("$CURL_BIN" -sS -o /dev/null -w '%{http_code}' --max-time "$HTTP_TIMEOUT" "$1" 2>/dev/null)" \
         || code="000"
-    if [ "$code" = "000" ]; then echo NO-NETWORK; else echo OK; fi
+    # A three-digit code is the ONLY evidence of an answer. An `else echo OK` would turn a
+    # curl that exits 0 printing nothing — a wrapper, a stub, a future --write-out change —
+    # into a green verdict, which is the one direction this file never fabricates: every other
+    # guard here (HAVE_CURL, the timeout(1) check below) degrades toward UNKNOWN instead.
+    case "$code" in
+        000)             echo NO-NETWORK ;;
+        [0-9][0-9][0-9]) echo OK ;;
+        *)               echo UNKNOWN ;;
+    esac
 }
 
 # A CLI reviewer is offered by the selection UI only when its config section exists
@@ -187,7 +203,15 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
         return 0
     fi
     local gerr
-    gerr="$(mktemp)"
+    # Checked, because the failure is silent and ugly: gerr="" makes `2>"$gerr"` an ambiguous
+    # redirect, which fails the command, which makes the branch below look like a REJECTED
+    # section — and then `head -1 ""` prints its own complaint on the probe's stderr. A full
+    # TMPDIR must not be reported as a malformed config.
+    if ! gerr="$(mktemp 2>/dev/null)" || [ -z "$gerr" ]; then
+        CLI_STATUS="UNKNOWN"
+        row "$1" UNKNOWN "cannot create a temp file (TMPDIR full or unwritable) — section not validated"
+        return 0
+    fi
     if ! "$LOADER" "get-$1" >/dev/null 2>"$gerr"; then
         CLI_STATUS="INVALID"
         row "$1" INVALID "$(head -1 "$gerr")"

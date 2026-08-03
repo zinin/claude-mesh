@@ -69,6 +69,29 @@ exit 0
 SH
 chmod +x "$WORK/curlfast/curl"
 
+# A PATH farm: every real PATH entry symlinked into one directory (first occurrence wins, as
+# in a real PATH search), minus the binaries named. The only way to make ONE tool genuinely
+# absent while the loader still finds yq, jq and the rest — curl, git and codex all live in
+# directories full of tools the probe needs, so no subset of the real PATH can drop one alone.
+#
+# Callers MUST keep $SHIM (or another shim dir) FIRST in any PATH built from a farm: a farm
+# carries the REAL curl, and the prechecks resolve `curl` from PATH. Put a farm first and the
+# suite starts talking to api.z.ai and to the ollama daemon this machine actually runs.
+#
+# Defined here, beside the other shared helpers, because two sections use it. PATH_DIRS is
+# read here too: as a global set inside one section's block it was a dependency a later edit
+# could silently delete, leaving `set -u` to kill the suite mid-run.
+IFS=: read -r -a PATH_DIRS <<<"$PATH"
+mkfarm() {              # mkfarm <dir> [binary-to-omit ...]
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    local d b
+    for d in "${PATH_DIRS[@]}"; do
+        [ -n "$d" ] && [ -d "$d" ] && ln -s "$d"/* "$dir/" 2>/dev/null
+    done
+    for b in "$@"; do rm -f "$dir/$b"; done
+}
+
 # Each run gets a private data dir (so the suite never reads the developer's ~/.claude config)
 # and a private TMPDIR (so exported env files, which carry tokens, cannot leak into shared /tmp
 # and can be counted afterwards).
@@ -200,15 +223,7 @@ SH
 chmod +x "$SHIM/curl"
 
 # A PATH that genuinely has no curl but still has everything the loader needs (yq, jq, …).
-# Built by symlinking every PATH entry into one dir — first occurrence wins, as in a real
-# PATH search — and then deleting the curl link. Needed because curl lives in /usr/bin next
-# to every other tool here, so no subset of the real PATH can drop curl alone.
-mkdir -p "$WORK/nocurl"
-IFS=: read -r -a PATH_DIRS <<<"$PATH"
-for D in "${PATH_DIRS[@]}"; do
-    [ -n "$D" ] && [ -d "$D" ] && ln -s "$D"/* "$WORK/nocurl/" 2>/dev/null
-done
-rm -f "$WORK/nocurl/curl"
+mkfarm "$WORK/nocurl" curl
 
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 assert_eq "reachable provider -> OK"          OK   "$(field provider:zai "$OUT")"
@@ -296,21 +311,6 @@ assert_eq "exported env files removed" 0 "$LEFT"
 
 echo "== Task 3: CLI, git and clipboard rows =="
 
-# Two more PATH farms, same recipe as $WORK/nocurl above (first occurrence wins, as in a real
-# PATH search). Factored into a helper because Task 3 needs two of them.
-#
-# $SHIM MUST STAY FIRST in every PATH built from a farm: a farm carries the REAL curl, and the
-# prechecks resolve `curl` from PATH — with the farm first, the suite would start talking to
-# api.z.ai and to the ollama daemon this machine actually runs.
-mkfarm() {              # mkfarm <dir> [binary-to-omit ...]
-    local dir="$1"; shift
-    mkdir -p "$dir"
-    local d b
-    for d in "${PATH_DIRS[@]}"; do
-        [ -n "$d" ] && [ -d "$d" ] && ln -s "$d"/* "$dir/" 2>/dev/null
-    done
-    for b in "$@"; do rm -f "$dir/$b"; done
-}
 # codex and gemini ship via npm, so a developer's PATH very likely has both — and then
 # "section present, CLI absent" could never be reached and the suite would be reporting the
 # laptop instead of the fixture.
@@ -319,28 +319,42 @@ mkfarm "$WORK/nocli" codex gemini
 # this probe exists for.
 mkfarm "$WORK/notimeout" timeout
 
-# valid-full.yaml has no codex:/gemini: sections. The selection UI hides those reviewers on
-# exactly that condition, so the row must say "config", not "network", whatever is on PATH.
-# PATH is deliberately the REAL one here: both CLIs are installed on this machine, so the
-# section gate is what has to produce MISSING.
-run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
-assert_eq   "no codex section -> MISSING"      MISSING "$(field codex "$OUT")"
-assert_match "and says why"                    "no codex: section" "$OUT"
-assert_eq   "no gemini section -> MISSING"     MISSING "$(field gemini "$OUT")"
-
-# A section that exists but that the typed getter rejects: the UI would offer it and then die
-# on get-codex — the probe must say INVALID first, before any CLI or network claim.
-run_probe broken-codex-valid-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
-assert_eq   "malformed codex section -> INVALID" INVALID "$(field codex "$OUT")"
-assert_match "…with the validator's own reason"  "codex.model" "$OUT"
-
-# With a valid section present, the CLI must exist on PATH before the network is consulted.
+# Both CLIs, shimmed. EVERY scenario below pins the CLI's presence or absence explicitly —
+# neither verdict may depend on what the machine running the suite happens to have installed.
+# The two directions need separate directories because they are needed in the same scenarios
+# for different tools: $SHIM/codex is wanted from here to the end of the section, while gemini
+# must be ABSENT from the valid-codex-gemini.yaml runs further down (which put $WORK/nocli
+# after $SHIM — a $SHIM/gemini would shadow the farm's deletion and silently un-test that).
 cat > "$SHIM/codex" <<'SH'
 #!/usr/bin/env bash
 echo "codex 0.0.0-test"
 SH
 chmod +x "$SHIM/codex"
+mkdir -p "$WORK/cli-gemini"
+cat > "$WORK/cli-gemini/gemini" <<'SH'
+#!/usr/bin/env bash
+echo "gemini 0.0.0-test"
+SH
+chmod +x "$WORK/cli-gemini/gemini"
 
+# valid-full.yaml has no codex:/gemini: sections. The selection UI hides those reviewers on
+# exactly that condition, so the row must say "config", not "network", whatever is on PATH.
+# Both CLIs are on PATH here ON PURPOSE and by shim, not by luck: the section gate is the only
+# thing that can produce MISSING, on this machine and on a bare CI box alike.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/cli-gemini:$PATH"
+assert_eq   "no codex section -> MISSING"      MISSING "$(field codex "$OUT")"
+assert_match "and says why"                    "no codex: section" "$OUT"
+assert_eq   "no gemini section -> MISSING"     MISSING "$(field gemini "$OUT")"
+
+# A section that exists but that the typed getter rejects: the UI would offer it and then die
+# on get-codex — the probe must say INVALID first, before any CLI or network claim. Same
+# reason for the shimmed CLIs: INVALID must outrank a perfectly healthy binary.
+run_probe broken-codex-valid-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$SHIM:$WORK/cli-gemini:$PATH" SHIM_HTTP_CODE=200
+assert_eq   "malformed codex section -> INVALID" INVALID "$(field codex "$OUT")"
+assert_match "…with the validator's own reason"  "codex.model" "$OUT"
+
+# With a valid section present, the CLI must exist on PATH before the network is consulted.
 run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli" SHIM_HTTP_CODE=200
 assert_eq   "codex CLI + network -> OK"        OK          "$(field codex "$OUT")"
 assert_match "codex verdict marked heuristic"  "heuristic" "$OUT"
@@ -348,6 +362,16 @@ assert_eq   "gemini section but no CLI"        MISSING     "$(field gemini "$OUT
 
 run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli" SHIM_HTTP_CODE=000
 assert_eq   "codex CLI, no network -> NO-NETWORK" NO-NETWORK "$(field codex "$OUT")"
+
+# A curl that exits 0 and prints nothing: %{http_code} is unparseable, so there IS no status
+# code and no reachability was established. UNKNOWN — the file's other guards (HAVE_CURL, the
+# timeout(1) check) all degrade this way, and OK is the one direction that must never be
+# reached by accident.
+mkdir -p "$WORK/mutecurl"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/mutecurl/curl"
+chmod +x "$WORK/mutecurl/curl"
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$WORK/mutecurl/curl" PATH="$SHIM:$WORK/nocli"
+assert_eq   "curl exits 0 saying nothing -> UNKNOWN" UNKNOWN "$(field codex "$OUT")"
 
 # curl absent: nothing that needs the network may claim a verdict.
 run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl" PATH="$SHIM:$PATH"
@@ -413,6 +437,19 @@ run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$W
 assert_eq   "skip-network -> git-remote UNKNOWN" UNKNOWN "$(field git-remote "$OUT")"
 assert_eq   "skip-network -> codex UNKNOWN"      UNKNOWN "$(field codex "$OUT")"
 assert_no_match "…and no probe is announced"     "probing codex" "$ERR"
+
+# …and it must mean the same thing spelled any other way. A session told "set
+# PREFLIGHT_SKIP_NETWORK" writes `true` at least as readily as `1`, and the three consumers of
+# this flag do not all test it the same way — one skips on "not 0", two probe on "not 1". A
+# truthy value that reaches only some of them is the worst outcome: it skips the cheap probes
+# and still spends the git budget on the operator's real remote. Same sleeping shim, so a leak
+# shows up as an 8-second stall AND a wrong verdict, and never as an actual request.
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli" \
+          PREFLIGHT_GIT_BIN="$WORK/gitshim/git" PREFLIGHT_SKIP_NETWORK=true
+assert_eq   "truthy skip-network -> git-remote UNKNOWN" UNKNOWN "$(field git-remote "$OUT")"
+assert_eq   "…and provider UNKNOWN"                     UNKNOWN "$(field provider:zai "$OUT")"
+assert_eq   "…and codex UNKNOWN"                        UNKNOWN "$(field codex "$OUT")"
+assert_eq   "…with nothing on stderr at all"            ""      "$ERR"
 
 # No timeout(1): `timeout … ls-remote` would fail with 127 and the row would read NO-NETWORK —
 # an endpoint verdict fabricated out of a missing binary, the same defect the curl gate exists
