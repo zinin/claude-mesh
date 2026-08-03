@@ -81,8 +81,9 @@ chmod +x "$WORK/curlfast/curl"
 # THREE PROPERTIES BELOW ARE LOAD-BEARING — do not "simplify" them away:
 #   1. stdout and stderr are captured SEPARATELY, never merged with 2>&1. The probe's progress
 #      chatter goes to stderr ("probing <provider>…"), and those lines have NF>=2, so merging
-#      would let them enter the table assertions: the closed-status-set check would read a
-#      provider name as a status, and the row-order check would see phantom rows.
+#      would feed that chatter to the FINAL GATES at the bottom of this file: the closed-set
+#      gate would read a provider name ("zai…") as a status. Task 4's row-order check will
+#      have the same exposure once it exists.
 #   2. RC=$? stays on the line IMMEDIATELY after the OUT= assignment. Anything in between
 #      overwrites $? and makes every exit-code assertion unfalsifiable.
 #   3. errf lives in $WORK, never in $CFG_DIR: $CFG_DIR doubles as the probe's TMPDIR and its
@@ -92,10 +93,23 @@ CFG_DIR=""
 RC=0
 OUT=""
 ERR=""
+# Accumulators for the FINAL GATES (bottom of file). Per-scenario assertions can only check
+# the scenario their author thought about; these two make the universal contracts — closed
+# status set, "every verdict exits 0" — hold over EVERY scenario, including ones Tasks 2-4
+# have not written yet.
+ALL_OUT=""
+BAD_RC=""
+PROBE_N=0
 run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
     local fixture="$1"; shift
     CFG_DIR="$(mktemp -d "$WORK/data-XXXXXX")"
-    [ "$fixture" = none ] || cp "$TESTS_DIR/fixtures/$fixture" "$CFG_DIR/config.yaml"
+    # A mistyped fixture name must fail loudly: silently leaving $CFG_DIR empty degrades the
+    # scenario into "no config", and Tasks 2-4 add scenarios that legitimately expect
+    # MISSING/SKIPPED — there the typo would produce a green run that tests nothing.
+    if [ "$fixture" != none ] && ! cp "$TESTS_DIR/fixtures/$fixture" "$CFG_DIR/config.yaml"; then
+        FAIL=$((FAIL+1))
+        echo "  FAIL: cannot stage fixture '$fixture' (missing from $TESTS_DIR/fixtures?)"
+    fi
     local errf
     errf="$(mktemp "$WORK/stderr-XXXXXX")"
     OUT="$(env CLAUDE_PLUGIN_DATA="$CFG_DIR" TMPDIR="$CFG_DIR" \
@@ -105,6 +119,9 @@ run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
     RC=$?
     ERR="$(cat "$errf")"
     rm -f "$errf"
+    ALL_OUT="$ALL_OUT$OUT"$'\n'
+    PROBE_N=$((PROBE_N+1))
+    [ "$RC" -eq 0 ] || BAD_RC="$BAD_RC #$PROBE_N($fixture rc=$RC)"
 }
 
 echo "== Task 1: config detection and static rows =="
@@ -113,7 +130,9 @@ run_probe valid-claude-models.yaml
 assert_eq   "valid config exits 0"            0    "$RC"
 assert_eq   "plugin identity row present"     OK   "$(field plugin "$OUT")"
 assert_eq   "valid config -> config OK"       OK   "$(field config "$OUT")"
-assert_match "config detail names config.yaml" "/config.yaml" "$OUT"
+# Full path, not a bare "/config.yaml" suffix: the detail must name the file the loader
+# actually resolved, so an empty `data-dir` cannot satisfy this assertion.
+assert_match "config detail names config.yaml" "$CFG_DIR/config.yaml" "$OUT"
 assert_eq   "builtin-claude always OK"        OK   "$(field builtin-claude "$OUT")"
 assert_eq   "claude catalog -> OK"            OK   "$(field claude-models "$OUT")"
 assert_match "catalog lists both aliases"     "opus, fable" "$OUT"
@@ -153,10 +172,32 @@ assert_eq   "broken claude section -> INVALID" INVALID "$(field claude-models "$
 run_probe valid-full.yaml
 assert_eq   "no claude section -> MISSING"    MISSING  "$(field claude-models "$OUT")"
 
-# The closed status set is the contract every later task must keep.
-BAD="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $2}' <<<"$OUT" \
-       | sort -u | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|SKIPPED|UNKNOWN)$' || true)"
-assert_eq   "status column stays in the closed set" "" "$BAD"
+# ============================================================================
+# FINAL GATES — must stay LAST. Tasks 2-4 append their scenario sections ABOVE
+# this banner. Both gates read every scenario's output, not just the last one.
+# ============================================================================
+
+# The closed status set is the contract every later task must keep. Read from ALL_OUT, not
+# $OUT: over a single scenario this gate only ever sees that author's statuses, and the
+# unusual ones (UNKNOWN, SKIPPED, INVALID) live in scenarios nobody would think to point it at.
+#
+# The awk filter skips the two kinds of legitimate NON-ROW prose the probe prints: Task 4's
+# `SUMMARY …` lines and its `hint: cp config.example.yaml …` line (whose $2 is "cp"). Extend
+# this filter when a task adds a new non-row line — and do NOT replace it with a "every line
+# matches a row shape" regexp: row names legitimately contain a colon (provider:zai, Task 2),
+# so a shape check is the same forward-compatibility trap in a new costume.
+ROWS="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ && $1 != "hint:" {print $2}' <<<"$ALL_OUT")"
+BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|SKIPPED|UNKNOWN)$' || true)"
+assert_eq   "status column stays in the closed set (every scenario)" "" "$BAD"
+# Both gates above and below pass on empty input, so they must prove they looked at something.
+# Today: 7 scenarios x 4-5 rows = 29. The floor only gets safer as Tasks 2-4 add scenarios.
+assert_eq   "…and the gate actually examined rows" \
+            1 "$([ "$(grep -c . <<<"$ROWS")" -ge 10 ] && echo 1 || echo 0)"
+
+# "Every verdict exits 0" is THE contract of this probe, and Tasks 2-4 each append a section
+# whose last command silently decides the script's exit status. Asserting RC per scenario
+# only covers the scenarios someone remembered; this backstop covers all of them.
+assert_eq   "every verdict exits 0" "" "$BAD_RC"
 
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
