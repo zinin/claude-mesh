@@ -115,7 +115,7 @@ Touch nothing outside <clone>.
 
 That is not a prompt free of imperatives, and this file should not claim it is: `Work in <clone>.`
 and `Touch nothing outside <clone>.` are both instructions, and the first is exactly the phrase a
-sceptic would name as the residual source of implement-pressure. What it contains no *review* verb —
+sceptic would name as the residual source of implement-pressure. What it lacks is a *review* verb —
 the thing attempt 1 identified as its confound. The A/B remains controlled regardless, because the
 candidate prompt carries the same two lines byte-identically; the difference between the arms is the
 block and nothing else.
@@ -274,11 +274,17 @@ nothing was written.
 Not a paraphrase. The line breaks and the em dash are part of what was tested.
 
 **This block matches the plan, and differs from the design. Task 6 must know which it is copying.**
-Byte-for-byte, the tested block is identical to the block the plan writes into Task 6 and Task 7.
-The **design's** version of the second bullet carries one extra sentence that the tested block does
-not:
+Byte-for-byte, the tested block is identical to the block the plan writes into Task 6 and Task 7
+(same sha256). The **design's** version differs in four ways, and since this file insists that line
+breaks are part of what was tested, it owes the same precision here:
 
-> `- Do not push, do not open a PR/MR, do not call gh/glab. They are unlikely to work here and are not part of this task.`
+1. no blank line after `## DO NOT`;
+2. bullet 1 wraps after "owns its", not after "owns";
+3. bullet 2 carries an extra sentence — `They are unlikely to work here and are not part of this
+   task.` — appended after `…do not call gh/glab.`;
+4. bullet 3 wraps after "until the", not after "until".
+
+Only (3) changes what the block says; (1), (2) and (4) are whitespace.
 
 So the wording above is what was measured and is safe to copy, but it is not the design's text, and
 the plan declares the design binding. The untested delta falls on precisely the bullet that has no
