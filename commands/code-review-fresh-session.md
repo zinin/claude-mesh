@@ -1,12 +1,12 @@
 ---
-name: design-review-fresh-session
-description: Generate a prompt for reviewing the current design + plan via /claude-mesh:mesh-design-review in a fresh Claude Code session, including one that runs in a sandbox
+name: code-review-fresh-session
+description: Generate a prompt for reviewing an implemented plan via /claude-mesh:mesh-review in a fresh Claude Code session, including one that runs in a sandbox
 ---
 
-# Fresh-Session Design-Review Prompt Generator
+# Fresh-Session Code-Review Prompt Generator
 
 <!-- SYNC: the DO NOT / ENVIRONMENT / PREFLIGHT / THEN STOP blocks of the generated prompt are
-     shared with commands/code-review-fresh-session.md — change both files or neither.
+     shared with commands/design-review-fresh-session.md — change both files or neither.
      DO NOT and PREFLIGHT are byte-identical in the two files. ENVIRONMENT and THEN STOP differ
      by exactly one phrase each, by design — design-review first, code-review second:
      ENVIRONMENT, `mesh-design-review commits its own auto-fixes and its iteration log` /
@@ -20,10 +20,10 @@ description: Generate a prompt for reviewing the current design + plan via /clau
 
 ## Task
 
-Generate the prompt for a NEW Claude Code session whose job is to review the current design and
-plan through `/claude-mesh:mesh-design-review` — **not** to implement them.
+Generate the prompt for a NEW Claude Code session whose job is to review the implementation
+this session just finished, through `/claude-mesh:mesh-review` — **not** to keep working on it.
 
-Arguments, optional, any order: `DESIGN_PATH=`, `PLAN_PATH=`, `TOPIC=`.
+Arguments, optional, any order: `DESIGN_PATH=`, `PLAN_PATH=`, `TOPIC=`, `BASE_BRANCH=`.
 
 ## Never read the local config
 
@@ -37,50 +37,68 @@ do not exist there and hides the ones that do.
 
 ### 1. Identify the documents
 
-Use `DESIGN_PATH` / `PLAN_PATH` when given. Otherwise take them from this session's context,
-falling back to the newest `docs/superpowers/specs/*-design.md` and the matching plan — an
-**ordered** lookup, because three plan-naming conventions coexist in this repo:
-`plans/<date>-<topic>-implementation.md`, then `plans/<date>-<topic>-plan.md`, then
-`plans/<date>-<topic>.md`, then the newest `plans/*<topic>*.md`. If either document is still
-unknown, ask the user for the path. Never invent one.
+Use `DESIGN_PATH` / `PLAN_PATH` when given, else this session's context, else the newest
+`docs/superpowers/specs/*-design.md` and the matching plan (ordered lookup, as in
+design-review-fresh-session: `-implementation.md`, `-plan.md`, bare `<topic>.md`, newest
+`*<topic>*.md`).
 
-### 2. Derive TOPIC and the iteration number
+Code review is the one case where those documents may legitimately not exist — a branch can be
+implemented without a written design. Ask once; if the user confirms there are none, take
+`TOPIC` from the branch name normalised to a slug (Step 3 below) and `DATE` from today, omit
+the missing entries from `DOCUMENTS`, and keep the git range. Never invent a document path.
 
-<!-- SYNC: TOPIC derivation mirrors skills/mesh-design-review/SKILL.md Step 1, iteration
-     counting mirrors its Step 2, the date rule mirrors its Step 13. A generator that derives
-     a different topic counts a different set of iteration files and hands the review session
-     a number the skill then disagrees with. Change them together. -->
+### 2. Resolve the git range
 
-- `TOPIC`: from `YYYY-MM-DD-<topic>-design.md`, **repeatedly** stripping trailing `-design` /
-  `-review` suffixes — Step 1's own example removes two in sequence
-  (`iterative-review-design.md` → `iterative`).
-- `N`: `ls docs/superpowers/specs/*-<TOPIC>-review-iter-*.md` → highest existing number + 1, or 1.
-- `DATE`: the date in the **design document's** filename, not today's.
+All local — no network is involved, which is the point in a sandbox:
 
-### 3. Collect the context that is not in the documents
+```bash
+BASE_REF="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')"
+BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}"
+BASE_SHA="$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git merge-base HEAD "origin/$BASE_BRANCH" 2>/dev/null)"
+HEAD_SHA="$(git rev-parse HEAD)"
+# symbolic-ref, not rev-parse --abbrev-ref: a detached HEAD would otherwise put the literal
+# string "HEAD" into the prompt as a branch name.
+BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)"
+DIRTY="$(git status --porcelain)"
+git log --oneline "$BASE_SHA..$HEAD_SHA"
+```
 
-For iteration 1: decisions and why, alternatives rejected and why, known constraints, sharp
-edges. For iteration N > 1: what the previous iteration decided and what it deferred under
-"стоп". Keep it under 40 lines. It is not a retelling of the documents.
+If `BASE_SHA` does not resolve, name the branch that was tried and ask the user for the base.
+If `DIRTY` is non-empty, warn the operator and add the note to `DOCUMENTS` ("uncommitted
+changes existed at generation — the review covers commits only"). Never silently ignore a
+dirty worktree.
 
-The only source is THIS session. If it does not actually hold that context — the command was
-invoked standalone, or the discussion has been evicted — ask the user for the key decisions;
-never fabricate them. If the user declines, write `CONTEXT` with an explicit note that it is
-limited to what the documents imply.
+### 3. Derive TOPIC and DATE
 
-### 4. Compose the prompt
+<!-- SYNC: TOPIC derivation mirrors skills/mesh-design-review/SKILL.md Step 1 and the date
+     rule its Step 13, so a topic's artifacts keep sorting together. Change them together. -->
+
+`TOPIC` from `YYYY-MM-DD-<topic>-design.md`, **repeatedly** stripping trailing `-design` /
+`-review` suffixes (Step 1's own example removes two in sequence); `DATE` from that same
+filename. With no documents: `TOPIC` from the branch name normalised to a slug — drop
+everything up to the last `/` (`feat/x-y` → `x-y`), apply the same trailing strip, then map
+any character outside `[a-z0-9-]` to `-`; detached HEAD already yields a short sha (Step 2);
+an empty result asks the user. `DATE` today.
+
+### 4. Collect the context only this session has
+
+What was implemented; where the implementation deviated from the plan and why; what was left
+unfinished; known weak spots. None of it is in the diff or in the plan, and the session that
+executed the plan is the only one that knows it. Keep it under 40 lines.
+
+### 5. Compose the prompt
 
 The prompt consists of these sections, in this order, and nothing else. Substitute
-`<DESIGN_PATH>`, `<PLAN_PATH>`, `<TOPIC>` and `N` — and nothing more: emit `$HOME` in the
-preflight block **literally**, never expanded to a concrete home directory. An expanded path
-freezes this machine's layout into a prompt that runs on another one — the exact failure
-decision 2 of the design exists to prevent:
+`<DESIGN_PATH>`, `<PLAN_PATH>`, `<BRANCH>`, the shas and the commit list — and nothing more:
+emit `$HOME` in the preflight block **literally**, never expanded to a concrete home
+directory (an expanded path freezes this machine's layout into a prompt that runs on another
+one — the failure decision 2 of the design exists to prevent):
 
 ````
 ## TASK
 
-Review the design and plan for <feature> through `/claude-mesh:mesh-design-review`.
-Do not implement anything.
+Review the implementation on branch <BRANCH> through `/claude-mesh:mesh-review`.
+Do not continue the work.
 
 ## DO NOT
 
@@ -92,20 +110,23 @@ Do not implement anything.
 
 ## DOCUMENTS
 
-- Design: `<DESIGN_PATH>`
-- Plan:   `<PLAN_PATH>`
-<iteration N > 1 only:>
-- Previous iterations: `docs/superpowers/specs/<DATE>-<TOPIC>-review-iter-*.md` (this is
-  iteration N). Do not summarise them — mesh-design-review reads them itself and builds its
-  PREVIOUS DECISIONS table from them.
+- Design: `<DESIGN_PATH>`     (omit the line when there is none)
+- Plan:   `<PLAN_PATH>`       (omit the line when there is none)
+- Git range: `<BASE_SHA>..<HEAD_SHA>` on branch `<BRANCH>` (HEAD at generation:
+  `<HEAD_SHA>`). If HEAD has moved since, review through the current HEAD and say so. This
+  range is context — the review skills detect the base branch themselves.
+- Commits:
+  <output of git log --oneline BASE_SHA..HEAD_SHA>
+<only when the worktree was dirty at generation:>
+- Note: uncommitted changes existed at generation — the review covers commits only.
 
 ## ENVIRONMENT
 
 This session probably runs in a sandbox. git remote, gh and glab may be unreachable. The set
 of configured agents and models HERE differs from the session that wrote this prompt — assume
 no reviewer exists until the preflight below says so. Local commits are normal and expected:
-mesh-design-review commits its own auto-fixes and its iteration log. If no clipboard utility
-exists, print generated prompts into the chat instead of trying to copy them.
+mesh-review commits its own auto-fixes and decisions. If no clipboard utility exists, print
+generated prompts into the chat instead of trying to copy them.
 
 ## PREFLIGHT — run this before anything else
 
@@ -127,22 +148,21 @@ to start without a usable config.yaml at all.
 
 ## CONTEXT
 
-<from step 3>
+<from step 4>
 
 ## THEN STOP
 
-1. Summarise the documents in 5–10 lines.
+1. Summarise what was built, in 5–10 lines.
 2. Print the preflight table verbatim.
 3. One line: which reviewers are actually available here.
 4. Wait. Do not start the review on your own.
 
 ## WHEN THE USER SAYS GO
 
-Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<DESIGN_PATH> PLAN_PATH=<PLAN_PATH> TOPIC=<TOPIC>`
-and select only reviewers the preflight marked available. Choose from the ROWS, not from
-`SUMMARY available`: the summary lists `codex` and `gemini` with no caveat, while their own rows
-say that `OK` there is a heuristic — binary present, section valid, endpoint answered, nothing
-about auth.
+Invoke `/claude-mesh:mesh-review` and select only reviewers the preflight marked available.
+Choose from the ROWS, not from `SUMMARY available`: the summary lists `codex` and `gemini` with
+no caveat, while their own rows say that `OK` there is a heuristic — binary present, section
+valid, endpoint answered, nothing about auth.
 
 Whether the `default` argument is safe here is a membership check between two SUMMARY lines.
 Split both on `, ` and compare WHOLE entries — never substrings: a bare `claude` is a substring
@@ -154,7 +174,7 @@ test reports a match where the orchestrator would find none.
   one case where the mechanical check would say yes precisely when the answer is no. With no
   usable config both lines print `—`; with a rejected `claude:` section the defaults line prints
   a real list next to an empty available line.
-- `SUMMARY defaults design_review: —` or `— (preset empty)` → also never safe, for the same
+- `SUMMARY defaults code_review: —` or `— (preset empty)` → also never safe, for the same
   reason read the other way: there is no preset to run, and `default` mode stops instead of
   starting.
 - Otherwise `default` is safe only when every entry of the defaults line is also an entry of the
@@ -166,15 +186,14 @@ test reports a match where the orchestrator would find none.
 Anything short of that → select interactively.
 ````
 
-### 5. Save, display, offer the clipboard
+### 6. Save, display, offer the clipboard
 
-1. Write to `docs/superpowers/plans/<DATE>-<TOPIC>-design-review-prompt-iter-N.md`. If that
-   exact file already exists, suffix `-2`, then `-3` — never overwrite an earlier prompt.
+1. Write to `docs/superpowers/plans/<DATE>-<TOPIC>-code-review-prompt.md`. If that file
+   exists, suffix `-2`, then `-3` — never overwrite an earlier prompt.
 2. Print the full prompt on screen.
 3. Copy to the clipboard: `xclip -selection clipboard` / `xsel --clipboard` on Linux,
    `pbcopy` on macOS. If none exists — which is normal inside a sandbox — say so, name the
    file path, and move on. A missing clipboard is a note, never a failure.
 4. Tell the user: "Prompt ready. Open a new Claude Code session and paste it."
 
-Do not commit the file. `docs/superpowers/` is removed before a PR anyway, and the sandbox
-shares this working copy, so the file is visible on both sides the moment it is written.
+Do not commit the file.
