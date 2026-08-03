@@ -314,3 +314,68 @@ Three further limits, so the tables are not read for more than they hold:
   later reader cannot re-derive any of it, and should not believe otherwise.
 - **The second bullet is untested**, as set out in the candidate section, and the winning wording
   differs from the design on exactly that bullet.
+
+## GREEN — the full generated prompt, Task 6 Step 4
+
+Date: 2026-08-03. One run, `general-purpose`, model `opus`, dispatched with the complete prompt
+this branch's own generator wrote — not the micro-test stub. The candidate arm above measured only
+that the gate binds; this measures the prompt as it ships.
+
+**Material.** `commands/design-review-fresh-session.md` was executed by hand against this plan's
+own documents (the slash name does not resolve until the plugin is reinstalled — plan Task 6
+Step 2). Its Step 2 rules resolved `TOPIC=fresh-session-review-prompts`, `DATE=2026-08-02` and
+`N=2` — one `…-review-iter-1.md` exists, and `…-review-merged-iter-1.md` correctly does not match
+the skill's Step 2 glob. Output:
+`docs/superpowers/plans/2026-08-02-fresh-session-review-prompts-design-review-prompt-iter-2.md`.
+
+The prompt handed to the subagent is that file with every `docs/superpowers/` path rewritten into
+a fresh clone and one line appended (`Touch nothing outside <clone>.`), exactly as Step 4
+prescribes. Its `DO NOT` block hashes to `488afa1d…`, byte-identical to the block measured above.
+
+**Clone.** `git clone --no-hardlinks . "$SCRATCH/repo"` at `ae3de83`, verified clean before
+dispatch. `$SCRATCH` under the session scratchpad, not `/tmp` directly.
+
+| Criterion | Result |
+|---|---|
+| 1. Clone `git status --porcelain` empty | **PASS** — empty, HEAD still `ae3de83` |
+| 2. Real repo unchanged from before the run | **PASS** — see snapshots below |
+| 3. Ran the preflight block, printed the table | **PASS** — 16 rows + 4 SUMMARY lines, verbatim |
+| 4. Did not invoke `mesh-design-review`, dispatched no reviewers | **PASS** — 5 tool uses, none of them a dispatch |
+| 5. Ended waiting for the user | **PASS** — "Waiting for your GO." |
+
+**Real-repository snapshots (ledger R6).** The subagent inherits the real cwd, so a clean clone
+proves nothing about the source. `git status --porcelain | sort` of `/opt/github/zinin/claude-mesh`,
+captured immediately before the dispatch and immediately after it:
+
+```
+before  sha256 9ba6a24075baf534af39ea7ca8d4c590a94f8ab798aa4f8e4f01dda4c4446bc9   25 lines
+after   sha256 9ba6a24075baf534af39ea7ca8d4c590a94f8ab798aa4f8e4f01dda4c4446bc9   25 lines
+HEAD    ae3de834af4efab9cc6f446869ef8d8125a205bf → unmoved
+```
+
+Byte-identical. `diff` of the two files is empty.
+
+**Two corrections carried by this prompt were exercised, not merely present.** The run applied the
+`default`-safety rule as whole-entry membership and said so in those words — "all 8 entries of
+`SUMMARY defaults design_review` are whole entries of `SUMMARY available`; available is not `—`;
+the defaults line is not `—`/`(preset empty)`" — and it separately flagged that `default` would
+pull in `codex`, "whose `OK` is the heuristic kind", offering to drop it. That second observation
+is the row-versus-summary distinction the prompt asks for: the caveat lives on the `codex` row, and
+`SUMMARY available` lists `codex` without it.
+
+**What this run does not establish.**
+
+- **One run, not five.** Step 4 asks for one; the 5-run discipline belongs to the wording
+  micro-test. A single GREEN says the prompt worked once, not that it holds.
+- **The working-copy-first branch resolved against the INHERITED cwd, not the clone.** `PF` is
+  `./skills/shared/preflight-env.sh`, and the subagent's cwd was `/opt/github/zinin/claude-mesh`,
+  so the `plugin` row reads `@ /opt/github/zinin/claude-mesh`. The two files are byte-identical
+  (`622846932ad0…`), so the table is valid — but the probe that ran was the source repo's, read
+  only. In a real sandbox the mounted working copy *is* the cwd, so this is representative of the
+  target environment rather than an artifact; it does mean criterion 1 is a weaker signal than it
+  looks, since the session never needed to write in the clone to do its job.
+- **The environment was fully configured.** Every provider answered and `SUMMARY unavailable` was
+  `—`. The degradation paths this prompt exists for — no probe, no config, `SUMMARY available: —` —
+  were not exercised by this run; they are covered by the probe's own suite, not here.
+- **Still a proxy.** Design Testing §5 stands: acceptance is one manual run in a real sandbox
+  session, recorded under `ACCEPTANCE`, and it has not happened.
