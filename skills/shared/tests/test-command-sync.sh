@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Holds the two fresh-session review-prompt generators in sync where they must be identical.
+#
+# commands/design-review-fresh-session.md and commands/code-review-fresh-session.md each embed
+# a prompt template for a FRESH Claude Code session. Six regions of that template are shared
+# (the SYNC note at the top of both files enumerates all six); two of them must be identical to
+# the byte:
+#
+#   DO NOT    — the gate that stops a review session from implementing the plan instead. Its
+#               exact wording is an EXPERIMENTAL result: a 5-run A/B against a no-gate control
+#               held 5/5 while the control failed 3/3 (docs/superpowers/verification/
+#               2026-08-02-fresh-session-baseline.md). Line breaks and the em dash are part of
+#               what was measured. Reword it in one file and that path silently ships an
+#               untested gate — nothing breaks, nothing warns, the session just starts coding.
+#   PREFLIGHT — the probe-discovery block plus the rules for reading its verdicts. A drift here
+#               sends one of the two paths at a stale probe, or softens a verdict.
+#
+# Until this suite existed, both were held by a comment alone.
+#
+# Assertion 3 compares the shipped DO NOT block against the measured wording in the baseline
+# record. That record lives under docs/superpowers/, which is `git rm`'d before any PR — so on
+# master the file is absent and assertion 3 SKIPS with a note. It must never fail for absence;
+# assertions 1-2 read only commands/*.md and stay hard everywhere.
+set -u
+TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$TESTS_DIR/../../.." && pwd)"
+CMD_DIR="$REPO/commands"
+
+DESIGN_CMD="$CMD_DIR/design-review-fresh-session.md"
+CODE_CMD="$CMD_DIR/code-review-fresh-session.md"
+BASELINE="$REPO/docs/superpowers/verification/2026-08-02-fresh-session-baseline.md"
+BASELINE_HEADING='## The winning `DO NOT` wording'
+
+FAIL=0
+PASS=0
+SKIP=0
+
+assert_eq() {
+    local desc="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $desc"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc (expected '$expected', got '$actual')"
+    fi
+}
+
+# Multi-line comparison: on failure print the diff, because "two 17-line blocks differ" is
+# not actionable on its own.
+assert_identical() {
+    local desc="$1" a="$2" b="$3"
+    if [ "$a" = "$b" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $desc"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc"
+        diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") | sed 's/^/        /'
+    fi
+}
+
+assert_differs() {
+    local desc="$1" a="$2" b="$3"
+    if [ "$a" != "$b" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $desc"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc (the two are identical — the extractor is not discriminating)"
+    fi
+}
+
+assert_nonempty() {
+    local desc="$1" v="$2"
+    if [ -n "$v" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $desc"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc (extracted nothing)"
+    fi
+}
+
+skip() {
+    SKIP=$((SKIP+1)); echo "  SKIP: $1"
+}
+
+# --- normalisation -----------------------------------------------------------------------
+# The ONLY normalisation in this suite, and it exists for one named reason. The two extractors
+# below use different delimiters: extract_section cuts at the NEXT `## ` heading and therefore
+# carries the blank line that separates the block from that heading, while extract_fenced cuts
+# at a ``` fence and carries no such line. Stripping TRAILING BLANK LINES makes the two
+# delimiters comparable — and does nothing else. Leading whitespace, whitespace inside a line,
+# case and every character of the wording are left exactly as written, so a real difference
+# still fails. Widening this function is how a genuine drift gets absorbed later.
+strip_trailing_blanks() {
+    awk '{ l[NR] = $0 }
+         END { last = NR
+               while (last > 0 && l[last] == "") last--
+               for (i = 1; i <= last; i++) print l[i] }'
+}
+
+# extract_section <file> <heading, matched as an exact line prefix>
+# From the heading line through the line before the next `## ` heading.
+extract_section() {
+    awk -v START="$2" '
+        !on && index($0, START) == 1 { on = 1; print; next }
+        on && /^## / { exit }
+        on { print }
+    ' "$1" | strip_trailing_blanks
+}
+
+# extract_fenced <file> <heading, matched as an exact line prefix>
+# The first ```-fenced block following that heading. Used for the baseline record, where the
+# wording is quoted inside a fence rather than living under a heading of its own.
+extract_fenced() {
+    awk -v START="$2" '
+        !h && index($0, START) == 1 { h = 1; next }
+        h && !inb && /^```/ { inb = 1; next }
+        h && inb && /^```/  { exit }
+        h && inb { print }
+    ' "$1" | strip_trailing_blanks
+}
+
+DESIGN_DONOT="$(extract_section "$DESIGN_CMD" '## DO NOT')"
+CODE_DONOT="$(extract_section "$CODE_CMD" '## DO NOT')"
+DESIGN_PREFLIGHT="$(extract_section "$DESIGN_CMD" '## PREFLIGHT')"
+CODE_PREFLIGHT="$(extract_section "$CODE_CMD" '## PREFLIGHT')"
+
+# === Test 1: the extraction is not vacuous ===
+# A checksum over an empty or wrongly-delimited range proves nothing, and this plan's review
+# loop has already caught two gates that could not fail. The line counts are deliberate
+# canaries: if you legitimately change a block, update the number here on purpose — do not
+# delete the assertion.
+echo "=== Test 1: extraction is non-vacuous and discriminating ==="
+# Emptiness is asserted separately from the line counts on purpose: `printf '%s\n' ""` is ONE
+# line, so a count assertion whose expected value ever became 1 would pass on an extraction
+# that found nothing. These four make that impossible regardless of what the counts become.
+assert_nonempty "design DO NOT extracted"     "$DESIGN_DONOT"
+assert_nonempty "code DO NOT extracted"       "$CODE_DONOT"
+assert_nonempty "design PREFLIGHT extracted"  "$DESIGN_PREFLIGHT"
+assert_nonempty "code PREFLIGHT extracted"    "$CODE_PREFLIGHT"
+assert_eq "design DO NOT is 7 lines"      "7"  "$(printf '%s\n' "$DESIGN_DONOT" | grep -c '')"
+assert_eq "code DO NOT is 7 lines"        "7"  "$(printf '%s\n' "$CODE_DONOT" | grep -c '')"
+assert_eq "design PREFLIGHT is 17 lines"  "17" "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c '')"
+assert_eq "code PREFLIGHT is 17 lines"    "17" "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c '')"
+assert_eq "design DO NOT starts at its heading" "## DO NOT" "$(printf '%s\n' "$DESIGN_DONOT" | head -1)"
+assert_eq "code DO NOT starts at its heading"   "## DO NOT" "$(printf '%s\n' "$CODE_DONOT" | head -1)"
+# The two blocks of the SAME file must come out different, or the extractor is returning
+# something other than what it claims and every identity assertion below is meaningless.
+assert_differs "DO NOT and PREFLIGHT extract to different text" "$CODE_DONOT" "$CODE_PREFLIGHT"
+
+# === Test 2: the measured DO NOT gate is byte-identical across the pair ===
+echo "=== Test 2: DO NOT is byte-identical in both command files ==="
+assert_identical "DO NOT: design == code" "$DESIGN_DONOT" "$CODE_DONOT"
+
+# === Test 3: the preflight block is byte-identical across the pair ===
+echo "=== Test 3: PREFLIGHT is byte-identical in both command files ==="
+assert_identical "PREFLIGHT: design == code" "$DESIGN_PREFLIGHT" "$CODE_PREFLIGHT"
+
+# === Test 4: the shipped gate still matches the wording that was actually measured ===
+# Tests 2-3 only prove the two files agree — they would both stay green if someone reworded
+# the gate in BOTH. This one pins the pair to the experiment.
+echo "=== Test 4: DO NOT matches the measured baseline wording ==="
+if [ ! -f "$BASELINE" ]; then
+    skip "baseline record absent ($BASELINE) — expected on master, docs/superpowers/ is removed before a PR"
+else
+    BASELINE_DONOT="$(extract_fenced "$BASELINE" "$BASELINE_HEADING")"
+    assert_nonempty "baseline block extracted" "$BASELINE_DONOT"
+    assert_eq "baseline block is 7 lines" "7" "$(printf '%s\n' "$BASELINE_DONOT" | grep -c '')"
+    assert_identical "DO NOT: shipped == measured" "$BASELINE_DONOT" "$CODE_DONOT"
+fi
+
+echo ""
+echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="
+[ "$FAIL" = "0" ]

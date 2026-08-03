@@ -5,15 +5,21 @@ description: Generate a prompt for reviewing an implemented plan via /claude-mes
 
 # Fresh-Session Code-Review Prompt Generator
 
-<!-- SYNC: the DO NOT / ENVIRONMENT / PREFLIGHT / THEN STOP blocks of the generated prompt are
-     shared with commands/design-review-fresh-session.md — change both files or neither.
-     DO NOT and PREFLIGHT are byte-identical in the two files. ENVIRONMENT and THEN STOP differ
-     by exactly one phrase each, by design — design-review first, code-review second:
-     ENVIRONMENT, `mesh-design-review commits its own auto-fixes and its iteration log` /
-     `mesh-review commits its own auto-fixes and decisions` (the shorter phrase reflows the wrap
-     of the sentence that follows); THEN STOP item 1, `Summarise the documents in 5–10 lines.` /
-     `Summarise what was built, in 5–10 lines.`. The `default`-safety rule under WHEN THE USER
-     SAYS GO is mirrored too, with `design_review` swapped for `code_review` and nothing else.
+<!-- SYNC: six regions of the generated prompt are shared with
+     commands/design-review-fresh-session.md — change both files or neither. Ordered by how
+     tightly each is held; where they differ, design-review text first, code-review second:
+       1. DO NOT — byte-identical. Asserted by skills/shared/tests/test-command-sync.sh.
+       2. PREFLIGHT — byte-identical. Asserted by the same test.
+       3. ENVIRONMENT — one phrase differs: `mesh-design-review commits its own auto-fixes and
+          its iteration log` / `mesh-review commits its own auto-fixes and decisions`. The
+          shorter phrase reflows the wrap of the sentence that follows.
+       4. THEN STOP item 1 — `Summarise the documents in 5–10 lines.` /
+          `Summarise what was built, in 5–10 lines.`
+       5. WHEN THE USER SAYS GO, opening paragraph — identical after the invocation sentence
+          (`mesh-design-review` with DESIGN_PATH/PLAN_PATH/TOPIC / bare `mesh-review`), whose
+          length also sets the wrap of everything after it.
+       6. WHEN THE USER SAYS GO, the `default`-safety rule — identical with `design_review`
+          swapped for `code_review` and nothing else.
      The DO NOT block's exact wording — line breaks and em dash included — is what a 5-run A/B
      against a no-gate control actually measured (5/5 held, control failed 3/3). Reformat it and
      you are shipping an untested gate. -->
@@ -52,6 +58,10 @@ the missing entries from `DOCUMENTS`, and keep the git range. Never invent a doc
 All local — no network is involved, which is the point in a sandbox:
 
 ```bash
+# Substitute the BASE_BRANCH= argument into the line below, or leave it empty when the
+# argument was not given. A command argument is not an environment variable and does not
+# reach this subshell on its own — without this line a user-supplied base is silently lost.
+BASE_BRANCH=""
 BASE_REF="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')"
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}"
 BASE_SHA="$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git merge-base HEAD "origin/$BASE_BRANCH" 2>/dev/null)"
@@ -60,7 +70,13 @@ HEAD_SHA="$(git rev-parse HEAD)"
 # string "HEAD" into the prompt as a branch name.
 BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)"
 DIRTY="$(git status --porcelain)"
-git log --oneline "$BASE_SHA..$HEAD_SHA"
+# Guarded: an empty BASE_SHA would make this `HEAD..$HEAD_SHA` — empty output, exit 0, and a
+# missing base would look exactly like a branch with no commits.
+if [ -n "$BASE_SHA" ]; then
+  git log --oneline "$BASE_SHA..$HEAD_SHA"
+else
+  echo "merge-base found no base against '$BASE_BRANCH' — ask the user for the base branch"
+fi
 ```
 
 If `BASE_SHA` does not resolve, name the branch that was tried and ask the user for the base.
@@ -160,9 +176,9 @@ to start without a usable config.yaml at all.
 ## WHEN THE USER SAYS GO
 
 Invoke `/claude-mesh:mesh-review` and select only reviewers the preflight marked available.
-Choose from the ROWS, not from `SUMMARY available`: the summary lists `codex` and `gemini` with
-no caveat, while their own rows say that `OK` there is a heuristic — binary present, section
-valid, endpoint answered, nothing about auth.
+When you pick reviewers by hand, choose from the ROWS, not from `SUMMARY available`: the summary
+lists `codex` and `gemini` with no caveat, while their own rows say that `OK` there is a
+heuristic — binary present, section valid, endpoint answered, nothing about auth.
 
 Whether the `default` argument is safe here is a membership check between two SUMMARY lines.
 Split both on `, ` and compare WHOLE entries — never substrings: a bare `claude` is a substring
