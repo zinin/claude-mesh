@@ -16,6 +16,15 @@
 #      PREFLIGHT_SKIP_NETWORK (0)  — 1 skips every network probe (fast re-runs)
 set -u
 
+# Bash 4+ required: PROBED_STATUS is an associative array. Exit 64 — not 1 — for the same
+# reason watch-runs.sh does: a bare 1 is indistinguishable from a verdict, and this probe's
+# whole job is to run on a machine nobody configured (macOS system bash is 3.2). "Every
+# verdict exits 0" covers DELIVERED verdicts; a probe that cannot run delivers none.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    echo "preflight-env: bash 4+ required (got ${BASH_VERSION:-unknown}). Install: brew install bash" >&2
+    exit 64
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOADER="$SCRIPT_DIR/config-loader.sh"
 EXEC_DIR="$SCRIPT_DIR/../ext-claude-exec"
@@ -123,12 +132,20 @@ else
 fi
 
 # ---------------------------------------------------------------- prerequisites
-# curl governs only this script's own HTTP checks; the borrowed prechecks resolve curl from
-# PATH, so when the resolved curl is absent the provider probes are skipped outright — a
-# precheck with no curl would fake NO-NETWORK out of a command-not-found.
+# TWO lookups, not one. CURL_BIN governs this script's own HTTP checks, but the borrowed
+# prechecks resolve `curl` from PATH — so an override that resolves while PATH has no curl
+# would let them run, and token-precheck.sh turns command-not-found into HTTP 000 (:43), i.e.
+# a NO-NETWORK row fabricated out of a missing binary. Either gap skips the probes outright.
 HAVE_CURL=1
-command -v "$CURL_BIN" >/dev/null 2>&1 || HAVE_CURL=0
-[ "$HAVE_CURL" = 1 ] || row curl MISSING "own network probes and provider prechecks skipped — their rows read UNKNOWN"
+CURL_GAP=""
+command -v "$CURL_BIN" >/dev/null 2>&1 || CURL_GAP="$CURL_BIN"
+if [ "$CURL_BIN" != curl ] && ! command -v curl >/dev/null 2>&1; then
+    CURL_GAP="${CURL_GAP:+$CURL_GAP, }curl on PATH (where the prechecks look)"
+fi
+if [ -n "$CURL_GAP" ]; then
+    HAVE_CURL=0
+    row curl MISSING "not found: $CURL_GAP — own network probes and provider prechecks skipped, their rows read UNKNOWN"
+fi
 
 # ext-claude executors STOP without these (ext-claude-exec SKILL.md Dependencies); a reachable
 # endpoint is useless if the executor cannot start. Unquoted on purpose: the list word-splits.
@@ -151,10 +168,16 @@ declare -A PROBED_STATUS=()
 PROV_STATUS=""
 PROV_DETAIL=""
 probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PROV_DETAIL
-    local mid="$1" envf eerr first out rc url
+    local mid="$1" eerr first out rc rest kind url
     eerr="$(mktemp)"
-    if ! envf="$("$LOADER" export "$mid" 2>"$eerr")"; then
+    # Assigned STRAIGHT into the global, never into a local first: the mode-600 token file
+    # exists from the moment export returns, so any window in which the file is on disk and
+    # CURRENT_ENVF is not yet set is a window in which a signal leaks it.
+    if ! CURRENT_ENVF="$("$LOADER" export "$mid" 2>"$eerr")"; then
         first="$(head -1 "$eerr")"; rm -f "$eerr"
+        # export prints the path only on success, so this is normally empty. If a future
+        # loader ever printed one and then died, leave it set so the trap deletes the file.
+        [ -n "$CURRENT_ENVF" ] && [ -f "$CURRENT_ENVF" ] || CURRENT_ENVF=""
         # cmd_export also dies on invalid providers/models/runtime and "model not found" —
         # only a token complaint may be blamed on the token.
         case "$first" in
@@ -164,35 +187,51 @@ probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PR
         return 0
     fi
     rm -f "$eerr"
-    if [ -z "$envf" ] || [ ! -f "$envf" ]; then
+    if [ -z "$CURRENT_ENVF" ] || [ ! -f "$CURRENT_ENVF" ]; then
+        CURRENT_ENVF=""
         PROV_STATUS="UNKNOWN"; PROV_DETAIL="export produced no env file"; return 0
     fi
-    CURRENT_ENVF="$envf"
-    # Subshell: the token lives only here; only "rc|base_url" leaves it. base_url is not a
-    # secret (the token is a separate field) and it is the first thing the operator wants.
-    # Both prechecks print their diagnosis on stderr, which is discarded.
+    # Subshell: the token lives only here; only "rc|kind|base_url" leaves it. base_url is not
+    # a secret (the token is a separate field) and it is the first thing the operator wants;
+    # kind decides how to word an rc=5. Both prechecks print their diagnosis on stderr, which
+    # is discarded — dropping that 2>&1 would put up to 400 bytes of raw provider response on
+    # the probe's own stderr (token-precheck.sh:49), which the suite's stderr gate rejects.
     out="$(
         # shellcheck disable=SC1090
-        . "$envf"
-        case "${CLAUDE_MESH_PROVIDER_KIND:-anthropic-api}" in
+        . "$CURRENT_ENVF"
+        # :- guards: a truncated env file must degrade to a verdict, not abort the subshell
+        # under `set -u` and print bash's own diagnostic on stderr.
+        KIND="${CLAUDE_MESH_PROVIDER_KIND:-anthropic-api}"
+        case "$KIND" in
             ollama-daemon)
                 env -u SKIP_TOKEN_PRECHECK \
                     OLLAMA_PRECHECK_TRIES=1 \
                     OLLAMA_PRECHECK_ATTEMPT_TIMEOUT="$HTTP_TIMEOUT" \
                     OLLAMA_PRECHECK_TAGS_TIMEOUT="$HTTP_TIMEOUT" \
-                    "$EXEC_DIR/ollama-precheck.sh" "$ANTHROPIC_BASE_URL" >/dev/null 2>&1
-                printf '%s|%s' "$?" "$ANTHROPIC_BASE_URL" ;;
+                    "$EXEC_DIR/ollama-precheck.sh" "${ANTHROPIC_BASE_URL:-}" >/dev/null 2>&1
+                printf '%s|%s|%s' "$?" "$KIND" "${ANTHROPIC_BASE_URL:-}" ;;
             *)
                 env -u SKIP_TOKEN_PRECHECK "$EXEC_DIR/token-precheck.sh" \
-                    "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN" "$HTTP_TIMEOUT" >/dev/null 2>&1
-                printf '%s|%s' "$?" "$ANTHROPIC_BASE_URL" ;;
+                    "${ANTHROPIC_BASE_URL:-}" "${ANTHROPIC_AUTH_TOKEN:-}" "$HTTP_TIMEOUT" >/dev/null 2>&1
+                printf '%s|%s|%s' "$?" "$KIND" "${ANTHROPIC_BASE_URL:-}" ;;
         esac
     )"
-    rm -f "$envf"; CURRENT_ENVF=""
-    rc="${out%%|*}"; url="${out#*|}"
+    # Cleared only once the unlink actually succeeded: otherwise the trap must keep the name
+    # so it can try again at exit.
+    rm -f "$CURRENT_ENVF" && CURRENT_ENVF=""
+    # url takes everything after the SECOND separator, so a '|' inside a base_url survives.
+    rc="${out%%|*}"; rest="${out#*|}"; kind="${rest%%|*}"; url="${rest#*|}"
     case "$rc" in
         0) PROV_STATUS="OK";          PROV_DETAIL="endpoint answered, credentials accepted ($url)" ;;
-        5) PROV_STATUS="AUTH-FAILED"; PROV_DETAIL="endpoint answered, credentials rejected ($url)" ;;
+        5) PROV_STATUS="AUTH-FAILED"
+           # An ollama daemon has no credential to reject — rc=5 there means the daemon is up
+           # but /api/tags errored. "credentials rejected" would send the operator hunting for
+           # a token that does not exist.
+           if [ "$kind" = "ollama-daemon" ]; then
+               PROV_DETAIL="daemon up but /api/tags errored — run: ollama signin ($url)"
+           else
+               PROV_DETAIL="endpoint answered, credentials rejected ($url)"
+           fi ;;
         6) PROV_STATUS="NO-NETWORK";  PROV_DETAIL="$url did not answer within ${HTTP_TIMEOUT}s" ;;
         *) PROV_STATUS="UNKNOWN";     PROV_DETAIL="precheck exited $rc ($url)" ;;
     esac

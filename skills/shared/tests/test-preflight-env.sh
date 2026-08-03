@@ -98,6 +98,7 @@ ERR=""
 # status set, "every verdict exits 0" — hold over EVERY scenario, including ones Tasks 2-4
 # have not written yet.
 ALL_OUT=""
+ALL_ERR=""
 BAD_RC=""
 PROBE_N=0
 run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
@@ -120,6 +121,7 @@ run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
     ERR="$(cat "$errf")"
     rm -f "$errf"
     ALL_OUT="$ALL_OUT$OUT"$'\n'
+    ALL_ERR="$ALL_ERR$ERR"$'\n'
     PROBE_N=$((PROBE_N+1))
     [ "$RC" -eq 0 ] || BAD_RC="$BAD_RC #$PROBE_N($fixture rc=$RC)"
 }
@@ -186,12 +188,27 @@ cat > "$SHIM/curl" <<'SH'
 code="${SHIM_HTTP_CODE:-200}"
 fail_on_http=0
 for a in "$@"; do case "$a" in -sf|-f|--fail) fail_on_http=1 ;; esac; done
+# SHIM_TAGS_CODE, when set, applies to /api/tags ONLY. That path is the only way to reach
+# ollama-precheck.sh's rc=5 ("daemon up, tags errored") without a real daemon: the daemon
+# ping and the tags read differ by URL alone.
+for a in "$@"; do case "$a" in */api/tags) code="${SHIM_TAGS_CODE:-$code}" ;; esac; done
 [ "$code" = "000" ] && exit 7                                    # curl itself failed
 [ "$fail_on_http" = 1 ] && [ "$code" -ge 400 ] && exit 22        # what -f does on 4xx/5xx
 echo "$code"
 exit 0
 SH
 chmod +x "$SHIM/curl"
+
+# A PATH that genuinely has no curl but still has everything the loader needs (yq, jq, …).
+# Built by symlinking every PATH entry into one dir — first occurrence wins, as in a real
+# PATH search — and then deleting the curl link. Needed because curl lives in /usr/bin next
+# to every other tool here, so no subset of the real PATH can drop curl alone.
+mkdir -p "$WORK/nocurl"
+IFS=: read -r -a PATH_DIRS <<<"$PATH"
+for D in "${PATH_DIRS[@]}"; do
+    [ -n "$D" ] && [ -d "$D" ] && ln -s "$D"/* "$WORK/nocurl/" 2>/dev/null
+done
+rm -f "$WORK/nocurl/curl"
 
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 assert_eq "reachable provider -> OK"          OK   "$(field provider:zai "$OUT")"
@@ -204,6 +221,17 @@ assert_eq "one row per provider" 2 "$(grep -c '^provider:' <<<"$OUT")"
 
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=401
 assert_eq "401 -> AUTH-FAILED"                AUTH-FAILED "$(field provider:zai "$OUT")"
+assert_match "…and blames the credentials"    "credentials rejected" "$OUT"
+
+# Same status, different kind, different advice: an ollama daemon has no credential to
+# reject, so rc=5 there must not send the operator hunting for a token that does not exist.
+# Only /api/tags fails here, which is exactly what "daemon up, not signed in" looks like.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
+          SHIM_HTTP_CODE=200 SHIM_TAGS_CODE=404
+assert_eq "ollama tags failure -> AUTH-FAILED" AUTH-FAILED "$(field provider:ollama "$OUT")"
+assert_match "…advises ollama signin"          "ollama signin" "$OUT"
+assert_no_match "…and never blames a token"    "credentials rejected" "$OUT"
+assert_eq "…while the anthropic-api provider is untouched" OK "$(field provider:zai "$OUT")"
 
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000
 assert_eq "unreachable -> NO-NETWORK"         NO-NETWORK  "$(field provider:zai "$OUT")"
@@ -230,6 +258,15 @@ assert_no_match "…not blamed on any token"    "token not configured" "$OUT"
 # network verdict. No PATH surgery needed: the gate is HAVE_CURL, not the prechecks' lookup.
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl"
 assert_eq "no curl -> provider UNKNOWN"       UNKNOWN "$(field provider:zai "$OUT")"
+
+# The other half of the same gate, and the one that fabricates a verdict if it is missing:
+# PREFLIGHT_CURL_BIN resolves, but the prechecks look `curl` up on PATH and would not find it.
+# token-precheck.sh turns that command-not-found into HTTP 000 -> rc 6 -> NO-NETWORK, an
+# endpoint verdict invented out of a missing binary. UNKNOWN is the only honest answer.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/nocurl"
+assert_eq "curl absent from PATH -> its own row" MISSING "$(field curl "$OUT")"
+assert_eq "…and provider UNKNOWN, not NO-NETWORK" UNKNOWN "$(field provider:zai "$OUT")"
+assert_match "…naming the PATH gap"           "curl on PATH" "$OUT"
 
 # Missing ext-claude prerequisites: endpoint reachability is irrelevant if the executor
 # cannot start — provider rows degrade and name the gap.
@@ -283,6 +320,24 @@ assert_eq   "…and the gate actually examined rows" \
 # whose last command silently decides the script's exit status. Asserting RC per scenario
 # only covers the scenarios someone remembered; this backstop covers all of them.
 assert_eq   "every verdict exits 0" "" "$BAD_RC"
+
+# stdout is the table; stderr is progress chatter and NOTHING else. The real regression this
+# guards is a dropped `2>&1` on a precheck invocation: token-precheck.sh prints up to 400
+# bytes of raw provider response body (:49) and ollama-precheck.sh prints the URL, so the
+# probe would start emitting other people's diagnostics — and, for a provider that echoes the
+# request, potentially the token itself. A per-scenario "the token is not in $ERR" assertion
+# cannot catch that: neither precheck prints the token today, so it can never fail.
+#
+# The filter is a PREFIX, deliberately: Task 3's cli_row adds `probing codex (https://…)…`
+# and `probing gemini (…)…`. Pinning exact text would break there; `^probing ` covers every
+# such line and still rejects `token-precheck: OK (HTTP 200) — token appears valid`.
+BAD_ERR="$(grep -v '^probing ' <<<"$ALL_ERR" | grep -c . || true)"
+assert_eq   "stderr carries only probe chatter, never precheck diagnostics" 0 "$BAD_ERR"
+# Same pairing as the closed-set gate above: a gate that passes on empty input must prove it
+# had input. 17 probing lines today, across the 10 scenarios that reach a live probe (3 of
+# them in the Task 1 section, whose fixtures also carry providers).
+assert_eq   "…and that gate saw the chatter it filters" \
+            1 "$([ "$(grep -c '^probing ' <<<"$ALL_ERR")" -ge 5 ] && echo 1 || echo 0)"
 
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
