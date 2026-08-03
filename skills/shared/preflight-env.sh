@@ -155,6 +155,67 @@ for T in $EXT_DEPS_BINS; do
 done
 [ -z "$EXT_DEPS_MISSING" ] || row ext-claude-deps MISSING "$EXT_DEPS_MISSING — ext-claude executors cannot run here"
 
+# ---------------------------------------------------------------- CLI reviewers
+probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
+    [ "$SKIP_NET" = 0 ] || { echo UNKNOWN; return 0; }
+    [ "$HAVE_CURL" = 1 ] || { echo UNKNOWN; return 0; }
+    local code
+    code="$("$CURL_BIN" -sS -o /dev/null -w '%{http_code}' --max-time "$HTTP_TIMEOUT" "$1" 2>/dev/null)" \
+        || code="000"
+    if [ "$code" = "000" ]; then echo NO-NETWORK; else echo OK; fi
+}
+
+# A CLI reviewer is offered by the selection UI only when its config section exists
+# (mesh-review Step 2 / mesh-design-review Step 5.2) — but its consumers then read the section
+# through the TYPED getter (get-codex / get-gemini), which validates and dies on a malformed
+# one, while the bare has_* probe validates nothing. Mirror both gates, section first: a codex
+# binary with no codex: section is not a reviewer you can pick, however healthy its network is;
+# a section the getter rejects is INVALID before any CLI or network claim.
+# cli_row prints its row and reports the verdict through the CLI_STATUS global. It must NOT
+# echo the verdict: the caller would have to capture its stdout, and the row would vanish into
+# that same capture instead of reaching the report.
+CLI_STATUS=""
+cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_section flag
+    if [ "$CONFIG_STATUS" != "OK" ]; then
+        CLI_STATUS="SKIPPED"
+        row "$1" SKIPPED "no usable config — the selection UI cannot offer it"
+        return 0
+    fi
+    if [ "$4" != "1" ]; then
+        CLI_STATUS="MISSING"
+        row "$1" MISSING "no $1: section in config — the selection UI will not offer it"
+        return 0
+    fi
+    local gerr
+    gerr="$(mktemp)"
+    if ! "$LOADER" "get-$1" >/dev/null 2>"$gerr"; then
+        CLI_STATUS="INVALID"
+        row "$1" INVALID "$(head -1 "$gerr")"
+        rm -f "$gerr"
+        return 0
+    fi
+    rm -f "$gerr"
+    if ! command -v "$2" >/dev/null 2>&1; then
+        CLI_STATUS="MISSING"
+        row "$1" MISSING "$2 not on PATH"
+        return 0
+    fi
+    # Announce only a probe that will actually happen — same order as the provider loop below.
+    # "probing codex…" followed by an UNKNOWN row would describe work the probe never did.
+    if [ "$SKIP_NET" = 0 ] && [ "$HAVE_CURL" = 1 ]; then
+        echo "probing $1 ($3)…" >&2
+    fi
+    CLI_STATUS="$(probe_http "$3")"
+    case "$CLI_STATUS" in
+        OK)         row "$1" OK         "CLI present, $3 answered (heuristic: not an auth check)" ;;
+        NO-NETWORK) row "$1" NO-NETWORK "CLI present, $3 silent for ${HTTP_TIMEOUT}s (heuristic)" ;;
+        *)          row "$1" UNKNOWN    "CLI present, network not probed (no curl, or PREFLIGHT_SKIP_NETWORK)" ;;
+    esac
+}
+
+cli_row codex  "codex"  "https://api.openai.com/v1/models"           "$HAS_CODEX";  CODEX_STATUS="$CLI_STATUS"
+cli_row gemini "gemini" "https://generativelanguage.googleapis.com/" "$HAS_GEMINI"; GEMINI_STATUS="$CLI_STATUS"
+
 # ---------------------------------------------------------------- providers
 # Models of one provider share an endpoint, so probe once per provider and let Task 4 expand
 # the verdict back into model ids. Rows appear in order of first appearance in `models`; a
@@ -266,4 +327,50 @@ else
         row "provider:$PROV" "$PROV_STATUS" "$PROV_DETAIL"
         PROBED_STATUS[$PROV]="$PROV_STATUS"
     done <<< "$MODELS"
+fi
+
+# ---------------------------------------------------------------- git, forge CLIs, clipboard
+# git remote — local refs are enough for the review skills; this row exists so the reading
+# session does not plan a push it cannot make. GIT_TERMINAL_PROMPT=0 + BatchMode: a remote
+# that wants credentials or host-key confirmation must answer instantly instead of stalling
+# into the timeout and being miscalled NO-NETWORK.
+if ! command -v "$GIT_BIN" >/dev/null 2>&1; then
+    row git-remote MISSING "$GIT_BIN not on PATH"
+elif ! "$GIT_BIN" rev-parse --git-dir >/dev/null 2>&1; then
+    row git-remote MISSING "not inside a git repository"
+elif ! "$GIT_BIN" remote get-url origin >/dev/null 2>&1; then
+    row git-remote MISSING "no 'origin' remote configured"
+elif [ "$SKIP_NET" = 1 ]; then
+    row git-remote UNKNOWN "skipped by PREFLIGHT_SKIP_NETWORK"
+elif ! command -v timeout >/dev/null 2>&1; then
+    # timeout(1) is GNU-only and absent on a stock macOS — precisely the unconfigured machine
+    # this probe exists for (config-loader.sh:76 fails for the same reason). Without this
+    # branch the command-not-found would fail the `if` below and print NO-NETWORK: an endpoint
+    # verdict invented out of a missing binary, the same defect the curl gate above prevents.
+    row git-remote UNKNOWN "no timeout(1) — ls-remote not run (brew install coreutils)"
+else
+    if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes' \
+       timeout "$GIT_TIMEOUT" "$GIT_BIN" ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
+        row git-remote OK "origin answered"
+    else
+        row git-remote NO-NETWORK "origin did not answer (or refused) within ${GIT_TIMEOUT}s — do not plan a push or a PR"
+    fi
+fi
+
+for TOOL in gh glab; do
+    if command -v "$TOOL" >/dev/null 2>&1; then
+        row "$TOOL" OK "on PATH (presence only — not an auth check)"
+    else
+        row "$TOOL" MISSING "not on PATH"
+    fi
+done
+
+CLIP=""
+for C in xclip xsel pbcopy; do
+    command -v "$C" >/dev/null 2>&1 && { CLIP="$C"; break; }
+done
+if [ -n "$CLIP" ]; then
+    row clipboard OK "$CLIP"
+else
+    row clipboard MISSING "no xclip/xsel/pbcopy — print generated prompts into the chat"
 fi

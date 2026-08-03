@@ -294,6 +294,144 @@ assert_no_match "…and never reaches stderr either"    "tkn-zai" "$ERR"
 LEFT="$(find "$CFG_DIR" -name 'claude-mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "exported env files removed" 0 "$LEFT"
 
+echo "== Task 3: CLI, git and clipboard rows =="
+
+# Two more PATH farms, same recipe as $WORK/nocurl above (first occurrence wins, as in a real
+# PATH search). Factored into a helper because Task 3 needs two of them.
+#
+# $SHIM MUST STAY FIRST in every PATH built from a farm: a farm carries the REAL curl, and the
+# prechecks resolve `curl` from PATH — with the farm first, the suite would start talking to
+# api.z.ai and to the ollama daemon this machine actually runs.
+mkfarm() {              # mkfarm <dir> [binary-to-omit ...]
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    local d b
+    for d in "${PATH_DIRS[@]}"; do
+        [ -n "$d" ] && [ -d "$d" ] && ln -s "$d"/* "$dir/" 2>/dev/null
+    done
+    for b in "$@"; do rm -f "$dir/$b"; done
+}
+# codex and gemini ship via npm, so a developer's PATH very likely has both — and then
+# "section present, CLI absent" could never be reached and the suite would be reporting the
+# laptop instead of the fixture.
+mkfarm "$WORK/nocli" codex gemini
+# `timeout` is GNU-only: absent on a stock macOS, which is exactly the unconfigured machine
+# this probe exists for.
+mkfarm "$WORK/notimeout" timeout
+
+# valid-full.yaml has no codex:/gemini: sections. The selection UI hides those reviewers on
+# exactly that condition, so the row must say "config", not "network", whatever is on PATH.
+# PATH is deliberately the REAL one here: both CLIs are installed on this machine, so the
+# section gate is what has to produce MISSING.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
+assert_eq   "no codex section -> MISSING"      MISSING "$(field codex "$OUT")"
+assert_match "and says why"                    "no codex: section" "$OUT"
+assert_eq   "no gemini section -> MISSING"     MISSING "$(field gemini "$OUT")"
+
+# A section that exists but that the typed getter rejects: the UI would offer it and then die
+# on get-codex — the probe must say INVALID first, before any CLI or network claim.
+run_probe broken-codex-valid-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_eq   "malformed codex section -> INVALID" INVALID "$(field codex "$OUT")"
+assert_match "…with the validator's own reason"  "codex.model" "$OUT"
+
+# With a valid section present, the CLI must exist on PATH before the network is consulted.
+cat > "$SHIM/codex" <<'SH'
+#!/usr/bin/env bash
+echo "codex 0.0.0-test"
+SH
+chmod +x "$SHIM/codex"
+
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli" SHIM_HTTP_CODE=200
+assert_eq   "codex CLI + network -> OK"        OK          "$(field codex "$OUT")"
+assert_match "codex verdict marked heuristic"  "heuristic" "$OUT"
+assert_eq   "gemini section but no CLI"        MISSING     "$(field gemini "$OUT")"
+
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli" SHIM_HTTP_CODE=000
+assert_eq   "codex CLI, no network -> NO-NETWORK" NO-NETWORK "$(field codex "$OUT")"
+
+# curl absent: nothing that needs the network may claim a verdict.
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl" PATH="$SHIM:$PATH"
+assert_eq   "no curl -> codex UNKNOWN"         UNKNOWN "$(field codex "$OUT")"
+assert_eq   "no curl -> its own row"           MISSING "$(field curl "$OUT")"
+assert_no_match "…and announces no probe it never made" "probing codex" "$ERR"
+
+# git: absent binary is MISSING, and a hanging remote is NO-NETWORK rather than a hang.
+run_probe none PREFLIGHT_GIT_BIN="$WORK/no-such-git"
+assert_eq   "no git -> MISSING"                MISSING "$(field git-remote "$OUT")"
+assert_eq   "missing git still exits 0"        0       "$RC"
+# Same run, the config gate: with no config there is no section to read, so a CLI row must say
+# SKIPPED rather than blame the CLI or the network. PATH here is the real one — both binaries
+# are present, so only the gate order can produce this verdict.
+assert_eq   "no config -> codex SKIPPED"       SKIPPED "$(field codex "$OUT")"
+assert_eq   "no config -> gemini SKIPPED"      SKIPPED "$(field gemini "$OUT")"
+
+# Not a repository at all: still a local fact, never a network verdict.
+mkdir -p "$WORK/gitnorepo"
+cat > "$WORK/gitnorepo/git" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$WORK/gitnorepo/git"
+run_probe none PREFLIGHT_GIT_BIN="$WORK/gitnorepo/git"
+assert_eq   "not in a repo -> MISSING"         MISSING "$(field git-remote "$OUT")"
+assert_match "…and says which local fact"      "not inside a git repository" "$OUT"
+
+# Deliberately NOT in $SHIM: this shim sleeps, and $SHIM is on PATH for every later scenario.
+mkdir -p "$WORK/gitshim"
+cat > "$WORK/gitshim/git" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  remote)     echo "https://example.invalid/repo.git" ;;   # a remote IS configured
+  ls-remote)  sleep 30 ;;                                  # …and it never answers
+  *)          exit 0 ;;
+esac
+SH
+chmod +x "$WORK/gitshim/git"
+run_probe none PREFLIGHT_GIT_BIN="$WORK/gitshim/git" PREFLIGHT_GIT_TIMEOUT=1
+assert_eq   "unreachable remote -> NO-NETWORK" NO-NETWORK "$(field git-remote "$OUT")"
+
+# The only path that yields OK — and the only thing proving the NO-NETWORK above is a verdict
+# rather than what that branch always prints.
+mkdir -p "$WORK/gitok"
+cat > "$WORK/gitok/git" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  remote)     echo "https://example.invalid/repo.git" ;;
+  ls-remote)  echo "0000000000000000000000000000000000000000	HEAD" ;;
+  *)          exit 0 ;;
+esac
+SH
+chmod +x "$WORK/gitok/git"
+run_probe none PREFLIGHT_GIT_BIN="$WORK/gitok/git"
+assert_eq   "answering remote -> OK"           OK "$(field git-remote "$OUT")"
+
+# PREFLIGHT_SKIP_NETWORK has to reach every probe this task adds, not just the provider loop:
+# the git shim here would sleep 30s and the codex shim is on PATH, so a leaked probe is visible
+# both as a wrong verdict and as chatter.
+run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli" \
+          PREFLIGHT_GIT_BIN="$WORK/gitshim/git" PREFLIGHT_SKIP_NETWORK=1
+assert_eq   "skip-network -> git-remote UNKNOWN" UNKNOWN "$(field git-remote "$OUT")"
+assert_eq   "skip-network -> codex UNKNOWN"      UNKNOWN "$(field codex "$OUT")"
+assert_no_match "…and no probe is announced"     "probing codex" "$ERR"
+
+# No timeout(1): `timeout … ls-remote` would fail with 127 and the row would read NO-NETWORK —
+# an endpoint verdict fabricated out of a missing binary, the same defect the curl gate exists
+# to prevent. The remote here ANSWERS, so NO-NETWORK could only come from that fabrication.
+run_probe none PREFLIGHT_GIT_BIN="$WORK/gitok/git" PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$SHIM:$WORK/notimeout"
+assert_eq   "no timeout(1) -> UNKNOWN, not NO-NETWORK" UNKNOWN "$(field git-remote "$OUT")"
+assert_match "…naming the missing binary"              "timeout" "$OUT"
+
+assert_match "gh row present"        "gh"        "$OUT"
+assert_match "clipboard row present" "clipboard" "$OUT"
+# Those two are substring checks and would pass on prose. `field` proves each is a real row;
+# the status itself is machine-dependent (gh/glab/xclip may or may not be installed), so it is
+# checked for membership in the closed set rather than for a fixed value.
+for TOOLROW in gh glab clipboard; do
+    assert_eq "$TOOLROW is a row with a real status" 1 \
+        "$(grep -Ec '^(OK|MISSING)$' <<<"$(field "$TOOLROW" "$OUT")")"
+done
+
 # ============================================================================
 # FINAL GATES — must stay LAST. Tasks 2-4 append their scenario sections ABOVE
 # this banner. Both gates read every scenario's output, not just the last one.
