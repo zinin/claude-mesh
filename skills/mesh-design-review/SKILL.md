@@ -795,7 +795,9 @@ Options:
   (it generates the prompt for the next iteration and knows this may run in a sandbox), then
   go to Step 16. If that command does not resolve — an older plugin in this environment —
   warn that the plugin needs an update for the review-generator flow and fall back to
-  `/claude-mesh:continue-plan-fresh-session`, as before this feature
+  `/claude-mesh:continue-plan-fresh-session` **with an instruction to run
+  `/claude-mesh:mesh-design-review` in the new session**, as before this feature — then go to
+  Step 16 either way
 - **"Остановиться и начать работу":** Execute `/claude-mesh:continue-plan-fresh-session` skill via Skill tool, then go to Step 16
 
 ### Step 16: Present Final Summary
