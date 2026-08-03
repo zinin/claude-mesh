@@ -137,3 +137,94 @@ for T in $EXT_DEPS_BINS; do
     command -v "$T" >/dev/null 2>&1 || EXT_DEPS_MISSING="${EXT_DEPS_MISSING:+$EXT_DEPS_MISSING, }$T"
 done
 [ -z "$EXT_DEPS_MISSING" ] || row ext-claude-deps MISSING "$EXT_DEPS_MISSING — ext-claude executors cannot run here"
+
+# ---------------------------------------------------------------- providers
+# Models of one provider share an endpoint, so probe once per provider and let Task 4 expand
+# the verdict back into model ids. Rows appear in order of first appearance in `models`; a
+# provider with no models gets no row — nothing it could offer the selection UI.
+declare -A PROBED_STATUS=()
+
+# Verdict comes back through globals and probe_provider is called as its own command — NEVER
+# inside $(...): an assignment made in a command substitution dies with its subshell, and
+# CURRENT_ENVF is what the EXIT trap deletes. cli_row (Task 3) follows the same rule for the
+# same reason.
+PROV_STATUS=""
+PROV_DETAIL=""
+probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PROV_DETAIL
+    local mid="$1" envf eerr first out rc url
+    eerr="$(mktemp)"
+    if ! envf="$("$LOADER" export "$mid" 2>"$eerr")"; then
+        first="$(head -1 "$eerr")"; rm -f "$eerr"
+        # cmd_export also dies on invalid providers/models/runtime and "model not found" —
+        # only a token complaint may be blamed on the token.
+        case "$first" in
+            *REPLACE_ME*|*[Tt]oken*) PROV_STATUS="MISSING"; PROV_DETAIL="token not configured for this provider (export refused)" ;;
+            *)                       PROV_STATUS="UNKNOWN"; PROV_DETAIL="export refused: ${first:-no reason printed}" ;;
+        esac
+        return 0
+    fi
+    rm -f "$eerr"
+    if [ -z "$envf" ] || [ ! -f "$envf" ]; then
+        PROV_STATUS="UNKNOWN"; PROV_DETAIL="export produced no env file"; return 0
+    fi
+    CURRENT_ENVF="$envf"
+    # Subshell: the token lives only here; only "rc|base_url" leaves it. base_url is not a
+    # secret (the token is a separate field) and it is the first thing the operator wants.
+    # Both prechecks print their diagnosis on stderr, which is discarded.
+    out="$(
+        # shellcheck disable=SC1090
+        . "$envf"
+        case "${CLAUDE_MESH_PROVIDER_KIND:-anthropic-api}" in
+            ollama-daemon)
+                env -u SKIP_TOKEN_PRECHECK \
+                    OLLAMA_PRECHECK_TRIES=1 \
+                    OLLAMA_PRECHECK_ATTEMPT_TIMEOUT="$HTTP_TIMEOUT" \
+                    OLLAMA_PRECHECK_TAGS_TIMEOUT="$HTTP_TIMEOUT" \
+                    "$EXEC_DIR/ollama-precheck.sh" "$ANTHROPIC_BASE_URL" >/dev/null 2>&1
+                printf '%s|%s' "$?" "$ANTHROPIC_BASE_URL" ;;
+            *)
+                env -u SKIP_TOKEN_PRECHECK "$EXEC_DIR/token-precheck.sh" \
+                    "$ANTHROPIC_BASE_URL" "$ANTHROPIC_AUTH_TOKEN" "$HTTP_TIMEOUT" >/dev/null 2>&1
+                printf '%s|%s' "$?" "$ANTHROPIC_BASE_URL" ;;
+        esac
+    )"
+    rm -f "$envf"; CURRENT_ENVF=""
+    rc="${out%%|*}"; url="${out#*|}"
+    case "$rc" in
+        0) PROV_STATUS="OK";          PROV_DETAIL="endpoint answered, credentials accepted ($url)" ;;
+        5) PROV_STATUS="AUTH-FAILED"; PROV_DETAIL="endpoint answered, credentials rejected ($url)" ;;
+        6) PROV_STATUS="NO-NETWORK";  PROV_DETAIL="$url did not answer within ${HTTP_TIMEOUT}s" ;;
+        *) PROV_STATUS="UNKNOWN";     PROV_DETAIL="precheck exited $rc ($url)" ;;
+    esac
+}
+
+if [ "$CONFIG_STATUS" != "OK" ]; then
+    row provider SKIPPED "no usable config — providers not probed"
+elif [ -z "$MODELS" ]; then
+    row provider MISSING "config has no models"
+else
+    while IFS='|' read -r MID _LABEL; do
+        [ -n "$MID" ] || continue
+        PROV="${MID%%/*}"
+        [ -z "${PROBED_STATUS[$PROV]+x}" ] || continue
+        if [ -n "$EXT_DEPS_MISSING" ]; then
+            PROBED_STATUS[$PROV]="MISSING"
+            row "provider:$PROV" MISSING "ext-claude prerequisites absent: $EXT_DEPS_MISSING"
+            continue
+        fi
+        if [ "$HAVE_CURL" = 0 ]; then
+            PROBED_STATUS[$PROV]="UNKNOWN"
+            row "provider:$PROV" UNKNOWN "no curl — endpoint not probed"
+            continue
+        fi
+        if [ "$SKIP_NET" = 1 ]; then
+            PROBED_STATUS[$PROV]="UNKNOWN"
+            row "provider:$PROV" UNKNOWN "skipped by PREFLIGHT_SKIP_NETWORK"
+            continue
+        fi
+        echo "probing $PROV…" >&2
+        probe_provider "$MID"
+        row "provider:$PROV" "$PROV_STATUS" "$PROV_DETAIL"
+        PROBED_STATUS[$PROV]="$PROV_STATUS"
+    done <<< "$MODELS"
+fi

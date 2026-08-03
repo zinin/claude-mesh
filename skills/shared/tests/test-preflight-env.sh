@@ -172,6 +172,91 @@ assert_eq   "broken claude section -> INVALID" INVALID "$(field claude-models "$
 run_probe valid-full.yaml
 assert_eq   "no claude section -> MISSING"    MISSING  "$(field claude-models "$OUT")"
 
+echo "== Task 2: provider probes =="
+
+# One shim stands in for curl everywhere, and it has to be faithful in two different ways,
+# because the two prechecks read curl differently: token-precheck.sh runs curl WITHOUT -f and
+# reads the status code off stdout (401 is a normal exit there), while ollama-precheck.sh runs
+# `curl -sf` and reads only curl's own exit status. A shim that always exits 0 would make
+# ollama unreachable-proof; one that always fails on 4xx would turn a 401 into "unreachable".
+SHIM="$WORK/bin"
+mkdir -p "$SHIM"
+cat > "$SHIM/curl" <<'SH'
+#!/usr/bin/env bash
+code="${SHIM_HTTP_CODE:-200}"
+fail_on_http=0
+for a in "$@"; do case "$a" in -sf|-f|--fail) fail_on_http=1 ;; esac; done
+[ "$code" = "000" ] && exit 7                                    # curl itself failed
+[ "$fail_on_http" = 1 ] && [ "$code" -ge 400 ] && exit 22        # what -f does on 4xx/5xx
+echo "$code"
+exit 0
+SH
+chmod +x "$SHIM/curl"
+
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_eq "reachable provider -> OK"          OK   "$(field provider:zai "$OUT")"
+assert_eq "ollama-kind provider probed too"   OK   "$(field provider:ollama "$OUT")"
+assert_eq "probing providers still exits 0"   0    "$RC"
+assert_match "detail names the endpoint"      "https://api.z.ai" "$OUT"
+
+# Three models, two providers: the probe runs once per provider, not once per model.
+assert_eq "one row per provider" 2 "$(grep -c '^provider:' <<<"$OUT")"
+
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=401
+assert_eq "401 -> AUTH-FAILED"                AUTH-FAILED "$(field provider:zai "$OUT")"
+
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=000
+assert_eq "unreachable -> NO-NETWORK"         NO-NETWORK  "$(field provider:zai "$OUT")"
+
+# SKIP_TOKEN_PRECHECK exists so a caller can skip the check. Inherited, it would turn every
+# provider row into a false OK — the probe must neutralise it.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
+          SHIM_HTTP_CODE=000 SKIP_TOKEN_PRECHECK=1
+assert_eq "SKIP_TOKEN_PRECHECK cannot fake OK" NO-NETWORK "$(field provider:zai "$OUT")"
+
+# A copied-but-unedited config: export refuses to hand out a REPLACE_ME token.
+run_probe invalid-token-replace-me.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
+assert_match "REPLACE_ME reported as a config gap, not a network verdict" "token not configured" "$OUT"
+
+# runtime: is gated at the config row (config OK = the orchestrator starts), so a broken
+# runtime can no longer masquerade as a per-provider token gap. probe_provider keeps its
+# UNKNOWN/export-refused branch as defence-in-depth (mktemp failure, races, future loader
+# changes) — no fixture can reach it any more, and that is the point.
+run_probe invalid-runtime-runmode.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH"
+assert_eq "broken runtime -> config INVALID"  INVALID "$(field config "$OUT")"
+assert_no_match "…not blamed on any token"    "token not configured" "$OUT"
+
+# No curl (the probe's own binary): prechecks are not invoked at all — UNKNOWN, not a fake
+# network verdict. No PATH surgery needed: the gate is HAVE_CURL, not the prechecks' lookup.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl"
+assert_eq "no curl -> provider UNKNOWN"       UNKNOWN "$(field provider:zai "$OUT")"
+
+# Missing ext-claude prerequisites: endpoint reachability is irrelevant if the executor
+# cannot start — provider rows degrade and name the gap.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200 \
+          PREFLIGHT_EXT_DEPS_BINS="bc no-such-ext-tool"
+assert_eq "missing ext dep -> its own row"    MISSING "$(field ext-claude-deps "$OUT")"
+assert_eq "…and providers degrade"            MISSING "$(field provider:zai "$OUT")"
+assert_match "…naming the executor gap"       "ext-claude prerequisites absent" "$OUT"
+
+# Re-runs inside a session: PREFLIGHT_SKIP_NETWORK answers from local facts alone — the
+# prechecks are never invoked, so this must hold even with a broken shim on PATH.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
+          SHIM_HTTP_CODE=000 PREFLIGHT_SKIP_NETWORK=1
+assert_eq "skip-network -> provider UNKNOWN"  UNKNOWN "$(field provider:zai "$OUT")"
+assert_match "…and says why"                  "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
+
+# Secrets: the token from the fixture must not appear anywhere, and no exported env file
+# may survive the run (TMPDIR is private to this run, so a leftover is visible).
+# BOTH streams are checked: this section is the first to write to stderr ("probing zai…"),
+# so "no secret reaches stdout or stderr" needs an assertion on $ERR too — a precheck that
+# stopped discarding its diagnosis would leak the token there while $OUT stayed clean.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_no_match "provider token never printed"        "tkn-zai" "$OUT"
+assert_no_match "…and never reaches stderr either"    "tkn-zai" "$ERR"
+LEFT="$(find "$CFG_DIR" -name 'claude-mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "exported env files removed" 0 "$LEFT"
+
 # ============================================================================
 # FINAL GATES — must stay LAST. Tasks 2-4 append their scenario sections ABOVE
 # this banner. Both gates read every scenario's output, not just the last one.

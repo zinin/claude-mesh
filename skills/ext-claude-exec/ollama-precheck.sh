@@ -5,7 +5,14 @@
 # Exit:
 #   0 — daemon up and /api/tags reachable
 #   5 — auth/signin missing or expired
-#   6 — daemon unreachable after 3×2s retry
+#   6 — daemon unreachable after the retry budget (3×2s by default)
+#
+# Env (defaults reproduce the original fixed 3×2s budget exactly):
+#   OLLAMA_PRECHECK_TRIES (3)            — daemon ping attempts
+#   OLLAMA_PRECHECK_ATTEMPT_TIMEOUT (2)  — --max-time per ping attempt, in seconds
+#   OLLAMA_PRECHECK_TAGS_TIMEOUT (5)     — --max-time for the /api/tags read
+# A caller that must answer inside a fixed budget (shared/preflight-env.sh) sets TRIES=1 and
+# both timeouts to its own budget; the inter-attempt sleep is then skipped as well.
 #
 # Per design Section 6.1.
 
@@ -13,23 +20,30 @@ set -u
 BASE_URL="${1:-}"
 [ -n "$BASE_URL" ] || { echo "ollama-precheck: base_url required" >&2; exit 2; }
 
-# Ping with cold-start retry (3 attempts × 2s)
+TRIES="${OLLAMA_PRECHECK_TRIES:-3}"
+ATTEMPT_TIMEOUT="${OLLAMA_PRECHECK_ATTEMPT_TIMEOUT:-2}"
+TAGS_TIMEOUT="${OLLAMA_PRECHECK_TAGS_TIMEOUT:-5}"
+
+# Ping with cold-start retry (TRIES attempts × ATTEMPT_TIMEOUT)
 DAEMON_OK=0
-for i in 1 2 3; do
-    if curl --max-time 2 -sf "$BASE_URL/" >/dev/null 2>&1; then
+i=1
+while [ "$i" -le "$TRIES" ]; do
+    if curl --max-time "$ATTEMPT_TIMEOUT" -sf "$BASE_URL/" >/dev/null 2>&1; then
         DAEMON_OK=1; break
     fi
-    [ "$i" -lt 3 ] && sleep 2
+    # No sleep after the final attempt — with TRIES=1 there is none at all.
+    [ "$i" -lt "$TRIES" ] && sleep 2
+    i=$((i+1))
 done
 
 if [ "$DAEMON_OK" != "1" ]; then
-    echo "ollama-precheck: ENDPOINT UNREACHABLE ($BASE_URL) after 3×2s retry" >&2
+    echo "ollama-precheck: ENDPOINT UNREACHABLE ($BASE_URL) after ${TRIES}×${ATTEMPT_TIMEOUT}s retry" >&2
     echo "  Start it: ollama serve  (or: systemctl start ollama)" >&2
     exit 6
 fi
 
 # /api/tags probes auth state
-if ! curl --max-time 5 -sf "$BASE_URL/api/tags" >/dev/null 2>&1; then
+if ! curl --max-time "$TAGS_TIMEOUT" -sf "$BASE_URL/api/tags" >/dev/null 2>&1; then
     echo "ollama-precheck: AUTH FAILED (daemon up but /api/tags errored)" >&2
     echo "  Run: ollama signin" >&2
     exit 5
