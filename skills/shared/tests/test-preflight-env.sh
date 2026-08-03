@@ -471,6 +471,60 @@ done
 
 echo "== Task 4: SUMMARY =="
 
+# THE point of the defaults lines: "is `default` mode safe here" must be a membership check a
+# session can do by eye, not a mapping exercise. `defaults_not_available <probe stdout>` echoes
+# the entries that fail it; empty means `default` is selectable in that environment.
+#
+# Whole ENTRIES, split on ", " — never substrings. `claude` is a prefix of `claude:opus` and
+# `zai/glm` of a hypothetical `zai/glm-air`, so a substring test false-accepts precisely the
+# spellings this check exists to catch.
+#
+# ONE deliberate exception, and it is NOT a substring rule in disguise: a bare `claude` entry is
+# satisfied by any `claude:<model>` entry. When a preset omits claude_models the orchestrator
+# really does run exactly one reviewer literally named `claude` (mesh-design-review Step 5.1)
+# while the selection UI offers the catalog entries — one reviewer, two spellings. The reverse
+# does NOT hold, and all three rules are pinned by the synthetic checks below.
+summary_entries() {             # one entry per line from a `SUMMARY …: a, b, c` line
+    # ${1#SUMMARY *: } takes the SHORTEST match, so it stops at the first ": " — the label,
+    # whether that is "available" or "defaults design_review". The trailing sed trims each
+    # entry and has to stay a sed: it works on the stream, not on one string.
+    tr ',' '\n' <<<"${1#SUMMARY *: }" | sed 's/^ *//; s/ *$//'
+}
+defaults_not_available() {      # $1 = a probe's stdout; echoes " <preset>/<entry>" per failure
+    local out="$1" avail_entries dline dname aname found bad=""
+    avail_entries="$(summary_entries "$(grep '^SUMMARY available:' <<<"$out")")"
+    for dline in design_review code_review; do
+        while IFS= read -r dname; do
+            [ -n "$dname" ] || continue
+            # "—" and "— (preset empty)" are placeholders for "no preset", not entries.
+            case "$dname" in —*) continue ;; esac
+            found=0
+            while IFS= read -r aname; do
+                [ -n "$aname" ] || continue
+                if [ "$dname" = "$aname" ]; then found=1; break; fi
+                if [ "$dname" = claude ]; then
+                    case "$aname" in claude:*) found=1; break ;; esac
+                fi
+            done <<<"$avail_entries"
+            [ "$found" = 1 ] || bad="$bad $dline/$dname"
+        done <<<"$(summary_entries "$(grep "^SUMMARY defaults $dline:" <<<"$out")")"
+    done
+    printf '%s' "$bad"
+}
+
+# The helper's own contract, on synthetic input. The substring false-accept it fixes cannot be
+# reached through any config today — all models of one provider share a status, so a shorter id
+# is available exactly when its longer sibling is — which is why it takes three lines of input
+# rather than a fixture to state the rule.
+assert_eq "a defaults entry that is only a SUBSTRING of an available one is not a match" \
+    " design_review/zai/glm" "$(defaults_not_available \
+    "$(printf 'SUMMARY available: zai/glm-air\nSUMMARY defaults design_review: zai/glm\nSUMMARY defaults code_review: —\n')")"
+assert_eq "…while a bare claude IS satisfied by claude:<model>" "" "$(defaults_not_available \
+    "$(printf 'SUMMARY available: claude:opus, claude:fable\nSUMMARY defaults design_review: claude\nSUMMARY defaults code_review: —\n')")"
+assert_eq "…and that exception does not run the other way" " design_review/claude:opus" \
+    "$(defaults_not_available \
+    "$(printf 'SUMMARY available: claude\nSUMMARY defaults design_review: claude:opus\nSUMMARY defaults code_review: —\n')")"
+
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
 UNAVAIL="$(grep '^SUMMARY unavailable:' <<<"$OUT")"
@@ -514,32 +568,47 @@ assert_match "…and the one-line fix is hinted"       "hint: cp config.example.
 assert_match "…and the preset lines degrade, not crash" "SUMMARY defaults design_review: —" "$OUT"
 assert_match "…both of them"                            "SUMMARY defaults code_review: —"   "$OUT"
 
+# `CONFIG_STATUS != OK` is THREE states, and the hint is a literally executable command. Only
+# the MISSING one above may say `cp config.example.yaml …`: in the other two a real config.yaml
+# exists, that command OVERWRITES it — provider tokens and all — and config.yaml is user-owned
+# (commands/mesh-review.md Step 1: agents never edit it). The generated prompts tell a session
+# to print this table verbatim, so the wrong hint here is a destructive instruction with the
+# probe's authority behind it.
+run_probe invalid-no-providers.yaml
+assert_eq   "rejected config -> nothing selectable" "SUMMARY available: —" "$(grep '^SUMMARY available:' <<<"$OUT")"
+assert_match "…claude named with the rejection, not with a missing file" "claude (config.yaml is rejected" "$OUT"
+assert_match "…and the hint says to EDIT the file"   "hint: edit"        "$OUT"
+assert_match "…because it is the operator's, not ours" "do NOT overwrite" "$OUT"
+assert_no_match "…never offering to overwrite a real config" "cp config.example.yaml" "$OUT"
+
+# UNKNOWN is the worst of the three to get wrong: the loader never ran, so the config may well
+# be perfect and the only thing missing is yq. Naming the tool matters — Go-yq is a different
+# program that config-loader.sh rejects on sight.
+run_probe valid-claude-models.yaml PREFLIGHT_YQ_BIN="$WORK/no-such-yq"
+assert_eq   "unevaluated config -> nothing selectable either" "SUMMARY available: —" "$(grep '^SUMMARY available:' <<<"$OUT")"
+assert_match "…claude says exactly that, and not that a file is missing" "claude (config state could not be evaluated" "$OUT"
+assert_match "…the hint names the tool the rows above reported" "pipx install yq" "$OUT"
+assert_match "…and says the config itself was never read"       "was never read"  "$OUT"
+assert_no_match "…never offering to overwrite an unread config" "cp config.example.yaml" "$OUT"
+
+# The note qualifies "(UNKNOWN)" markers. With no usable config every entry reads (SKIPPED) and
+# there is no network verdict to qualify, so the note would point at a marker that is not on the
+# page — the flag alone is not the condition.
+run_probe none PREFLIGHT_SKIP_NETWORK=1
+assert_no_match "no (UNKNOWN) on the page -> no note about one" "SUMMARY note:" "$OUT"
+assert_match    "…and the entries really are SKIPPED"           "codex (SKIPPED)" "$OUT"
+
 # A populated defaults: preset — the only way to exercise the expansion end to end. The two
 # presets differ on purpose: reading design_review twice, or reading the wrong one, cannot pass
 # both assertions. This is also the first exercise of `get-defaults code_review`, which the plan
 # left flagged for verification here.
 run_probe valid-defaults-preset.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
-AVAIL="$(grep '^SUMMARY available:' <<<"$OUT")"
 assert_match "design_review preset in UI spelling" \
     "SUMMARY defaults design_review: codex, claude:opus, zai/glm" "$OUT"
 assert_match "code_review is a different preset, read separately" \
     "SUMMARY defaults code_review: claude:fable, zai/glm" "$OUT"
-# THE point of the defaults lines: "is `default` mode safe here" must be a membership check a
-# session can do by eye, not a mapping exercise. Every name on either preset line must appear
-# verbatim on the available line — asserted mechanically, so a future spelling drift on either
-# side fails here instead of being discovered by a session that trusted the summary.
-MISSING_FROM_AVAIL=""
-for DLINE in design_review code_review; do
-    while read -r DNAME; do
-        [ -n "$DNAME" ] || continue
-        case "$AVAIL" in
-            *"$DNAME"*) ;;
-            *) MISSING_FROM_AVAIL="$MISSING_FROM_AVAIL $DLINE/$DNAME" ;;
-        esac
-    done <<<"$(grep "^SUMMARY defaults $DLINE:" <<<"$OUT" \
-               | sed 's/^SUMMARY defaults [a-z_]*: //' | tr ',' '\n' | sed 's/^ *//; s/ *$//')"
-done
-assert_eq "every default name is spelled as the available line spells it" "" "$MISSING_FROM_AVAIL"
+assert_eq "every default name is spelled as the available line spells it" "" \
+    "$(defaults_not_available "$OUT")"
 
 # The no-catalog fallback of the same expansion: `builtin: [claude]` with no claude.models
 # means ONE reviewer literally named `claude` (mesh-design-review Step 5.1), and that is the
@@ -552,6 +621,18 @@ assert_match "…and a preset of claude alone is not empty" \
     "SUMMARY defaults code_review: claude" "$OUT"
 assert_match "…which is exactly how the available line spells it" \
     "SUMMARY available: claude, zai/glm" "$OUT"
+assert_eq '…so default mode is selectable here too' "" "$(defaults_not_available "$OUT")"
+
+# The crossed shape: a catalog IS present AND the preset omits claude_models. The two lines then
+# legitimately disagree — the UI offers claude:opus/claude:fable, `default` mode runs one
+# reviewer named `claude` — and this is the only fixture where the membership check has to know
+# that those are the same reviewer rather than a spelling drift.
+run_probe valid-defaults-claude-bare.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "catalog present, preset bare -> the UI spelling on available" \
+    "SUMMARY available: claude:opus, claude:fable, zai/glm" "$OUT"
+assert_match "…and the orchestrator's spelling on the preset line" \
+    "SUMMARY defaults design_review: claude, zai/glm" "$OUT"
+assert_eq "…and the two are reconciled, not reported as a mismatch" "" "$(defaults_not_available "$OUT")"
 
 # A fast re-run probes nothing, so every network verdict is UNKNOWN. UNKNOWN is not a degraded
 # OK — treating it as unavailable reports a fully working machine as "claude only", and the
@@ -619,9 +700,12 @@ assert_eq "…and exactly one 'SUMMARY unavailable:'" \
 # unusual ones (UNKNOWN, SKIPPED, INVALID) live in scenarios nobody would think to point it at.
 #
 # The awk filter skips the two kinds of legitimate NON-ROW prose the probe prints: Task 4's
-# `SUMMARY …` lines and its `hint: cp config.example.yaml …` line (whose $2 is "cp"). Extend
-# this filter when a task adds a new non-row line — and do NOT replace it with a "every line
-# matches a row shape" regexp: row names legitimately contain a colon (provider:zai, Task 2),
+# `SUMMARY …` lines and its `hint: …` line. The hint keys on $1 ALONE and must keep doing so —
+# its second word varies with the config state it is advising about (cp / edit / install), so a
+# filter written against "cp" would let two of the three variants through and report their third
+# word as a status. Extend this filter when a task adds a new non-row line — and do NOT replace
+# it with a "every line matches a row shape" regexp: row names legitimately contain a colon
+# (provider:zai, Task 2),
 # so a shape check is the same forward-compatibility trap in a new costume.
 ROWS="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ && $1 != "hint:" {print $2}' <<<"$ALL_OUT")"
 BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|SKIPPED|UNKNOWN)$' || true)"

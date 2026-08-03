@@ -60,7 +60,12 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-row() { printf '%-16s %-12s %s\n' "$1" "$2" "${3:-}"; }
+# 18, not 16: `provider:deepseek` is 17 characters and any 8-character provider id overflows a
+# 16-wide pad, which pushes the status column right on exactly the row a reader is scanning for
+# a red verdict. Every gate that parses this table splits on whitespace (awk $1/$2), so the pad
+# is presentation only — but this table IS the deliverable the generated prompts tell a session
+# to print verbatim, so a ragged column is a defect in the product, not a cosmetic detail.
+row() { printf '%-18s %-12s %s\n' "$1" "$2" "${3:-}"; }
 
 # ---------------------------------------------------------------- identity
 # Which probe is this? The reading session must be able to tell "the probe is old" from
@@ -76,8 +81,12 @@ row plugin OK "${PLUGIN_VERSION:-unknown} @ $PLUGIN_ROOT"
 # first, so a dead toolchain cannot impersonate INVALID and send the operator to "fix" a
 # healthy config.yaml (row names are canonical yq/jq whatever the override points at).
 TOOLCHAIN_OK=1
-command -v "$YQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; row yq MISSING "loader cannot run without it (looked for $YQ_BIN)"; }
-command -v "$JQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; row jq MISSING "loader cannot run without it (looked for $JQ_BIN)"; }
+# WHICH tool is missing decides the fix the summary hints at the bottom — `pipx install yq`
+# (Python-yq specifically) is not the same advice as `apt install jq`, and by then the rows
+# printed here can no longer be read back.
+TOOLCHAIN_MISSING=""
+command -v "$YQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:+$TOOLCHAIN_MISSING, }yq"; row yq MISSING "loader cannot run without it (looked for $YQ_BIN)"; }
+command -v "$JQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:+$TOOLCHAIN_MISSING, }jq"; row jq MISSING "loader cannot run without it (looked for $JQ_BIN)"; }
 
 # ---------------------------------------------------------------- config
 CONFIG_STATUS=""
@@ -424,11 +433,47 @@ UNAVAIL=""
 # the claude-models row reports above). Either one exits BEFORE anything is offered, so either
 # one makes EVERY reviewer unselectable — including a provider whose endpoint just answered.
 # Offering one here sends the reading session into a dead end it cannot debug from the table.
+#
+# The hint below is a LITERALLY EXECUTABLE command, so it must branch on WHICH state produced
+# the block — `CONFIG_STATUS != OK` covers three of them and `cp config.example.yaml …` is
+# right in only one. For INVALID and UNKNOWN a real config.yaml exists (in the UNKNOWN case
+# possibly a perfectly good one, on a machine that merely lacks yq) and that command overwrites
+# it, tokens and all. config.yaml is user-owned and agents never edit it (commands/mesh-review.md,
+# Step 1), so a table the generated prompts tell a session to print verbatim must not carry an
+# instruction to clobber it. It is also the distinction Task 1's config row exists to draw:
+# "pipx install yq" and "edit a healthy config" are different days' work.
 BLOCKER=""
-if [ "$CONFIG_STATUS" != "OK" ]; then
-    BLOCKER="config.yaml required for the orchestrators to start"
-elif [ "$CLAUDE_CATALOG_OK" = 0 ]; then
+BLOCKER_HINT=""
+DATA_DIR="<plugin-data-dir>"
+if [ "$CONFIG_STATUS" != "OK" ] || [ "$CLAUDE_CATALOG_OK" = 0 ]; then
+    # Only a blocked run needs a path, and only a blocked run pays for the extra loader start.
+    # Guarded because data-dir prints nothing when the loader is absent or its toolchain dead,
+    # and a hint whose path starts at the filesystem root points at a file nobody has.
+    DD="$("$LOADER" data-dir 2>/dev/null)"
+    [ -z "$DD" ] || DATA_DIR="$DD"
+fi
+case "$CONFIG_STATUS" in
+    OK) ;;
+    MISSING)
+        BLOCKER="config.yaml required for the orchestrators to start"
+        BLOCKER_HINT="cp config.example.yaml $DATA_DIR/config.yaml — the review skills need it even for the built-in claude reviewer" ;;
+    INVALID)
+        BLOCKER="config.yaml is rejected — see the config row"
+        BLOCKER_HINT="edit $DATA_DIR/config.yaml to fix what the config row reports — do NOT overwrite it with config.example.yaml: it is user-owned and holds your provider tokens" ;;
+    *)
+        # UNKNOWN: the loader never ran, so nothing above is a statement about the file's
+        # contents. Naming the tool matters more than usual here — Go-yq is a DIFFERENT program
+        # that config-loader.sh rejects on sight (config-loader.sh:71), so "install yq" alone
+        # sends a fair number of people to the wrong binary.
+        BLOCKER="config state could not be evaluated"
+        T_FIX=""
+        case "$TOOLCHAIN_MISSING" in *yq*) T_FIX="pipx install yq (Python-yq — NOT brew/Go-yq)" ;; esac
+        case "$TOOLCHAIN_MISSING" in *jq*) T_FIX="${T_FIX:+$T_FIX; }apt install jq (or brew install jq)" ;; esac
+        BLOCKER_HINT="install the loader toolchain — ${T_FIX:-see README Dependencies} — then re-run; $DATA_DIR/config.yaml was never read, so nothing above says anything about its contents" ;;
+esac
+if [ -z "$BLOCKER" ] && [ "$CLAUDE_CATALOG_OK" = 0 ]; then
     BLOCKER="the claude: section is rejected and both orchestrators exit on that read"
+    BLOCKER_HINT="fix the claude: section of $DATA_DIR/config.yaml (the claude-models row above carries the validator's reason) — both orchestrators exit on that read before offering anything"
 fi
 
 add_unavail() { if [ -z "$UNAVAIL" ]; then UNAVAIL="$1"; else UNAVAIL="$UNAVAIL, $1"; fi; }
@@ -478,7 +523,13 @@ printf 'SUMMARY unavailable: %s\n' "${UNAVAIL:-—}"
 # reading session did not set that flag and cannot see it from the table, so the summary says
 # so itself. SUMMARY-prefixed like the lines above — that is what the report's non-row prose
 # is prefixed with, and what the suite's closed-set gate skips.
-if [ "$SKIP_NET" = 1 ]; then
+#
+# Gated on an (UNKNOWN) actually having been printed, not on the flag alone: with no usable
+# config every entry reads (SKIPPED) and there is no network verdict to qualify, so the note
+# would point at a marker that is not on the page.
+SAW_UNKNOWN=0
+case "$UNAVAIL" in *"(UNKNOWN)"*) SAW_UNKNOWN=1 ;; esac
+if [ "$SKIP_NET" = 1 ] && [ "$SAW_UNKNOWN" = 1 ]; then
     printf 'SUMMARY note: PREFLIGHT_SKIP_NETWORK was set, so nothing was probed — every (UNKNOWN) above is unestablished, not broken; re-run without it before concluding a reviewer is unusable\n'
 fi
 # The presets, in the same UI spelling — "default mode is safe here" becomes a mechanical
@@ -502,18 +553,10 @@ for PRESET in design_review code_review; do
     fi
     printf 'SUMMARY defaults %s: %s\n' "$PRESET" "$DLIST"
 done
+# One `hint:` line, whose text was chosen with the blocker above. The literal `hint: ` prefix is
+# load-bearing: the suite's closed-set gate skips this line on `$1 != "hint:"`, and $1 alone —
+# the second word differs per state.
 if [ -n "$BLOCKER" ]; then
-    DATA_DIR="$("$LOADER" data-dir 2>/dev/null)"
-    # Never print a bare "/config.yaml": data-dir is skipped entirely when the loader is
-    # missing or its toolchain is dead, and a path that starts at the filesystem root is a
-    # fix instruction pointing at a file nobody has.
-    [ -n "$DATA_DIR" ] || DATA_DIR="<plugin-data-dir>"
-    if [ "$CONFIG_STATUS" != "OK" ]; then
-        printf 'hint: cp config.example.yaml %s/config.yaml — the review skills need it even for the built-in claude reviewer\n' \
-            "$DATA_DIR"
-    else
-        printf 'hint: fix the claude: section of %s/config.yaml (the claude-models row above carries the validator'"'"'s reason) — both orchestrators exit on that read before offering anything\n' \
-            "$DATA_DIR"
-    fi
+    printf 'hint: %s\n' "$BLOCKER_HINT"
 fi
 exit 0
