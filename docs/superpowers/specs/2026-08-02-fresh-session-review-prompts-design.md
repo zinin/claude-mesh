@@ -57,8 +57,16 @@ still routes to `continue-plan-fresh-session`.
 ### 1. The generators never read `config.yaml`
 
 Neither generator calls `config-loader.sh`, and no model id, provider id or `defaults.*`
-preset ever reaches the generated prompt. The only claim the prompt makes about reviewers is
-"run the probe and choose from its `OK` rows".
+preset **drawn from the local config** ever reaches the generated prompt. The only claim the
+prompt makes about reviewers is "run the probe and choose from its `OK` rows".
+
+The qualifier is load-bearing in both directions, and replaces an earlier absolute "ever".
+`CONTEXT` is free prose about the material under review, so when that material is itself about
+models it may legitimately quote an id — an absolute ban would be unenforceable exactly there,
+which is why this decision's own test (Testing §2) and the plan's Done criteria already scope
+the check to the local config. Everywhere the generator writes the prompt's *own* text, ids
+stay placeholders (`<provider>/<model>`, `claude:<model>`): a concrete id in a recipe teaches
+nothing the shape does not, and pulls a reading session toward assuming that reviewer exists.
 
 This is what makes one prompt correct in two environments. It also means generation works on a
 machine where claude-mesh has no config at all — the generating session and the sandbox are
