@@ -16,11 +16,12 @@ All notable changes to claude-mesh will be documented here.
   network second, one probe per provider through the existing `token-precheck.sh` /
   `ollama-precheck.sh`, git remote, gh/glab, clipboard) and a `SUMMARY` block naming the
   reviewers that can actually be selected there. Every verdict exits 0 — a non-zero exit means
-  the probe is broken or could not start (bash 4+ is required), never that the environment is
-  poor. Provider tokens never reach the output and exported env files are removed through a
-  trap. `skills/ext-claude-exec/ollama-precheck.sh` grew three env knobs so a caller on a fixed
-  budget can shrink its retries — `OLLAMA_PRECHECK_TRIES`, `OLLAMA_PRECHECK_ATTEMPT_TIMEOUT` and
-  `OLLAMA_PRECHECK_TAGS_TIMEOUT`; the defaults reproduce the previous fixed 3×2s budget exactly.
+  the probe is broken, could not start (bash 4+ is required) or was interrupted, never that the
+  environment is poor. Provider tokens never reach the output and exported env files are removed
+  through a trap. `skills/ext-claude-exec/ollama-precheck.sh` grew three env knobs so a caller on
+  a fixed budget can shrink its retries — `OLLAMA_PRECHECK_TRIES`,
+  `OLLAMA_PRECHECK_ATTEMPT_TIMEOUT` and `OLLAMA_PRECHECK_TAGS_TIMEOUT`; the defaults reproduce
+  the previous fixed 3×2s budget exactly.
   A new `skills/shared/tests/test-command-sync.sh` holds the two command files byte-identical
   where the prompt's experimentally measured wording lives — the `DO NOT` gate and the
   `PREFLIGHT` block — which until now was held by a comment alone. `mesh-design-review` Step 15

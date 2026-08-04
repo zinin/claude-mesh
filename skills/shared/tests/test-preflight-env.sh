@@ -3,7 +3,8 @@
 #
 # The probe answers one question for a session that did not configure this machine: what can
 # actually be used here? Every verdict exits 0 — a non-zero exit means the probe is broken,
-# never that the environment is poor. That contract is the first thing asserted below.
+# could not start (64, the bash-4 check) or was interrupted (130/143), never that the
+# environment is poor. That contract is the first thing asserted below.
 set -u
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$TESTS_DIR/../preflight-env.sh"
