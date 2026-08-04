@@ -23,6 +23,15 @@ BASE_URL="${1:-}"
 TRIES="${OLLAMA_PRECHECK_TRIES:-3}"
 ATTEMPT_TIMEOUT="${OLLAMA_PRECHECK_ATTEMPT_TIMEOUT:-2}"
 TAGS_TIMEOUT="${OLLAMA_PRECHECK_TAGS_TIMEOUT:-5}"
+# These three became a public interface when preflight-env.sh started setting them, so an
+# operator can now type them by hand — and unvalidated they fail in the direction this check
+# exists to prevent. TRIES=0 skips the loop entirely and reports UNREACHABLE "after 0x2s"
+# without ever contacting the daemon; a non-numeric value adds `[: abc: integer expression
+# expected` to stderr and still produces a confident verdict. A positive integer or the
+# documented default, exactly as preflight-env.sh normalises its own budgets.
+case "$TRIES"           in ''|*[!0-9]*|0) TRIES=3 ;; esac
+case "$ATTEMPT_TIMEOUT" in ''|*[!0-9]*|0) ATTEMPT_TIMEOUT=2 ;; esac
+case "$TAGS_TIMEOUT"    in ''|*[!0-9]*|0) TAGS_TIMEOUT=5 ;; esac
 
 # Ping with cold-start retry (TRIES attempts × ATTEMPT_TIMEOUT)
 DAEMON_OK=0

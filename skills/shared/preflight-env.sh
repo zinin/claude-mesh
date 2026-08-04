@@ -32,6 +32,16 @@ LOADER="$SCRIPT_DIR/config-loader.sh"
 EXEC_DIR="$SCRIPT_DIR/../ext-claude-exec"
 HTTP_TIMEOUT="${PREFLIGHT_HTTP_TIMEOUT:-5}"
 GIT_TIMEOUT="${PREFLIGHT_GIT_TIMEOUT:-8}"
+# Budgets are pasted straight into `curl --max-time` and `timeout`, so an unusable value here
+# does not degrade — it INVENTS a verdict, which is the one thing this file never does. Three
+# ways it went wrong, all observed: `PREFLIGHT_GIT_TIMEOUT=--help` makes `timeout` print its
+# usage and exit 0 WITHOUT running git, and the row then read `git-remote OK  origin answered`
+# about a remote nothing had contacted; a non-numeric value came back as a confident
+# `NO-NETWORK … within abcs`; and `0` means "no timeout at all" to curl, so a probe advertised
+# as bounded could hang forever. Normalised once, here, for the same reason SKIP_NET is below:
+# a positive integer or the documented default, with nothing in between.
+case "$HTTP_TIMEOUT" in ''|*[!0-9]*|0) HTTP_TIMEOUT=5 ;; esac
+case "$GIT_TIMEOUT"  in ''|*[!0-9]*|0) GIT_TIMEOUT=8  ;; esac
 CURL_BIN="${PREFLIGHT_CURL_BIN:-curl}"
 GIT_BIN="${PREFLIGHT_GIT_BIN:-git}"
 YQ_BIN="${PREFLIGHT_YQ_BIN:-yq}"
@@ -164,13 +174,22 @@ HAS_GEMINI=0
 # nothing in common, so the blocker hint at the bottom branches on this rather than guessing
 # from TOOLCHAIN_MISSING — see the case there. Set it wherever CONFIG_STATUS becomes UNKNOWN.
 CONFIG_UNKNOWN_CAUSE=""
+# Same idea for MISSING, which also has two causes whose fixes share nothing: "no config.yaml
+# yet" is fixed by copying the example, "the loader is not where it should be" is a broken
+# install that copying a config does not touch. The hint at the bottom branches on this.
+CONFIG_MISSING_CAUSE=""
 
 if [ "$TOOLCHAIN_OK" = 0 ]; then
     CONFIG_STATUS="UNKNOWN"
     CONFIG_UNKNOWN_CAUSE="toolchain"
     CONFIG_DETAIL="cannot evaluate — loader toolchain missing (see rows above)"
-elif [ ! -x "$LOADER" ]; then
+elif [ ! -f "$LOADER" ]; then
+    # -f, not -x: a shared-folder mount — the environment this probe exists for — drops the
+    # exec bit, and a readable loader sitting right there was reported as an absent one. Every
+    # invocation goes through `bash "$LOADER"` for the same reason, which is also why the
+    # generated PREFLIGHT block runs the probe itself as `bash "$PF"`.
     CONFIG_STATUS="MISSING"
+    CONFIG_MISSING_CAUSE="install"
     CONFIG_DETAIL="config-loader.sh not found at $LOADER — broken install"
 elif ! LERR="$(mktemp_or_fail)"; then
     # Before the loader is invoked, so nothing here is a claim about config.yaml: without the
@@ -182,9 +201,9 @@ elif ! LERR="$(mktemp_or_fail)"; then
 else
     # A bare $() swallows the loader's exit code, and rc=2 (no config yet) must not be
     # misread as rc=1 (config rejected) — the same distinction every caller in this repo makes.
-    MODELS="$("$LOADER" list-models 2>"$LERR")"; LRC=$?
+    MODELS="$(bash "$LOADER" list-models 2>"$LERR")"; LRC=$?
     case "$LRC" in
-        0) CONFIG_STATUS="OK";      CONFIG_DETAIL="$("$LOADER" data-dir 2>/dev/null)/config.yaml"
+        0) CONFIG_STATUS="OK";      CONFIG_DETAIL="$(bash "$LOADER" data-dir 2>/dev/null)/config.yaml"
            # config OK must mean "the orchestrator starts here": mesh-design-review Step 5.0
            # dies on defaults/runtime too, not only on providers/models. One preset name is
            # enough — get-defaults runs validate_defaults for the whole defaults: section.
@@ -200,13 +219,13 @@ else
                    MODELS=""; break
                fi
                # shellcheck disable=SC2086
-               if ! "$LOADER" $CHECK >/dev/null 2>"$CH_ERR"; then
+               if ! bash "$LOADER" $CHECK >/dev/null 2>"$CH_ERR"; then
                    CONFIG_STATUS="INVALID"; CONFIG_DETAIL="$(head -1 "$CH_ERR")"; MODELS=""
                    rm -f "$CH_ERR"; break
                fi
                rm -f "$CH_ERR"
            done ;;
-        2) CONFIG_STATUS="MISSING"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; cp config.example.yaml into the data dir"; MODELS="" ;;
+        2) CONFIG_STATUS="MISSING"; CONFIG_MISSING_CAUSE="noconfig"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; cp config.example.yaml into the data dir"; MODELS="" ;;
         *) # rc=1 means "the loader refused", which is not the same as "the config is bad":
            # require_yq and require_gnu_coreutils die with this very code BEFORE config.yaml is
            # opened. The presence check above cannot catch those two — a Go-yq binary (what
@@ -251,7 +270,7 @@ if [ "$CONFIG_STATUS" = "OK" ]; then
         row claude-models UNKNOWN "cannot create a temp file (TMPDIR full or unwritable) — catalog not read"
         CLAUDE_MODELS=""
     else
-        CLAUDE_MODELS="$("$LOADER" list-claude-models 2>"$CM_ERR")"; CM_RC=$?
+        CLAUDE_MODELS="$(bash "$LOADER" list-claude-models 2>"$CM_ERR")"; CM_RC=$?
         if [ "$CM_RC" -ne 0 ]; then
             # mesh-review Step 1 refuses to start on this same read — "no catalog" would be a lie.
             row claude-models INVALID "$(head -1 "$CM_ERR")"
@@ -264,8 +283,8 @@ if [ "$CONFIG_STATUS" = "OK" ]; then
         fi
         rm -f "$CM_ERR"
     fi
-    HAS_CODEX="$("$LOADER" get-flag has_codex 2>/dev/null)" || HAS_CODEX=0
-    HAS_GEMINI="$("$LOADER" get-flag has_gemini 2>/dev/null)" || HAS_GEMINI=0
+    HAS_CODEX="$(bash "$LOADER" get-flag has_codex 2>/dev/null)" || HAS_CODEX=0
+    HAS_GEMINI="$(bash "$LOADER" get-flag has_gemini 2>/dev/null)" || HAS_GEMINI=0
 else
     row claude-models SKIPPED "no usable config"
 fi
@@ -344,7 +363,7 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
         row "$1" UNKNOWN "cannot create a temp file (TMPDIR full or unwritable) — section not validated"
         return 0
     fi
-    if ! "$LOADER" "get-$1" >/dev/null 2>"$gerr"; then
+    if ! bash "$LOADER" "get-$1" >/dev/null 2>"$gerr"; then
         CLI_STATUS="INVALID"
         row "$1" INVALID "$(head -1 "$gerr")"
         rm -f "$gerr"
@@ -365,7 +384,15 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
     case "$CLI_STATUS" in
         OK)         row "$1" OK         "CLI present, $3 answered (heuristic: not an auth check)" ;;
         NO-NETWORK) row "$1" NO-NETWORK "CLI present, $3 silent for ${HTTP_TIMEOUT}s (heuristic)" ;;
-        *)          row "$1" UNKNOWN    "CLI present, network not probed (no curl, or PREFLIGHT_SKIP_NETWORK)" ;;
+        # Two different facts, and the plan pins the wording of one of them: a row skipped by the
+        # flag must read `skipped by PREFLIGHT_SKIP_NETWORK`, exactly as the provider rows do.
+        # Conflating it with "no curl" also loses the actionable half — one is a deliberate
+        # choice this run made, the other is a missing binary.
+        *)          if [ "$SKIP_NET" = 1 ]; then
+                        row "$1" UNKNOWN "CLI present, skipped by PREFLIGHT_SKIP_NETWORK"
+                    else
+                        row "$1" UNKNOWN "CLI present, network not probed (no curl)"
+                    fi ;;
     esac
 }
 
@@ -409,7 +436,7 @@ probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PR
     # `mktemp -t` honours it, so the mode-600 token file lands inside the directory the trap
     # holds. If a future loader ever stopped honouring TMPDIR the interrupt scenario in
     # test-preflight-env.sh fails, which is the point of pinning it there.
-    if ! CURRENT_ENVF="$(TMPDIR="$CURRENT_ENVD" "$LOADER" export "$mid" 2>"$eerr")"; then
+    if ! CURRENT_ENVF="$(TMPDIR="$CURRENT_ENVD" bash "$LOADER" export "$mid" 2>"$eerr")"; then
         first="$(head -1 "$eerr")"; rm -f "$eerr"
         # export prints the path only on success, so this is normally empty. If a future
         # loader ever printed one and then died, leave it set so the trap deletes the file.
@@ -436,6 +463,12 @@ probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PR
     # is discarded — dropping that 2>&1 would put up to 400 bytes of raw provider response on
     # the probe's own stderr (token-precheck.sh:49), which the suite's stderr gate rejects.
     out="$(
+        # FIRST statement, before the token is sourced: with xtrace on (SHELLOPTS=xtrace in the
+        # environment, or `bash -x`) every expansion below is echoed to stderr, and that put
+        # `export ANTHROPIC_AUTH_TOKEN=<token>` on the very stream config-loader.sh:727 uses a
+        # mode-600 tmpfile to stay out of. "No secret ever reaches stdout or stderr" has no
+        # clause about how the operator started the probe.
+        set +x
         # shellcheck disable=SC1090
         . "$CURRENT_ENVF"
         # :- guards: a truncated env file must degrade to a verdict, not abort the subshell
@@ -447,10 +480,10 @@ probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PR
                     OLLAMA_PRECHECK_TRIES=1 \
                     OLLAMA_PRECHECK_ATTEMPT_TIMEOUT="$HTTP_TIMEOUT" \
                     OLLAMA_PRECHECK_TAGS_TIMEOUT="$HTTP_TIMEOUT" \
-                    "$EXEC_DIR/ollama-precheck.sh" "${ANTHROPIC_BASE_URL:-}" >/dev/null 2>&1
+                    bash "$EXEC_DIR/ollama-precheck.sh" "${ANTHROPIC_BASE_URL:-}" >/dev/null 2>&1
                 printf '%s|%s|%s' "$?" "$KIND" "${ANTHROPIC_BASE_URL:-}" ;;
             *)
-                env -u SKIP_TOKEN_PRECHECK "$EXEC_DIR/token-precheck.sh" \
+                env -u SKIP_TOKEN_PRECHECK bash "$EXEC_DIR/token-precheck.sh" \
                     "${ANTHROPIC_BASE_URL:-}" "${ANTHROPIC_AUTH_TOKEN:-}" "$HTTP_TIMEOUT" >/dev/null 2>&1
                 printf '%s|%s|%s' "$?" "$KIND" "${ANTHROPIC_BASE_URL:-}" ;;
         esac
@@ -586,14 +619,22 @@ if [ "$CONFIG_STATUS" != "OK" ] || [ "$CLAUDE_CATALOG_OK" = 0 ]; then
     # Only a blocked run needs a path, and only a blocked run pays for the extra loader start.
     # Guarded because data-dir prints nothing when the loader is absent or its toolchain dead,
     # and a hint whose path starts at the filesystem root points at a file nobody has.
-    DD="$("$LOADER" data-dir 2>/dev/null)"
+    DD="$(bash "$LOADER" data-dir 2>/dev/null)"
     [ -z "$DD" ] || DATA_DIR="$DD"
 fi
 case "$CONFIG_STATUS" in
     OK) ;;
     MISSING)
         BLOCKER="config.yaml required for the orchestrators to start"
-        BLOCKER_HINT="cp config.example.yaml $DATA_DIR/config.yaml — the review skills need it even for the built-in claude reviewer" ;;
+        # Which MISSING decides the advice, and one of the two answers is actively wrong for the
+        # other case: copying a config into place does nothing about a loader that is not there.
+        case "$CONFIG_MISSING_CAUSE" in
+            install)
+                BLOCKER="claude-mesh install is incomplete"
+                BLOCKER_HINT="reinstall or update the claude-mesh plugin — config-loader.sh is missing from $PLUGIN_ROOT/skills/shared; no config.yaml can fix that" ;;
+            *)
+                BLOCKER_HINT="cp config.example.yaml $DATA_DIR/config.yaml — the review skills need it even for the built-in claude reviewer" ;;
+        esac ;;
     INVALID)
         BLOCKER="config.yaml is rejected — see the config row"
         BLOCKER_HINT="edit $DATA_DIR/config.yaml to fix what the config row reports — do NOT overwrite it with config.example.yaml: it is user-owned and holds your provider tokens" ;;
@@ -695,7 +736,7 @@ fi
 # whenever CONFIG_STATUS=OK (the toolchain gate ran first).
 for PRESET in design_review code_review; do
     DLIST="—"
-    if [ "$CONFIG_STATUS" = "OK" ] && DJ="$("$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
+    if [ "$CONFIG_STATUS" = "OK" ] && DJ="$(bash "$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
         DLIST="$("$JQ_BIN" -r '
             ((.builtin // []) | map(select(. != "claude"))) +
             (if ((.builtin // []) | index("claude")) then

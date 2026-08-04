@@ -77,8 +77,9 @@ limited to what the documents imply.
 ### 4. Compose the prompt
 
 The prompt consists of these sections, in this order, and nothing else. Substitute
-`<DESIGN_PATH>`, `<PLAN_PATH>`, `<TOPIC>` and `N` — and nothing more: emit `$HOME` in the
-preflight block **literally**, never expanded to a concrete home directory. An expanded path
+`<DESIGN_PATH>`, `<PLAN_PATH>`, `<TOPIC>`, `<DATE>` (Step 2), `<feature>` — a short human name
+for what is under review, taken from the design's title — and `N`; and nothing more: emit
+`$HOME` in the preflight block **literally**, never expanded to a concrete home directory. An expanded path
 freezes this machine's layout into a prompt that runs on another one — the exact failure
 decision 2 of the design exists to prevent:
 

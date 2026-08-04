@@ -73,12 +73,22 @@ HEAD_SHA="$(git rev-parse HEAD)"
 # string "HEAD" into the prompt as a branch name.
 BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)"
 DIRTY="$(git status --porcelain)"
+# Print every value this block resolved. Shell state does not survive a Bash tool call, so a
+# value that is only assigned here is a value the composing step below never sees — and Step 5
+# asks you to substitute four of them. Without this the base silently reverts to a guess, which
+# is exactly what resolving it was for.
+printf 'BRANCH=%s\nBASE_BRANCH=%s\nBASE_SHA=%s\nHEAD_SHA=%s\nDIRTY=%s\n' \
+  "$BRANCH" "$BASE_BRANCH" "$BASE_SHA" "$HEAD_SHA" "${DIRTY:+yes}"
 # Guarded: an empty BASE_SHA would make this `HEAD..$HEAD_SHA` — empty output, exit 0, and a
 # missing base would look exactly like a branch with no commits.
-if [ -n "$BASE_SHA" ]; then
-  git log --oneline "$BASE_SHA..$HEAD_SHA"
-else
+if [ -z "$BASE_SHA" ]; then
   echo "merge-base found no base against '$BASE_BRANCH' — ask the user for the base branch"
+elif [ "$BASE_SHA" = "$HEAD_SHA" ]; then
+  # Generating from the base branch itself: the range is empty and the guard above cannot see
+  # it, so the prompt would carry an empty commit list with nothing saying why.
+  echo "BASE_SHA == HEAD_SHA — this branch is AT '$BASE_BRANCH', so the range is empty; ask the user which branch to review"
+else
+  git log --oneline "$BASE_SHA..$HEAD_SHA"
 fi
 ```
 

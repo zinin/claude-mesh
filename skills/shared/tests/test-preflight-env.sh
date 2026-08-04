@@ -9,6 +9,18 @@ set -u
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$TESTS_DIR/../preflight-env.sh"
 
+# Precondition, not an assertion. Every fixture below drives config-loader.sh, so on a machine
+# without Python-yq or jq the probe takes the "toolchain missing" branch in ALL of them: the
+# universal gates still pass (MISSING is a legal status and every verdict still exits 0), while
+# the per-scenario assertions produce a wall of failures that say nothing about the code. One
+# loud line beats thirty misleading ones.
+for REQ in yq jq; do
+    if ! command -v "$REQ" >/dev/null 2>&1; then
+        echo "SKIP: $REQ is not installed — this suite drives config-loader.sh, which requires it"
+        exit 0
+    fi
+done
+
 FAIL=0
 PASS=0
 WORK="$(mktemp -d)"
@@ -757,6 +769,46 @@ assert_eq "every scenario printed exactly one 'SUMMARY available:'" \
 assert_eq "…and exactly one 'SUMMARY unavailable:'" \
     "$PROBE_N" "$(grep -c '^SUMMARY unavailable: ' <<<"$ALL_OUT")"
 
+echo "=== Interrupt contract: a signal must not strand the token file ==="
+# The one contract with no coverage at all until now: deleting the INT/TERM traps AND emptying
+# cleanup() left this suite green, though those traps exist for nothing but unlinking a mode-600
+# file holding a provider token.
+#
+# Deliberately NOT run_probe: this scenario exits non-zero on purpose, and run_probe feeds every
+# rc into BAD_RC, whose gate is "every verdict exits 0". An interrupt is not a verdict, so it
+# must stay out of that accumulator — and out of ALL_OUT, whose table is cut off mid-run here.
+#
+# The curl shim stalls inside the provider probe, which is precisely the window where the env
+# file is on disk: probe_provider sources it, runs the precheck, and unlinks it only afterwards.
+mkdir -p "$WORK/curlstall"
+printf '#!/usr/bin/env bash\nsleep 3\nexit 1\n' > "$WORK/curlstall/curl"
+chmod +x "$WORK/curlstall/curl"
+ICFG="$(mktemp -d "$WORK/int-XXXXXX")"
+cp "$TESTS_DIR/fixtures/valid-claude-models.yaml" "$ICFG/config.yaml"
+env CLAUDE_PLUGIN_DATA="$ICFG" TMPDIR="$ICFG" \
+    PREFLIGHT_CURL_BIN="$WORK/curlstall/curl" PATH="$WORK/curlstall:$PATH" \
+    bash "$SCRIPT" >/dev/null 2>&1 &
+IPID=$!
+IW=0
+while [ "$IW" -lt 150 ]; do
+    find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -q . && break
+    kill -0 "$IPID" 2>/dev/null || break
+    sleep 0.1; IW=$((IW+1))
+done
+assert_eq   "the token file exists while the probe is mid-flight" \
+            1 "$([ "$(find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -c .)" -ge 1 ] && echo 1 || echo 0)"
+kill -TERM "$IPID" 2>/dev/null
+wait "$IPID" 2>/dev/null; IRC=$?
+# 143, not 0: "every verdict exits 0" covers completed runs, and an interrupt is not one.
+assert_eq   "an interrupted probe exits 143, never 0"  143 "$IRC"
+assert_eq   "…and the token file is gone"              0 \
+            "$(find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -c . | tr -d ' ')"
+# The directory is what makes the guarantee reachable at all — the loader creates the file
+# inside the command substitution, so a name-only trap has nothing to delete until export
+# returns. If a future loader stops honouring TMPDIR, this is the assertion that fails.
+assert_eq   "…and so is the private directory that held it" 0 \
+            "$(find "$ICFG" -maxdepth 1 -type d -name 'tmp.*' 2>/dev/null | grep -c . | tr -d ' ')"
+
 # ============================================================================
 # FINAL GATES — must stay LAST. Tasks 2-4 append their scenario sections ABOVE
 # this banner. Both gates read every scenario's output, not just the last one.
@@ -804,6 +856,15 @@ assert_eq   "stderr carries only probe chatter, never precheck diagnostics" 0 "$
 # them in the Task 1 section, whose fixtures also carry providers).
 assert_eq   "…and that gate saw the chatter it filters" \
             1 "$([ "$(grep -c '^probing ' <<<"$ALL_ERR")" -ge 5 ] && echo 1 || echo 0)"
+
+# The stderr stream has a universal gate above; stdout had only a per-scenario check, inside the
+# one run where the shim answers 200. That is the weaker half of the same contract, and the gap
+# is reachable: probe_provider puts $url on stdout in all four verdict branches, and
+# PROV_DETAIL="export refused: <first line of loader stderr>" copies a raw message there too.
+# Mutation-checked: a token planted on stdout in the AUTH-FAILED branch left this suite green
+# until these two lines existed.
+assert_no_match "no provider token on stdout in ANY scenario" "tkn-zai" "$ALL_OUT"
+assert_no_match "…nor on stderr in ANY scenario"              "tkn-zai" "$ALL_ERR"
 
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
