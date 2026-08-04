@@ -28,15 +28,21 @@ All notable changes to claude-mesh will be documented here.
   Every signal the gate already had reads healthy on such a run — finalized, `is_error:false`,
   `num_turns` far above 1, non-empty `output.txt` — so a review written without access to the
   sources it tried to open scored `REAL`, and the only way to notice was to read `raw.jsonl` by
-  hand. That is exactly how the bug above surfaced. The scan counts `is_error` **tool_result**
-  events only, and matches the two refusal wordings the CLI actually emits — the Bash one
-  ("may only … from the allowed working directories") contains no "permission" at all, so a
-  single pattern would have caught half of them. The model's own prose and ordinary tool
-  failures (missing path, no match) are excluded by construction: reviewers hit those
-  constantly, and a verdict that fires on them is noise. `DEGRADED` is checked last, so
-  `STALLED` and `BROKEN` keep precedence. Both orchestrators keep such a reviewer's findings
-  and never re-dispatch it — a retry runs the same invocation and is denied identically — and
-  `/mesh-review`'s delegation table must name the denial count rather than just the verdict.
+  hand. That is exactly how the bug above surfaced. The verdict reads `permission_denials` off
+  the result event — one entry per refusal, carrying the tool name and the input that was
+  refused — so the reason line reports both a count and a breakdown (`Read×2, Bash×1`), which
+  says whether the reviewer lost source files, searches or both. Denials are counted on
+  **successful** result events only, matching how `num_turns` is taken: refusals belonging to a
+  segment the run abandoned never constrained the review that was delivered. A result event
+  that omits the field is REAL — absent is not denied. `DEGRADED` is checked last, so `STALLED`
+  and `BROKEN` keep precedence. Both orchestrators keep such a reviewer's findings and never
+  re-dispatch it (an identical invocation is refused identically), and `/mesh-review`'s
+  delegation table must name the denial count rather than just the verdict.
+  An earlier revision of this check grepped the refusal *text* out of `tool_result` bodies
+  instead. It was replaced before release because it failed in both directions: the CLI has
+  more refusal wordings than the two that had been sampled, and any **failed** tool call whose
+  output quoted one of them scored `DEGRADED` — which reviewing this repository reliably
+  produces, since the wordings are written down in it. The regression tests pin both directions.
 
 ## [0.7.0] - 2026-08-04
 

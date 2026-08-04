@@ -41,11 +41,12 @@
 #   BROKEN=4   finalized but non-agentic — ext-claude: NT<=1; codex/gemini: terminal event but
 #              zero tool calls (thinking-only / DSML grammar / answered without reading code —
 #              retry futile; fix by swapping the model in config.yaml)
-#   DEGRADED=5 ext-claude only: everything above says REAL, but the CLI itself refused N of the
-#              run's tool calls — the reviewer was confined to its working directory and wrote
-#              the review without the sources it tried to open. KEEP the findings (they are
-#              real, just partial) and do NOT retry: the cause is the invocation, not the run.
-#              codex and gemini cannot reach this verdict — see the ext-claude branch
+#   DEGRADED=5 ext-claude only: everything above says REAL, but the result event's
+#              `permission_denials` is non-empty — the CLI refused N of the run's tool calls,
+#              so the reviewer was confined to its working directory and wrote the review
+#              without the sources it tried to open. KEEP the findings (they are real, just
+#              partial) and do NOT retry: the cause is the invocation, not the run. codex and
+#              gemini carry no such field and cannot reach this verdict
 set -u
 export LC_ALL=C   # run dir names are compared with [[ < ]] and sorted; keep both byte-wise.
                   # A UTF-8 collation ignores '-' when comparing, so the name window below
@@ -291,30 +292,38 @@ case "$ENGINE" in
         # loses the sibling repositories it needs to check an API signature against real
         # source, falls back to guessing, and still finalizes with is_error:false and a
         # healthy num_turns. Nothing above can see that — on 2026-08-04 five reviewers came
-        # back this way and the gate called every one of them REAL. The CLI's own refusals are
-        # the one mechanical trace it leaves.
+        # back this way and this gate called every one of them REAL.
         #
-        # Counted: is_error tool_result events ONLY. The model's prose is not evidence — a
-        # reviewer writing "the handler requested permissions it never checks" is describing
-        # the code under review. Ordinary tool failures (missing path, no grep match) are not
-        # counted either: reviewers hit those constantly, and a verdict that fires on them is
-        # noise nobody will read twice.
+        # The signal is `permission_denials` on the result event: one entry per refusal,
+        # carrying the tool name and the exact input that was refused (verified on CC 2.1.221,
+        # 2026-08-04 — a refused Read yields tool_name "Read", a refused Bash "Bash", and a run
+        # under --permission-mode bypassPermissions yields []). Read it rather than grepping
+        # the refusal text out of tool_result bodies, which is what the first version of this
+        # check did and which fails in BOTH directions: it misses every wording that was not
+        # sampled (the CLI has several, and the Bash one contains no "permission" at all), and
+        # it fires on any FAILED tool call whose OUTPUT happens to quote one — grepping this
+        # repository does exactly that, since the wordings are written down in it.
         #
-        # Two wordings, both verbatim from CC 2.1.221 (measured 2026-08-04). The Bash one
-        # contains no "permission" at all, which is why this matches two patterns, not one:
-        #   Read: Claude requested permissions to read from <path>, but you haven't granted it yet.
-        #   Bash: cat in '<path>' was blocked. For security, Claude Code may only concatenate
-        #         files from the allowed working directories for this session: '<cwd>'.
-        # @json collapses each content value onto ONE line, so a multi-line refusal is counted
-        # once rather than once per line; `[..|strings]` flattens the array-of-blocks form of
-        # tool_result content as well as the plain-string form.
-        DENIED="$(grep -h '"tool_result"' "$RAW" 2>/dev/null \
-            | jq -Rr 'fromjson? | objects | .message?.content? | arrays | .[]
-                      | objects | select(.type == "tool_result" and .is_error == true)
-                      | [.content | .. | strings] | join(" ") | @json' 2>/dev/null \
-            | grep -c 'requested permissions\|allowed working directories' || true)"
-        if [ "${DENIED:-0}" -gt 0 ]; then
-            emit DEGRADED "num_turns=$NT but $DENIED tool call(s) were denied by the permission policy — the reviewer was confined to its working directory and reviewed on incomplete context. Keep the findings, do NOT re-dispatch: add --permission-mode bypassPermissions to the invocation instead" 5
+        # Successful segments only, matching NT above: a stream split by a background subagent
+        # carries several result events, and refusals belonging to an abandoned segment did not
+        # constrain the review that was actually delivered. Summed and not maxed — each entry is
+        # one refusal, not a running total.
+        #
+        # This cannot fail open. NT above is pulled from the same field of the same events of
+        # the same file by the same jq; a broken jq, an unreadable $RAW or a stream with no
+        # parsable result event leaves NT empty and exits STALLED before reaching this line. A
+        # result event that simply omits the field (an older build) yields no entries and stays
+        # REAL — absent is not denied.
+        DENIED_TOOLS="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
+            | jq -Rr 'fromjson? | objects | select(.type == "result" and .is_error == false)
+                      | .permission_denials | arrays | .[] | .tool_name // "unknown"' 2>/dev/null)"
+        DENIED="$(printf '%s\n' "$DENIED_TOOLS" | grep -c '[^[:space:]]')"
+        if [ "$DENIED" -gt 0 ]; then
+            # "Read×2, Bash×1" — which tools were refused says whether the reviewer lost source
+            # files, searches, or both, and a bare count does not.
+            BREAKDOWN="$(printf '%s\n' "$DENIED_TOOLS" | grep '[^[:space:]]' | sort | uniq -c |
+                         sort -rn | awk '{printf "%s%s×%s", (n++ ? ", " : ""), $2, $1}')"
+            emit DEGRADED "num_turns=$NT but the CLI refused $DENIED tool call(s) ($BREAKDOWN) — the reviewer was confined to its working directory and reviewed on incomplete context. Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The remedy is the user's, not an agent's: the ext-claude run needs --permission-mode bypassPermissions, and an installed plugin only picks that up through a release" 5
         fi
         emit REAL "delegated, agentic review (num_turns=$NT)" 0
         ;;

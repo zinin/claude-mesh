@@ -397,7 +397,7 @@ LATEST=$(find "$PLUGIN_DATA/runs/ext-claude" -mindepth 3 -maxdepth 3 -type d 2>/
 | Token precheck failed (HTTP 401/403) | Update `token:` in `providers[X]` |
 | Ollama daemon unreachable | `ollama serve` / `systemctl start ollama` |
 | Ollama auth failed | `ollama signin` |
-| Reviewer reports it could not read anything outside the project directory | `--permission-mode bypassPermissions` is missing from the invocation that ran (check **both** — default pipeline and the supervised `watchdog.sh` line). `verify-delegation.sh` reports such a run as `DEGRADED` and names the denial count. |
+| The run's `raw.jsonl` result event carries a non-empty `permission_denials` | The CLI refused that many tool calls, so the model worked without the files it tried to open — the invocation that ran lacked `--permission-mode bypassPermissions` (an installed plugin picks it up only through a release). Report it; do not edit plugin files to work around it. `shared/verify-delegation.sh` turns the same field into a `DEGRADED` verdict for the orchestrator. |
 
 ## Checklist
 
