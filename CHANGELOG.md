@@ -46,6 +46,15 @@ All notable changes to claude-mesh will be documented here.
   argument in the invocation it writes.
 
 ### Fixed
+- `ext-claude-code-review` resolves its base branch the way the codex and gemini skills already
+  did — the bare name, then `origin/<name>` — and stops instead of reviewing nothing when neither
+  resolves. The name it is given need not exist as a *local* branch: `origin/HEAD` yields a bare
+  name, and `BASE_BRANCH=` now reaches this skill from `/claude-mesh:mesh-review` naming whatever
+  the caller wants reviewed against. A single lookup left `BASE_SHA` empty, the prompt template
+  rendered `git diff ..<head>` — which git reads as `HEAD..HEAD`, zero bytes and exit 0 — and the
+  reviewer reported "no issues" about a diff it never saw. Deliberately not codex/gemini's third
+  fallback `git rev-parse HEAD~1`: reviewing one commit while the caller believes the whole branch
+  was covered is the same silent lie in another shape.
 - `skills/shared/config-loader.sh` rejects a newline inside a model label, as it already
   rejected `|`. One entry otherwise became two, and the phantom reached `preflight-env.sh` as a
   row whose name held spaces — shifting an arbitrary word into the status column, where it can
