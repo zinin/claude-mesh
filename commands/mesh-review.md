@@ -358,7 +358,7 @@ N="$("$LOADER" get-runtime | jq -r '.max_redispatch // 1')"; [[ "$N" =~ ^[0-9]+$
 for spec in "codex:-" "ext-claude:zai/glm" "ext-claude:ollama/kimi"; do
   eng="${spec%%:*}"; mdl="${spec#*:}"
   printf '%-28s ' "$spec"
-  bash "$VERIFY" "$eng" "$mdl" <DISPATCH_EPOCH> "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN; reason on stderr
+  bash "$VERIFY" "$eng" "$mdl" <DISPATCH_EPOCH> "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN|DEGRADED; reason on stderr
 done
 ```
 
@@ -368,6 +368,7 @@ Verdicts:
 - `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**. One `FLIP` reason reads differently and is not about the wrapper: `N run dir(s) in the dispatch window belong to another session`. The runs are there, but they carry an id this session does not have — either this session was resumed or forked since Step 5, or the wrapper really did flip and another orchestration's runs happen to sit in the same window on the same model. The guard cannot tell those two apart and deliberately does not guess. Re-dispatch anyway: a fresh run is stamped with this session's id and verifies honestly, which is the only way back to a checkable answer. What changes is how it is reported if it does not recover — see step 5.
 - `STALLED` (exit 2) — run dir but killed mid-flight / empty output → **re-dispatch** (retry helps). For ext-claude that is a missing result event; for codex and gemini, a stream with no `turn.completed` / `result` event, or a non-zero watchdog exit.
 - `BROKEN` (exit 4) — run dir but the engine finished without doing any work → **DROP, do NOT retry** (the engine itself is broken). For ext-claude that is thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events); for codex and gemini, a completed turn that ran no tool at all — narration rather than a review.
+- `DEGRADED` (exit 5, ext-claude only) — a real, agentic review, but the CLI refused `N` of its tool calls: the reviewer never got outside the directory it was launched in, so it reviewed without the sibling sources it tried to open → **KEEP for Step 6.1, do NOT re-dispatch.** The findings are genuine; what is missing is everything the reviewer could not read, so treat any claim about code outside the project dir as a guess rather than a finding. A retry re-runs the same invocation and is denied identically, and the remedy is not an agent's to apply: the ext-claude run needs `--permission-mode bypassPermissions`, and an *installed* plugin only picks that up through a release — so on any copy predating that release this verdict is the expected outcome, not an anomaly. The reason line names the denial count and which tools were refused (`Read×2, Bash×1`), which says whether the reviewer lost source files, searches, or both. Before this verdict existed such a run scored `REAL`: every liveness signal (finalized, `is_error:false`, `num_turns` well above 1, non-empty output) is healthy on a reviewer that read nothing, which is why it needed a check of its own.
 
 **3. Show the delegation status table** so the user sees who really cross-validated:
 ```
@@ -378,7 +379,10 @@ Verdicts:
 | ext-claude/zai/glm  | REAL    | ✅ kept          |
 | codex               | FLIP    | ↻ re-dispatch   |
 | ext-claude/ollama/… | BROKEN  | ✗ dropped       |
+| ext-claude/deepseek/… | DEGRADED | ⚠ kept — 14 denials, partial context |
 ```
+
+A `DEGRADED` row must say **how many** tool calls were denied — the count is the whole content of the verdict, and a row that hides it reads like a `REAL` with decoration.
 
 `INLINE` is a label **you** write, not a `verify-delegation.sh` verdict. Include one row per claude reviewer (a single row named `claude` in the fallback case) so the table is the complete roster of who actually reviewed — with several Claude models in play, a table that silently omits them understates the cross-validation.
 
@@ -393,7 +397,7 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 
 **4. Auto-redispatch loop (max `N` rounds; `N` = `runtime.max_redispatch`, default 1):**
 
-`PROBLEMS` = reviewers whose verdict is `FLIP` or `STALLED`. While `PROBLEMS` is non-empty AND rounds-done < `N`:
+`PROBLEMS` = reviewers whose verdict is `FLIP` or `STALLED` — **not** `BROKEN` and **not** `DEGRADED`. Both of those are already final: a broken engine repeats itself, and a denied reviewer is denied identically on the next run because nothing about the invocation changed. While `PROBLEMS` is non-empty AND rounds-done < `N`:
   - **a. Stamp a fresh window** via Bash: `DISPATCH_EPOCH=$(date +%s)` — so the guard inspects the NEW run, not the old failed one.
   - **b. Re-dispatch ONLY the `PROBLEMS` reviewers** with the EXACT same short delegation prompt as Step 5a (`MODEL=<id> Review the changes for production readiness` for ext-claude; `Review the changes for production readiness` for codex/gemini) — including the `BASE_BRANCH=<branch> ` prefix when the argument was given, since a retry that drops it would review a different range than the attempt it replaces — same `subagent_type`, same run mode. Apply the Step 5a **Dispatch model** rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit). Wait for completion.
   - **c. Re-run the guard** (step 2) for those reviewers with the new `DISPATCH_EPOCH`; update their verdicts.
