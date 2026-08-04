@@ -7,6 +7,19 @@ description: Launch code review agents (built-in claude on N models, codex, gemi
 
 Launch multiple external code review agents in parallel, collect and deduplicate results.
 
+## Arguments
+
+- `default` — run the `defaults.code_review` preset instead of asking (Step 0).
+- `BASE_BRANCH=<branch>` — the base the diff is taken against. Optional, and combinable with
+  `default`. Bind it and carry it to every reviewer per the **Base branch** rule in Step 5a.
+
+Without `BASE_BRANCH` each review skill auto-detects the base itself — `git symbolic-ref
+refs/remotes/origin/HEAD`, falling back to `master`. Passing it matters exactly where that guess
+is wrong: in a repository whose default branch is `main`, or when reviewing against anything
+other than the default branch, `merge-base` then finds nothing and the codex / gemini skills fall
+back to `HEAD~1` — a single commit reviewed while the caller believes the whole branch was
+covered, with nothing on screen saying otherwise.
+
 ## Step 0: Check for `default` argument
 
 If invoked as `/claude-mesh:mesh-review default` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
@@ -220,13 +233,22 @@ Launch all selected reviewers via Task tool, each `run_in_background: true`, in 
 
 **Exception — claude reviewers with an explicit model.** When Step 2.4 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL`. Running the review on a chosen model is the whole point; letting `DISPATCH_MODEL` win here would collapse every claude reviewer onto one model and fake the independence. `DISPATCH_MODEL` still governs the codex / gemini / ext-claude wrappers, and the single fallback `claude` reviewer.
 
+**Base branch:** when the `BASE_BRANCH=<branch>` argument was given, prefix every WRAPPER prompt
+below with `BASE_BRANCH=<branch> `. Each wrapper's skill reads that name and otherwise
+auto-detects (`ext-claude-code-review` SKILL.md:20, `codex-review-native` :50, `codex-code-review`
+/ `gemini-code-review` :84), so without the prefix the reviewers silently examine a different
+range than the caller asked for. This is a parameter exactly like `MODEL=<id>`, not review
+content — the CRITICAL rule below still forbids inlining scope, diff or focus areas. The builtin
+`claude` reviewers resolve the range themselves, so they get the base named in their prompt
+sentence instead. Argument absent → change nothing; every skill keeps its own auto-detection.
+
 For each builtin reviewer:
-- claude: `subagent_type: "general-purpose"` (built-in — NOT namespaced), prompt invokes `superpowers:requesting-code-review` skill. **One Task per entry of `SELECTED_CLAUDE_MODELS`**, each carrying `model: "<entry>"`; in the fallback case exactly one Task per the Dispatch-model rule above. All of them get the same prompt — only the model differs.
-- codex: `subagent_type: "claude-mesh:codex-code-reviewer"`, prompt: `Review the changes for production readiness`
-- gemini: `subagent_type: "claude-mesh:gemini-code-reviewer"`, prompt: `Review the changes for production readiness`
+- claude: `subagent_type: "general-purpose"` (built-in — NOT namespaced), prompt invokes `superpowers:requesting-code-review` skill. **One Task per entry of `SELECTED_CLAUDE_MODELS`**, each carrying `model: "<entry>"`; in the fallback case exactly one Task per the Dispatch-model rule above. All of them get the same prompt — only the model differs. With `BASE_BRANCH` given, the prompt names it: `… review the changes on this branch against base <branch> …`.
+- codex: `subagent_type: "claude-mesh:codex-code-reviewer"`, prompt: `Review the changes for production readiness` (with the `BASE_BRANCH=<branch> ` prefix when the argument was given)
+- gemini: `subagent_type: "claude-mesh:gemini-code-reviewer"`, prompt: `Review the changes for production readiness` (same prefix rule)
 
 For each selected model id:
-- `subagent_type: "claude-mesh:ext-claude-code-reviewer"`, prompt: `MODEL=<id> Review the changes for production readiness`
+- `subagent_type: "claude-mesh:ext-claude-code-reviewer"`, prompt: `MODEL=<id> Review the changes for production readiness` — with the base branch it becomes `BASE_BRANCH=<branch> MODEL=<id> Review the changes for production readiness`
 
 **CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / ext-claude reviewers are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own Claude model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (Only the builtin `claude` / `general-purpose` reviewers review directly.)
 
@@ -373,7 +395,7 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 
 `PROBLEMS` = reviewers whose verdict is `FLIP` or `STALLED`. While `PROBLEMS` is non-empty AND rounds-done < `N`:
   - **a. Stamp a fresh window** via Bash: `DISPATCH_EPOCH=$(date +%s)` — so the guard inspects the NEW run, not the old failed one.
-  - **b. Re-dispatch ONLY the `PROBLEMS` reviewers** with the EXACT same short delegation prompt as Step 5a (`MODEL=<id> Review the changes for production readiness` for ext-claude; `Review the changes for production readiness` for codex/gemini), same `subagent_type`, same run mode. Apply the Step 5a **Dispatch model** rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit). Wait for completion.
+  - **b. Re-dispatch ONLY the `PROBLEMS` reviewers** with the EXACT same short delegation prompt as Step 5a (`MODEL=<id> Review the changes for production readiness` for ext-claude; `Review the changes for production readiness` for codex/gemini) — including the `BASE_BRANCH=<branch> ` prefix when the argument was given, since a retry that drops it would review a different range than the attempt it replaces — same `subagent_type`, same run mode. Apply the Step 5a **Dispatch model** rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit). Wait for completion.
   - **c. Re-run the guard** (step 2) for those reviewers with the new `DISPATCH_EPOCH`; update their verdicts.
   - **d.** rounds-done++.
 

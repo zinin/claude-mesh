@@ -47,17 +47,32 @@ SKIP_NET="${PREFLIGHT_SKIP_NETWORK:-0}"
 # the plan wrote them, and keeps the next consumer from having to know which convention to pick.)
 [ "$SKIP_NET" = 0 ] || SKIP_NET=1
 
-# Task 2 sets this to the env file it is about to source; the trap removes it even if the
-# probe is interrupted between export and rm. The file carries a provider token. On INT/TERM
-# the probe exits NON-zero after cleanup: an interrupt is not a verdict — "every verdict
-# exits 0" covers completed runs only. (This is also why probe_provider must never run inside
-# a command substitution: CURRENT_ENVF assigned in a subshell never reaches this trap.)
+# Task 2 sets these to the private directory it is about to hand the loader, and to the env
+# file that appears inside it; the trap removes both even if the probe is interrupted between
+# export and rm. The file carries a provider token. On INT/TERM the probe exits NON-zero after
+# cleanup: an interrupt is not a verdict — "every verdict exits 0" covers completed runs only.
+# (This is also why probe_provider must never run inside a command substitution: a value
+# assigned in a subshell never reaches this trap.)
+#
+# The DIRECTORY is what closes the interrupt window, and naming the file alone cannot: the
+# loader creates and fills the token file INSIDE the command substitution, so between its
+# mktemp and the moment it prints the path there is a window — measured at ~17 ms per provider
+# — in which the file is on disk and nothing here names it. A signal delivered to the process
+# GROUP during that window (what Ctrl+C at a terminal does) killed the loader and left a
+# mode-600 token file behind; the parent read the dead child as an ordinary "export refused"
+# and exited 0, so nothing reported the orphan. A directory created BEFORE export runs removes
+# the window outright: there is nothing the loader can create that the trap does not cover.
+CURRENT_ENVD=""
 CURRENT_ENVF=""
 # SC2317: reached only through the traps below, and since the summary section ends the file in
 # an explicit `exit 0` shellcheck 0.9's reachability pass stops seeing that. Deleting the body
 # on the strength of that note would leave a mode-600 token file behind on every interrupt.
 # shellcheck disable=SC2317
-cleanup() { [ -n "$CURRENT_ENVF" ] && rm -f "$CURRENT_ENVF"; return 0; }
+cleanup() {
+    [ -n "$CURRENT_ENVF" ] && rm -f "$CURRENT_ENVF"
+    [ -n "$CURRENT_ENVD" ] && rm -rf "$CURRENT_ENVD"
+    return 0
+}
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
@@ -91,6 +106,17 @@ mktemp_or_fail() {      # echoes a temp-file path; non-zero and silent when it c
     printf '%s\n' "$f"
 }
 
+# Same contract for a directory. This one exists for exactly one caller — the private dir the
+# loader writes its token file into — so the trap can name the target BEFORE export creates
+# anything inside it. Both conditions matter here for the same reason as above: `rm -rf ""`
+# would be a silent no-op that leaves the token file wherever the loader actually put it.
+mktemp_dir_or_fail() {  # echoes a temp-dir path; non-zero and silent when it cannot
+    local d
+    d="$(mktemp -d 2>/dev/null)" || return 1
+    [ -n "$d" ] || return 1
+    printf '%s\n' "$d"
+}
+
 # ---------------------------------------------------------------- identity
 # Which probe is this? The reading session must be able to tell "the probe is old" from
 # "the capability is absent", and a stale cache pick must be visible instead of silent.
@@ -109,8 +135,24 @@ TOOLCHAIN_OK=1
 # (Python-yq specifically) is not the same advice as `apt install jq`, and by then the rows
 # printed here can no longer be read back.
 TOOLCHAIN_MISSING=""
-command -v "$YQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:+$TOOLCHAIN_MISSING, }yq"; row yq MISSING "loader cannot run without it (looked for $YQ_BIN)"; }
-command -v "$JQ_BIN" >/dev/null 2>&1 || { TOOLCHAIN_OK=0; TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:+$TOOLCHAIN_MISSING, }jq"; row jq MISSING "loader cannot run without it (looked for $JQ_BIN)"; }
+# TWO lookups per tool, not one — the same rule the curl gate below states, for the same reason:
+# PREFLIGHT_YQ_BIN / PREFLIGHT_JQ_BIN govern what THIS script checks, while config-loader.sh
+# resolves bare `yq` / `jq` from PATH (config-loader.sh:61). An override pointing at a working
+# binary while PATH holds none used to satisfy this gate and come back as `config INVALID` —
+# precisely the impersonation the paragraph above says cannot happen.
+toolchain_row() {       # $1 = canonical name the loader looks for, $2 = the override this script uses
+    local canon="$1" bin="$2" gap=""
+    command -v "$bin" >/dev/null 2>&1 || gap="$bin"
+    if [ "$bin" != "$canon" ] && ! command -v "$canon" >/dev/null 2>&1; then
+        gap="${gap:+$gap, }$canon on PATH (where the loader looks)"
+    fi
+    [ -n "$gap" ] || return 0
+    TOOLCHAIN_OK=0
+    TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:+$TOOLCHAIN_MISSING, }$canon"
+    row "$canon" MISSING "loader cannot run without it (missing: $gap)"
+}
+toolchain_row yq "$YQ_BIN"
+toolchain_row jq "$JQ_BIN"
 
 # ---------------------------------------------------------------- config
 CONFIG_STATUS=""
@@ -165,7 +207,27 @@ else
                rm -f "$CH_ERR"
            done ;;
         2) CONFIG_STATUS="MISSING"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; cp config.example.yaml into the data dir"; MODELS="" ;;
-        *) CONFIG_STATUS="INVALID"; CONFIG_DETAIL="$(head -1 "$LERR")"; MODELS="" ;;
+        *) # rc=1 means "the loader refused", which is not the same as "the config is bad":
+           # require_yq and require_gnu_coreutils die with this very code BEFORE config.yaml is
+           # opened. The presence check above cannot catch those two — a Go-yq binary (what
+           # `apt install yq` and `brew install yq` actually deliver) is present under the name
+           # the loader looks for, and passes it. Calling that INVALID sends the operator to
+           # edit a file the loader never read, so it is routed to the toolchain cause and its
+           # "install Python-yq" hint instead. Matching on the loader's own wording is the cost;
+           # the Go-yq scenario in test-preflight-env.sh is what keeps the two in step.
+           CONFIG_DETAIL="$(head -1 "$LERR")"; MODELS=""
+           case "$CONFIG_DETAIL" in
+               *"yq not found"*|*"yq flavor mismatch"*)
+                   CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="toolchain"
+                   # The presence gate passed, so TOOLCHAIN_MISSING is empty and the hint would
+                   # degrade to "see README Dependencies". The loader just named the tool — carry
+                   # that through, so the advice stays "pipx install yq, NOT the Go one".
+                   TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:-yq}" ;;
+               *"GNU coreutils"*)
+                   CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="toolchain"
+                   TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:-GNU coreutils}" ;;
+               *)  CONFIG_STATUS="INVALID" ;;
+           esac ;;
     esac
     rm -f "$LERR"
 fi
@@ -333,10 +395,21 @@ probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PR
         PROV_DETAIL="cannot create a temp file (TMPDIR full or unwritable) — endpoint not probed"
         return 0
     fi
-    # Assigned STRAIGHT into the global, never into a local first: the mode-600 token file
-    # exists from the moment export returns, so any window in which the file is on disk and
-    # CURRENT_ENVF is not yet set is a window in which a signal leaks it.
-    if ! CURRENT_ENVF="$("$LOADER" export "$mid" 2>"$eerr")"; then
+    # The destination is created and named HERE, before export runs. Assigned STRAIGHT into the
+    # global, never into a local first: from this line on the trap already covers anything the
+    # loader creates inside it, which is what the old file-name-only approach could not do —
+    # the name did not exist until the command substitution returned.
+    if ! CURRENT_ENVD="$(mktemp_dir_or_fail)"; then
+        rm -f "$eerr"
+        PROV_STATUS="UNKNOWN"
+        PROV_DETAIL="cannot create a temp dir (TMPDIR full or unwritable) — endpoint not probed"
+        return 0
+    fi
+    # TMPDIR is how the destination is imposed without touching the loader's contract: its
+    # `mktemp -t` honours it, so the mode-600 token file lands inside the directory the trap
+    # holds. If a future loader ever stopped honouring TMPDIR the interrupt scenario in
+    # test-preflight-env.sh fails, which is the point of pinning it there.
+    if ! CURRENT_ENVF="$(TMPDIR="$CURRENT_ENVD" "$LOADER" export "$mid" 2>"$eerr")"; then
         first="$(head -1 "$eerr")"; rm -f "$eerr"
         # export prints the path only on success, so this is normally empty. If a future
         # loader ever printed one and then died, leave it set so the trap deletes the file.
@@ -347,11 +420,14 @@ probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PR
             *REPLACE_ME*|*[Tt]oken*) PROV_STATUS="MISSING"; PROV_DETAIL="token not configured for this provider (export refused)" ;;
             *)                       PROV_STATUS="UNKNOWN"; PROV_DETAIL="export refused: ${first:-no reason printed}" ;;
         esac
+        # Whatever the dead loader may have left inside goes with the directory.
+        rm -rf "$CURRENT_ENVD" && CURRENT_ENVD=""
         return 0
     fi
     rm -f "$eerr"
     if [ -z "$CURRENT_ENVF" ] || [ ! -f "$CURRENT_ENVF" ]; then
         CURRENT_ENVF=""
+        rm -rf "$CURRENT_ENVD" && CURRENT_ENVD=""
         PROV_STATUS="UNKNOWN"; PROV_DETAIL="export produced no env file"; return 0
     fi
     # Subshell: the token lives only here; only "rc|kind|base_url" leaves it. base_url is not
@@ -380,8 +456,9 @@ probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PR
         esac
     )"
     # Cleared only once the unlink actually succeeded: otherwise the trap must keep the name
-    # so it can try again at exit.
+    # so it can try again at exit. Same rule for the directory.
     rm -f "$CURRENT_ENVF" && CURRENT_ENVF=""
+    rm -rf "$CURRENT_ENVD" && CURRENT_ENVD=""
     # url takes everything after the SECOND separator, so a '|' inside a base_url survives.
     rc="${out%%|*}"; rest="${out#*|}"; kind="${rest%%|*}"; url="${rest#*|}"
     case "$rc" in

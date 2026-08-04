@@ -145,10 +145,14 @@ to start without a usable config.yaml at all.
 ## WHEN THE USER SAYS GO
 
 Invoke `/claude-mesh:mesh-design-review DESIGN_PATH=<DESIGN_PATH> PLAN_PATH=<PLAN_PATH> TOPIC=<TOPIC>`
-and select only reviewers the preflight marked available. When you pick reviewers by hand,
-choose from the ROWS, not from `SUMMARY available`: the summary lists `codex` and `gemini` with
-no caveat, while their own rows say that `OK` there is a heuristic — binary present, section
-valid, endpoint answered, nothing about auth.
+and select only reviewers the preflight marked available. The two halves of the table answer
+different questions, so read both: **`SUMMARY available` decides eligibility** — a reviewer
+absent from that line cannot be selected whatever its own row says, because a row reports
+whether that endpoint answered, not whether the orchestrator starts. With a rejected `claude:`
+section, `provider:*` rows can read `OK` next to `SUMMARY available: —`, and both orchestrators
+exit on the catalog read before offering anything. **The ROWS carry the caveats** the summary
+has no room for: `OK` on codex / gemini is a heuristic — binary present, section valid,
+endpoint answered — and says nothing about auth.
 
 Whether the `default` argument is safe here is a membership check between two SUMMARY lines.
 Split both on `, ` and compare WHOLE entries — never substrings: a bare `claude` is a substring

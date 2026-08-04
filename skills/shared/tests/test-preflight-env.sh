@@ -190,6 +190,37 @@ assert_eq   "missing yq exits 0"              0        "$RC"
 assert_eq   "missing yq -> its own row"       MISSING  "$(field yq "$OUT")"
 assert_eq   "missing yq -> config UNKNOWN, not INVALID" UNKNOWN "$(field config "$OUT")"
 
+# The override the probe checks is not the binary the loader runs: config-loader.sh:61 resolves
+# bare `yq` from PATH. A working override with no `yq` on PATH used to satisfy the presence gate
+# and come back as INVALID — a healthy config accused by a probe that never opened it.
+mkfarm "$WORK/noyq" yq
+run_probe valid-claude-models.yaml PATH="$WORK/curlfast:$WORK/noyq" PREFLIGHT_YQ_BIN="$(command -v yq)"
+assert_eq   "override without a PATH yq exits 0"                0        "$RC"
+assert_eq   "…still reports the yq row"                         MISSING  "$(field yq "$OUT")"
+assert_eq   "…and config is UNKNOWN, not INVALID"               UNKNOWN  "$(field config "$OUT")"
+assert_match "…naming where the loader looks"                   "where the loader looks" "$OUT"
+
+# The trigger a presence check CANNOT catch, and the one operators actually hit: `apt install yq`
+# on Debian and `brew install yq` on macOS both deliver Go-yq, which IS present under the name
+# the loader looks for and is rejected by it on sight (config-loader.sh:71). The loader dies
+# rc=1 exactly as a rejected config does, so until this was routed by cause the row read INVALID
+# and the hint sent the operator to edit a config.yaml nothing had read. This scenario is also
+# what keeps the probe's signature match in step with the loader's own wording.
+mkdir -p "$WORK/goyq"
+cat > "$WORK/goyq/yq" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = "--version" ] && { echo "yq (https://github.com/mikefarah/yq/) version v4.44.1"; exit 0; }
+exit 0
+SH
+chmod +x "$WORK/goyq/yq"
+run_probe valid-claude-models.yaml PATH="$WORK/goyq:$WORK/curlfast:$WORK/noyq"
+assert_eq   "Go-yq exits 0"                          0        "$RC"
+assert_eq   "Go-yq -> config UNKNOWN, not INVALID"   UNKNOWN  "$(field config "$OUT")"
+assert_match "…and the detail names the flavour"     "flavor mismatch"  "$OUT"
+assert_match "…and the hint names Python-yq"         "pipx install yq"  "$OUT"
+# The whole point of the routing: an unread config.yaml must not be blamed for a dead toolchain.
+assert_match "…and says the config was never read"   "was never read"   "$OUT"
+
 # The OTHER way to reach UNKNOWN, and the one that looked like a rejected config until it was
 # guarded: with an unwritable TMPDIR the probe cannot create the file that catches the loader's
 # stderr, `cmd 2>""` fails on the redirect alone, and the row read `INVALID` with an EMPTY
