@@ -2,6 +2,42 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Fixed
+- `ext-claude-exec` invoked `claude -p` with no permission flag at all, so every reviewer on
+  an alt-provider model was silently confined to the directory the orchestration was launched
+  from. Under `-p` there is nobody to answer a permission prompt, so each request is
+  auto-denied rather than raised: on 2026-08-04 a `/mesh-design-review` had all five reviewers
+  (zai/glm, alibaba/qwen, deepseek/v4-pro, ollama/kimi, ollama/minimax) unable to open a single
+  file outside the project — one of them asked, in its own output, for permission to read a
+  `pom.xml` — while codex in the same session read a neighbouring repository 37 times without
+  one refusal. Nothing was lost in a refactor: `git grep` across all 201 commits finds no
+  permission flag on the ext-claude path in any tree, ever. The asymmetry dates to the first
+  commit, where codex already carried `--dangerously-bypass-approvals-and-sandbox` and gemini
+  `--approval-mode yolo` — ext-claude was the one engine for which the question was never
+  asked. Both invocations now pass `--permission-mode bypassPermissions`: the default
+  `progress-monitor.sh` pipeline **and** the supervised `watchdog.sh` one, which is the branch
+  every orchestrated review actually takes. `--add-dir` is deliberately not added alongside it
+  — measured on CC 2.1.221, the bypass lifts the directory confinement by itself, so there is
+  no list of trusted roots to keep in sync with each project.
+
+### Added
+- `shared/verify-delegation.sh` gained a fifth verdict, `DEGRADED` (exit 5, ext-claude only),
+  for a run that delivered a real agentic review after the CLI had refused N of its tool calls.
+  Every signal the gate already had reads healthy on such a run — finalized, `is_error:false`,
+  `num_turns` far above 1, non-empty `output.txt` — so a review written without access to the
+  sources it tried to open scored `REAL`, and the only way to notice was to read `raw.jsonl` by
+  hand. That is exactly how the bug above surfaced. The scan counts `is_error` **tool_result**
+  events only, and matches the two refusal wordings the CLI actually emits — the Bash one
+  ("may only … from the allowed working directories") contains no "permission" at all, so a
+  single pattern would have caught half of them. The model's own prose and ordinary tool
+  failures (missing path, no match) are excluded by construction: reviewers hit those
+  constantly, and a verdict that fires on them is noise. `DEGRADED` is checked last, so
+  `STALLED` and `BROKEN` keep precedence. Both orchestrators keep such a reviewer's findings
+  and never re-dispatch it — a retry runs the same invocation and is denied identically — and
+  `/mesh-review`'s delegation table must name the denial count rather than just the verdict.
+
 ## [0.7.0] - 2026-08-04
 
 ### Added

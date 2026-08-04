@@ -199,7 +199,22 @@ unset CLAUDECODE
 
 PIPELINE_RC=0
 # Timeout from config (CLAUDE_MESH_TIMEOUT_SINGLE_RUN_SEC exported by config-loader).
-{ timeout "${CLAUDE_MESH_TIMEOUT_SINGLE_RUN_SEC:-1800}" claude -p --output-format stream-json < "$WORK_DIR/prompt.md" 2>"$WORK_DIR/stderr.txt" | \
+#
+# --permission-mode bypassPermissions is NOT optional here. Under -p there is nobody to
+# answer a permission prompt, so every request is auto-denied and the reviewer is confined
+# to the directory it was launched in — SILENTLY. It cannot read a sibling repository to
+# check an API signature against the real source, and the review degrades to guesswork
+# rather than failing loudly (see verify-delegation.sh's DEGRADED verdict, which exists to
+# catch exactly that). Measured on CC 2.1.221, 2026-08-04: without the flag a Read outside
+# the cwd returns "Claude requested permissions to read from <path>, but you haven't granted
+# it yet" and a Bash `cat` returns "was blocked ... may only concatenate files from the
+# allowed working directories"; with it, both reads and Bash searches work anywhere.
+# --add-dir is NOT needed alongside it — the bypass lifts the directory confinement too
+# (also measured), so there is no list of trusted roots to keep up to date.
+# This restores parity with the other two engines, which have carried an equivalent since
+# the first commit: codex `--dangerously-bypass-approvals-and-sandbox`, gemini
+# `--approval-mode yolo`. ext-claude was the only path that never had one.
+{ timeout "${CLAUDE_MESH_TIMEOUT_SINGLE_RUN_SEC:-1800}" claude -p --permission-mode bypassPermissions --output-format stream-json < "$WORK_DIR/prompt.md" 2>"$WORK_DIR/stderr.txt" | \
   "$SKILL_DIR/progress-monitor.sh" "$WORK_DIR" "$MODEL" ; } || PIPELINE_RC=$?
 
 echo ""
@@ -258,6 +273,12 @@ echo "Timeouts: single=${SINGLE_RUN}s stall=${STALL}s global=${GLOBAL}s retries=
 echo ""
 unset CLAUDECODE
 
+# `--permission-mode bypassPermissions` carries the same reasoning as in default mode above
+# (no one can answer a permission prompt under -p, so the reviewer is silently confined to its
+# cwd) — and it must be on BOTH paths. Orchestrated runs (`/mesh-design-review`) always take
+# this supervised branch, so a flag added only to the default pipeline above would fix the
+# one-off interactive run and leave every actual review confined. The flag cannot be moved
+# into a comment inside the `env` block below: the block is one continued line.
 WATCHDOG_RC=0
 { env \
     WORK_DIR="$WORK_DIR" \
@@ -267,7 +288,7 @@ WATCHDOG_RC=0
     GLOBAL_TIMEOUT="$GLOBAL" \
     STREAM_FILE_NAME=raw.jsonl \
     "$WATCHDOG" -- \
-      timeout "$SINGLE_RUN" stdbuf -oL -eL claude -p --output-format stream-json \
+      timeout "$SINGLE_RUN" stdbuf -oL -eL claude -p --permission-mode bypassPermissions --output-format stream-json \
   || WATCHDOG_RC=$?; }
 
 # Watchdog writes each attempt's artefacts under $WORK_DIR/attempt-N/ and makes
@@ -351,6 +372,20 @@ LATEST=$(find "$PLUGIN_DATA/runs/ext-claude" -mindepth 3 -maxdepth 3 -type d 2>/
 
 **Return to caller:** WORK_DIR path and the contents of `output.txt`.
 
+## Options Explained
+
+| Flag | Purpose |
+|------|---------|
+| `-p` | Headless (print) mode — no interactive session, prompt arrives on stdin |
+| `--permission-mode bypassPermissions` | Skip every permission check, **including the confinement to the launch directory**. Not optional: under `-p` nobody can answer a permission prompt, so without it every access outside the cwd is auto-denied and the reviewer silently loses the sibling repositories it needs to check an API signature against real source — the review degrades to guesswork instead of failing. `--add-dir` is NOT needed alongside it (the bypass lifts the directory confinement too). Parity with codex `--dangerously-bypass-approvals-and-sandbox` and gemini `--approval-mode yolo`; `--dangerously-skip-permissions` was measured equivalent and is spelled this way to match the mode vocabulary the other engines use. |
+| `--output-format stream-json` | Emit JSONL events, consumed by `progress-monitor.sh` (default mode) and `extract-result.py` / `generate-md.sh` (supervised) |
+| `timeout $SINGLE_RUN` | Per-run limit from the `runtime` timeouts in config.yaml (default 1800s) |
+
+> If `--add-dir` is ever added here, note it takes a **variadic** value (`--add-dir <directories...>`)
+> and must not sit directly before a positional prompt — it swallows the prompt and the CLI exits
+> with `Input must be provided either through stdin or as a prompt argument`. Both invocations above
+> feed the prompt on **stdin**, which is immune to that.
+
 ## Error Recovery
 
 | Error | Solution |
@@ -362,6 +397,7 @@ LATEST=$(find "$PLUGIN_DATA/runs/ext-claude" -mindepth 3 -maxdepth 3 -type d 2>/
 | Token precheck failed (HTTP 401/403) | Update `token:` in `providers[X]` |
 | Ollama daemon unreachable | `ollama serve` / `systemctl start ollama` |
 | Ollama auth failed | `ollama signin` |
+| Reviewer reports it could not read anything outside the project directory | `--permission-mode bypassPermissions` is missing from the invocation that ran (check **both** — default pipeline and the supervised `watchdog.sh` line). `verify-delegation.sh` reports such a run as `DEGRADED` and names the denial count. |
 
 ## Checklist
 

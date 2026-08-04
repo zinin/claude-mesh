@@ -7,7 +7,7 @@
 # engine-broken empty/thinking-only result (BROKEN).
 #
 # Verdicts (stdout) + exit codes:
-#   REAL=0  FLIP=3  STALLED=2  BROKEN=4
+#   REAL=0  FLIP=3  STALLED=2  BROKEN=4  DEGRADED=5
 #
 # Criteria are derived from real run-dir fixtures observed on 2026-05-30:
 #   REAL    (kimi):     final symlink + result num_turns>1 + non-empty output.txt
@@ -41,6 +41,14 @@ assert_match() {
 
 # run the script and capture verdict + rc
 run() { VERDICT=$(bash "$SCRIPT" "$@" 2>/dev/null); RC=$?; }
+
+# same, but also keep the reason line from stderr in $REASON — the DEGRADED tests assert on
+# the denial count it carries, which is the whole point of that verdict.
+run_full() {
+    local errf; errf=$(mktemp)
+    VERDICT=$(bash "$SCRIPT" "$@" 2>"$errf"); RC=$?
+    REASON=$(cat "$errf" 2>/dev/null); rm -f "$errf"
+}
 
 # run the script under an explicit session identity: <sid>, or '-' for no identity at all.
 # The assignment prefixes the EXTERNAL command; a prefix on a function call would leak into
@@ -597,6 +605,145 @@ ln -sfn attempt-1 "$rd/final"
 : > "$rd/output.txt"
 echo 'findings' > "$rd/attempt-1/output.txt"
 printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/attempt-1/raw.jsonl"
+run codex - 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# === DEGRADED: an agentic review the CLI denied access to ===
+#
+# Under `-p` nobody can answer a permission prompt, so a run launched without
+# `--permission-mode bypassPermissions` is confined to its cwd and every read of a sibling
+# repository comes back denied. The run still finalizes with is_error:false and num_turns>1,
+# so every liveness signal this script had already checked said REAL: a review written from
+# guesswork passed the gate as genuine cross-validation, and the only way to notice was to
+# read raw.jsonl by hand. The two denial texts below are verbatim from CC 2.1.221 (measured
+# 2026-08-04) — the Read tool and the Bash tool word it differently, and the Bash wording
+# contains no "permission" at all, so matching a single string catches only half of them.
+
+echo "=== Test: ext-claude DEGRADED (Read denial in an otherwise REAL run) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/deepseek/v4-pro" 2026-08-04-11-00-00-1000-degraded)
+echo '### Critical
+- The API signature could not be verified against the real source.' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Claude requested permissions to read from /opt/git/common-backend/pom.xml, but you haven't granted it yet.","is_error":true,"tool_use_id":"toolu_01"}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":24}
+EOF
+run_full ext-claude deepseek/v4-pro 1 "$TDIR"
+assert_eq "verdict DEGRADED" "DEGRADED" "$VERDICT"
+assert_eq "exit 5" "5" "$RC"
+assert_match "reason counts 1 denial" "1 tool call(s) were denied" "$REASON"
+rm -rf "$TDIR"
+
+echo "=== Test: ext-claude DEGRADED (Bash denial — wording carries no 'permission') ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-bashdeny)
+echo 'findings, such as they are' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"cat in '/opt/git/common-backend/pom.xml' was blocked. For security, Claude Code may only concatenate files from the allowed working directories for this session: '/opt/git/recovery-order-service'.","is_error":true,"tool_use_id":"toolu_02"}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":31}
+EOF
+run_full ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict DEGRADED" "DEGRADED" "$VERDICT"
+assert_eq "exit 5" "5" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: ext-claude DEGRADED counts every denial, both wordings ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/ollama/kimi" 2026-08-04-11-00-00-1000-count)
+echo 'findings' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Claude requested permissions to read from /opt/a.java, but you haven't granted it yet.","is_error":true}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Claude requested permissions to read from /opt/b.java, but you haven't granted it yet.","is_error":true}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"grep was blocked. For security, Claude Code may only search files from the allowed working directories for this session: '/opt/svc'.","is_error":true}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":40}
+EOF
+run_full ext-claude ollama/kimi 1 "$TDIR"
+assert_eq "verdict DEGRADED" "DEGRADED" "$VERDICT"
+assert_match "reason counts 3 denials" "3 tool call(s) were denied" "$REASON"
+rm -rf "$TDIR"
+
+# Anti-false-positive 1: an ordinary failed tool call is not a permission denial. Reviewers
+# hit these constantly (a path that does not exist, a grep that matched nothing); counting
+# them would flag every healthy run as DEGRADED and make the verdict worthless.
+echo "=== Test: ext-claude REAL — is_error tool_result that is NOT a denial ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-ordinary-err)
+echo 'findings' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Error: File does not exist. Did you mean src/main/java/App.java?","is_error":true}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":18}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# Anti-false-positive 2: the phrase in the model's own prose is not evidence. A reviewer
+# writing "the handler requested permissions it never checks" is describing the code under
+# review. Only an is_error tool_result — the CLI's own refusal — counts.
+echo "=== Test: ext-claude REAL — denial wording in assistant prose, not in a tool_result ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/alibaba/qwen" 2026-08-04-11-00-00-1000-prose)
+echo 'the handler requested permissions it never checks' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The handler requested permissions to read from the vault but you haven't granted it yet — that path is unreachable in prod."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":22}
+EOF
+run ext-claude alibaba/qwen 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# Precedence: DEGRADED is checked LAST, so a run that is also dead stays dead. BROKEN and
+# STALLED route to different actions (drop / re-dispatch) and a denial count does not change
+# either of them — whereas DEGRADED means "keep it, but know what it is worth".
+echo "=== Test: ext-claude BROKEN wins over DEGRADED (num_turns<=1 + denials) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/ollama/minimax" 2026-08-04-11-00-00-1000-broken-deny)
+echo 'narration' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Claude requested permissions to read from /opt/x.java, but you haven't granted it yet.","is_error":true}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1}
+EOF
+run ext-claude ollama/minimax 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: ext-claude STALLED wins over DEGRADED (blank output + denials) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-stalled-deny)
+printf '\n' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Claude requested permissions to read from /opt/x.java, but you haven't granted it yet.","is_error":true}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":9}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# codex and gemini are out of scope: they carry a bypass flag of their own since the first
+# commit, and their streams are not Anthropic tool_result events, so the scan would be looking
+# for a shape that cannot occur. Keep the branch narrow rather than speculative.
+echo "=== Test: codex REAL — denial-shaped text in the stream is not scanned ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-04-11-00-00-1000-codex-textual)
+echo 'findings' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"; echo 0 > "$rd/.watchdog_rc"
+cat > "$rd/raw.jsonl" <<'EOF'
+{"type":"command_execution","text":"grep was blocked. For security, Claude Code may only search files from the allowed working directories for this session."}
+{"type":"turn.completed"}
+EOF
 run codex - 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
 assert_eq "exit 0" "0" "$RC"

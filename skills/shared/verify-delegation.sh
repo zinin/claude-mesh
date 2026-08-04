@@ -41,6 +41,11 @@
 #   BROKEN=4   finalized but non-agentic — ext-claude: NT<=1; codex/gemini: terminal event but
 #              zero tool calls (thinking-only / DSML grammar / answered without reading code —
 #              retry futile; fix by swapping the model in config.yaml)
+#   DEGRADED=5 ext-claude only: everything above says REAL, but the CLI itself refused N of the
+#              run's tool calls — the reviewer was confined to its working directory and wrote
+#              the review without the sources it tried to open. KEEP the findings (they are
+#              real, just partial) and do NOT retry: the cause is the invocation, not the run.
+#              codex and gemini cannot reach this verdict — see the ext-claude branch
 set -u
 export LC_ALL=C   # run dir names are compared with [[ < ]] and sorted; keep both byte-wise.
                   # A UTF-8 collation ignores '-' when comparing, so the name window below
@@ -279,6 +284,38 @@ case "$ENGINE" in
         # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
         grep -q '[^[:space:]]' "$OUT" 2>/dev/null \
             || emit STALLED "num_turns=$NT but output.txt has no content — retry" 2
+
+        # --- was it allowed to READ what it reviewed? ---
+        # Every check above can pass on a run that never got outside its own cwd. Under `-p`
+        # a permission prompt has nobody to answer it, so the CLI auto-denies: the reviewer
+        # loses the sibling repositories it needs to check an API signature against real
+        # source, falls back to guessing, and still finalizes with is_error:false and a
+        # healthy num_turns. Nothing above can see that — on 2026-08-04 five reviewers came
+        # back this way and the gate called every one of them REAL. The CLI's own refusals are
+        # the one mechanical trace it leaves.
+        #
+        # Counted: is_error tool_result events ONLY. The model's prose is not evidence — a
+        # reviewer writing "the handler requested permissions it never checks" is describing
+        # the code under review. Ordinary tool failures (missing path, no grep match) are not
+        # counted either: reviewers hit those constantly, and a verdict that fires on them is
+        # noise nobody will read twice.
+        #
+        # Two wordings, both verbatim from CC 2.1.221 (measured 2026-08-04). The Bash one
+        # contains no "permission" at all, which is why this matches two patterns, not one:
+        #   Read: Claude requested permissions to read from <path>, but you haven't granted it yet.
+        #   Bash: cat in '<path>' was blocked. For security, Claude Code may only concatenate
+        #         files from the allowed working directories for this session: '<cwd>'.
+        # @json collapses each content value onto ONE line, so a multi-line refusal is counted
+        # once rather than once per line; `[..|strings]` flattens the array-of-blocks form of
+        # tool_result content as well as the plain-string form.
+        DENIED="$(grep -h '"tool_result"' "$RAW" 2>/dev/null \
+            | jq -Rr 'fromjson? | objects | .message?.content? | arrays | .[]
+                      | objects | select(.type == "tool_result" and .is_error == true)
+                      | [.content | .. | strings] | join(" ") | @json' 2>/dev/null \
+            | grep -c 'requested permissions\|allowed working directories' || true)"
+        if [ "${DENIED:-0}" -gt 0 ]; then
+            emit DEGRADED "num_turns=$NT but $DENIED tool call(s) were denied by the permission policy — the reviewer was confined to its working directory and reviewed on incomplete context. Keep the findings, do NOT re-dispatch: add --permission-mode bypassPermissions to the invocation instead" 5
+        fi
         emit REAL "delegated, agentic review (num_turns=$NT)" 0
         ;;
 esac
