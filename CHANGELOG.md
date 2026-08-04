@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.7.0] - 2026-08-04
 
 ### Added
 - `/claude-mesh:design-review-fresh-session` and `/claude-mesh:code-review-fresh-session`
