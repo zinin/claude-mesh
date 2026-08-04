@@ -58,10 +58,13 @@ the missing entries from `DOCUMENTS`, and keep the git range. Never invent a doc
 All local — no network is involved, which is the point in a sandbox:
 
 ```bash
-# Substitute the BASE_BRANCH= argument into the line below, or leave it empty when the
+# Substitute the BASE_BRANCH= argument into the line below, or leave it as written when the
 # argument was not given. A command argument is not an environment variable and does not
 # reach this subshell on its own — without this line a user-supplied base is silently lost.
-BASE_BRANCH=""
+# `${BASE_BRANCH:-}` and not `""`: an agent handed a base branch reaches for the env prefix
+# (`BASE_BRANCH=develop bash …`) at least as readily as for the substitution, and a bare `""`
+# clobbers exactly that. Both paths arrive here now; the `:-` keeps it safe under `set -u`.
+BASE_BRANCH="${BASE_BRANCH:-}"
 BASE_REF="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')"
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}"
 BASE_SHA="$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git merge-base HEAD "origin/$BASE_BRANCH" 2>/dev/null)"
@@ -78,6 +81,11 @@ else
   echo "merge-base found no base against '$BASE_BRANCH' — ask the user for the base branch"
 fi
 ```
+
+`BASE_BRANCH` goes into the prompt BY NAME (see `DOCUMENTS` below), because the last line of
+that chain is a guess: `refs/remotes/origin/HEAD` is unset in plenty of clones — including the
+sandbox case this command is built for — and the fallback to `master` is otherwise silent. A
+range computed against a guessed base has to say which base it guessed.
 
 If `BASE_SHA` does not resolve, name the branch that was tried and ask the user for the base.
 If `DIRTY` is non-empty, warn the operator and add the note to `DOCUMENTS` ("uncommitted
@@ -105,7 +113,8 @@ executed the plan is the only one that knows it. Keep it under 40 lines.
 ### 5. Compose the prompt
 
 The prompt consists of these sections, in this order, and nothing else. Substitute
-`<DESIGN_PATH>`, `<PLAN_PATH>`, `<BRANCH>`, the shas and the commit list — and nothing more:
+`<DESIGN_PATH>`, `<PLAN_PATH>`, `<BRANCH>`, `<BASE_BRANCH>`, the shas and the commit list —
+and nothing more:
 emit `$HOME` in the preflight block **literally**, never expanded to a concrete home
 directory (an expanded path freezes this machine's layout into a prompt that runs on another
 one — the failure decision 2 of the design exists to prevent):
@@ -128,9 +137,10 @@ Do not continue the work.
 
 - Design: `<DESIGN_PATH>`     (omit the line when there is none)
 - Plan:   `<PLAN_PATH>`       (omit the line when there is none)
-- Git range: `<BASE_SHA>..<HEAD_SHA>` on branch `<BRANCH>` (HEAD at generation:
-  `<HEAD_SHA>`). If HEAD has moved since, review through the current HEAD and say so. This
-  range is context — the review skills detect the base branch themselves.
+- Git range: `<BASE_SHA>..<HEAD_SHA>` on branch `<BRANCH>`, against base `<BASE_BRANCH>`
+  (HEAD at generation: `<HEAD_SHA>`). If HEAD has moved since, review through the current
+  HEAD and say so. This range is context — the review skills detect the base branch
+  themselves.
 - Commits:
   <output of git log --oneline BASE_SHA..HEAD_SHA>
 <only when the worktree was dirty at generation:>

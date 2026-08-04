@@ -17,6 +17,12 @@
 #
 # Until this suite existed, both were held by a comment alone.
 #
+# Test 5 guards something else: design decision 1, "the generators never read config.yaml".
+# That is the branch's central decision, and every other trace of it disappears before the PR —
+# the baseline record and the design both live under docs/superpowers/, and the generated
+# prompts that demonstrate it were never tracked. What survives here is its statically
+# checkable half.
+#
 # Assertion 3 compares the shipped DO NOT block against the measured wording in the baseline
 # record. That record lives under docs/superpowers/, which is `git rm`'d before any PR — so on
 # master the file is absent and assertion 3 SKIPS with a note. It must never fail for absence;
@@ -163,6 +169,36 @@ else
     assert_eq "baseline block is 7 lines" "7" "$(printf '%s\n' "$BASELINE_DONOT" | grep -c '')"
     assert_identical "DO NOT: shipped == measured" "$BASELINE_DONOT" "$CODE_DONOT"
 fi
+
+# === Test 5: neither generator invokes the config loader ===
+# Decision 1 in prose is a paragraph in each file telling the generating session not to read
+# the local config; nothing checked that the files obey it. They do so today by containing no
+# invocation at all, which is a property a grep can hold.
+#
+# TWO patterns, because either alone is evadable in an obvious way:
+#   1. `config-loader.sh <subcommand>` — a direct call, executable or quoted as an example.
+#   2. every mention must be the BARE inline-code span the prohibition itself uses. An
+#      assignment (`LOADER="$DIR/config-loader.sh"`) followed by `"$LOADER" list-models` slips
+#      past pattern 1 entirely, and so does a bare-word call; neither can spell the name as a
+#      lone `code span`.
+# The prohibition line in each file is prose and is the ONLY permitted mention — pattern 1 does
+# not match it (a backtick follows the name, not a subcommand) and pattern 2 is what it is.
+echo "=== Test 5: the generators never read the local config ==="
+LOADER_SUBCMDS='validate|data-dir|export|get-flag|list-models|list-claude-models|list-providers|get-defaults|get-runtime|get-codex|get-gemini'
+for CMD_FILE in "$DESIGN_CMD" "$CODE_CMD"; do
+    CMD_NAME="$(basename "$CMD_FILE")"
+    assert_eq "$CMD_NAME: no config-loader.sh <subcommand> invocation" "0" \
+        "$(grep -cE "config-loader\.sh[[:space:]]+($LOADER_SUBCMDS)" "$CMD_FILE" || true)"
+    TOTAL="$(grep -o 'config-loader\.sh' "$CMD_FILE" | grep -c . || true)"
+    QUOTED="$(grep -o '`config-loader\.sh`' "$CMD_FILE" | grep -c . || true)"
+    assert_eq "$CMD_NAME: every config-loader.sh mention is a bare inline-code span" \
+        "$TOTAL" "$QUOTED"
+    # Both assertions above pass on a file that never names the loader at all, so this one
+    # proves they had something to look at — and that the prohibition paragraph is still there.
+    # A deliberate canary, like the line counts in Test 1: if a second prose mention is ever
+    # legitimate, raise the number on purpose rather than deleting the assertion.
+    assert_eq "$CMD_NAME: …and the prohibition itself is still in the file" "1" "$QUOTED"
+done
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="
