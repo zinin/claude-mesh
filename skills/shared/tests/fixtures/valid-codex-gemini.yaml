@@ -1,0 +1,17 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+codex:
+  model: gpt-5.5
+  reasoning_level: xhigh
+
+gemini:
+  model: gemini-3-pro

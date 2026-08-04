@@ -173,6 +173,12 @@ validate_providers() {
 
         [ -n "$label" ] || die "providers[$id].label: missing"
         case "$label" in *"|"*) die "providers[$id].label: must not contain '|' (breaks pipe-format list output)" ;; esac
+        # A newline breaks the same output in a worse way than '|' does: consumers read
+        # list-models a line at a time, so the continuation becomes a whole phantom entry.
+        # In preflight-env.sh's table it lands as a row whose NAME contains spaces, which
+        # shifts an arbitrary word into the status column — a word that can read AUTH-FAILED
+        # and pass a closed-set check nothing ever measured.
+        case "$label" in *$'\n'*) die "providers[$id].label: must not contain a newline (breaks line-based list output)" ;; esac
         [ -n "$base_url" ] || die "providers[$id].base_url: missing"
         # iter-3 CONCERN-4: design §5 promises invalid-URL rejection, not just emptiness
         case "$base_url" in
@@ -248,6 +254,9 @@ validate_models() {
 
         [ -n "$label" ] || die "models[$id].label: missing"
         case "$label" in *"|"*) die "models[$id].label: must not contain '|'" ;; esac
+        # Same reason as the providers check above — a newline turns one model into two entries,
+        # the second of which is printed as a row name and parsed as a status.
+        case "$label" in *$'\n'*) die "models[$id].label: must not contain a newline (breaks line-based list output)" ;; esac
         [ -n "$model" ] || die "models[$id].model: required field missing or empty"
 
         i=$((i+1))

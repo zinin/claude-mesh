@@ -1,0 +1,31 @@
+# The crossed shape neither sibling fixture reaches: a claude.models catalog IS present, and the
+# preset asks for `claude` WITHOUT naming claude_models.
+#
+# The two spellings then legitimately disagree. The selection UI offers the catalog entries
+# (claude:opus, claude:fable), while `default` mode runs exactly ONE reviewer literally named
+# `claude` on the dispatch model (mesh-design-review Step 5.1, mesh-review Step 2.4) — the list
+# is only consulted when the preset names it. Any check that "every default is available" has to
+# know that a bare `claude` is satisfied by a `claude:<model>` entry, and this fixture is the
+# only thing in the suite that makes it prove it.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+claude:
+  models:
+    - opus
+    - fable
+
+defaults:
+  design_review:
+    builtin: [claude]
+    models: [zai/glm]
+  code_review:
+    builtin: [claude]

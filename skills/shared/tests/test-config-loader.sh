@@ -449,6 +449,29 @@ assert_exit "exits non-zero on bad URL" "1" "$RC"
 assert_stderr_contains "names invalid URL" "invalid URL" "$ERR"
 rm -rf "$TDIR" "$ERR"
 
+echo "=== Test 17b: a newline in a label is rejected, like '|' ==="
+# Line-based output is the reason: consumers read `list-models` one line at a time, so a
+# continuation becomes a phantom entry. In preflight-env.sh it prints as a row whose NAME
+# holds spaces, which shifts an arbitrary word into the status column — and that word can be
+# spelled AUTH-FAILED, satisfying every closed-set gate with a verdict nothing measured.
+TDIR=$(mktemp -d)
+printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM\\nevil AUTH-FAILED injected"\n    model: glm-5.1\n' > "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "exits non-zero on a newline in a model label" "1" "$RC"
+assert_stderr_contains "names the newline" "newline" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+TDIR=$(mktemp -d)
+printf 'providers:\n  - id: zai\n    label: "Z\\nevil AUTH-FAILED injected"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n' > "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "exits non-zero on a newline in a provider label" "1" "$RC"
+assert_stderr_contains "names the newline there too" "newline" "$ERR"
+rm -rf "$TDIR" "$ERR"
+
 echo "=== Test 18: provider token REPLACE_ME rejected at export ==="
 # By design the REPLACE_ME check lives in cmd_export (NOT validate): the shipped
 # config.example.yaml has REPLACE_ME everywhere and must still pass `validate`.

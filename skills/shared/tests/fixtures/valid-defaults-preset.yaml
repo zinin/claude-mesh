@@ -1,0 +1,35 @@
+# A config whose defaults: presets are POPULATED — every other valid fixture leaves the section
+# out, so nothing else can exercise the `SUMMARY defaults <preset>` expansion end to end.
+#
+# The two presets differ deliberately (claude_models opus vs fable, builtin codex vs not): a
+# probe that read design_review twice, or read one preset and printed it on both lines, would
+# still satisfy an assertion written against a symmetric fixture.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+claude:
+  models:
+    - opus
+    - fable
+
+codex:
+  model: gpt-5.5
+
+defaults:
+  design_review:
+    builtin: [claude, codex]
+    claude_models: [opus]
+    models: [zai/glm]
+  code_review:
+    builtin: [claude]
+    claude_models: [fable]
+    models: [zai/glm]
+    run_mode: background

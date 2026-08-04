@@ -14,7 +14,15 @@ daemon), and session helpers.
   models on alt providers (one agent, any provider, any model)
 - **`codex-*`, `gemini-*` agents** — wrappers for OpenAI Codex CLI and Gemini CLI
 - **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
-  `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`
+  `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
+  `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`
+- **Sandbox-aware review sessions** — the two `*-review-fresh-session` commands generate a prompt
+  for a fresh session that reviews rather than implements, and never name a model: the session
+  runs `skills/shared/preflight-env.sh` where it actually lives and picks reviewers from what
+  that reports. For reviews that will run in an environment with a different `config.yaml` —
+  typically another machine, VM or sandbox. Workflow: generate the prompt on the host, paste
+  it into a fresh session inside the sandbox; that session probes its own environment and
+  selects reviewers from what it finds
 - **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else)
 
 ## Install

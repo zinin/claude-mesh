@@ -38,7 +38,18 @@ SHARED_DIR="$SKILL_BASE/../shared"
 # code and BASE would silently resolve empty → `git diff ..HEAD` → empty review, no error.
 BASE_REF=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}"
-BASE_SHA=$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null)
+# Two lookups, because the name above need NOT exist as a local branch: origin/HEAD yields a
+# bare name, and a caller's `BASE_BRANCH=` names whatever they want reviewed against — neither
+# is guaranteed to be checked out here (--single-branch clones, worktrees, a release branch
+# that was never fetched into a local ref). With one lookup BASE_SHA stayed empty and the
+# template below rendered `git diff ..$HEAD_SHA`, which git reads as `HEAD..HEAD`: zero bytes,
+# exit 0 — the reviewer then reports "no issues" about a diff it never saw. `|| true` keeps the
+# assignment's status out of it, so the guard below is what decides, `set -e` or not.
+# Deliberately NOT codex/gemini's third fallback `|| git rev-parse HEAD~1`: reviewing one commit
+# while the caller believes the whole branch was covered is the same silent lie in another
+# shape. No base ⇒ stop and say which names were tried.
+BASE_SHA=$(git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || git merge-base HEAD "origin/$BASE_BRANCH" 2>/dev/null || true)
+[ -n "$BASE_SHA" ] || { echo "STOP: no merge-base against '$BASE_BRANCH' (tried the bare name and origin/$BASE_BRANCH) - name a base that exists here"; exit 1; }
 HEAD_SHA=$(git rev-parse HEAD)
 # Fill the shared template's placeholders with REAL values — parity with the original
 # ccs-/ollama-code-review (their Step 3). The reviewer model then runs `git diff

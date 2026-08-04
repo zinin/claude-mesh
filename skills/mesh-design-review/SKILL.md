@@ -83,6 +83,9 @@ These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so
 **Normalize TOPIC:** Remove suffixes `-review`, `-design` if present.
 - Example: `iterative-review-design.md` → TOPIC = `iterative` (not `iterative-review`)
 
+<!-- SYNC: TOPIC derivation is mirrored by commands/design-review-fresh-session.md
+     Step 2 and commands/code-review-fresh-session.md Step 3 — change all three together. -->
+
 ### Step 2: Find Previous Iterations
 
 Search for existing iteration files:
@@ -91,6 +94,9 @@ ls docs/superpowers/specs/*-{TOPIC}-review-iter-*.md 2>/dev/null | sort -V
 ```
 
 Count existing iterations. Next iteration = max + 1 (or 1 if none).
+
+<!-- SYNC: iteration counting is mirrored by commands/design-review-fresh-session.md
+     Step 2 — change together. -->
 
 ### Step 3: Build Review History
 
@@ -695,6 +701,9 @@ After the loop, also add all `auto_fixes`, `repeated`, `dismissed` entries to `a
 **Date source:** Use the date from design document filename (`YYYY-MM-DD`), NOT current date.
 - Example: design `2026-01-27-checksum-design.md` → iter file `2026-01-27-checksum-review-iter-1.md`
 
+<!-- SYNC: the date rule is mirrored by commands/design-review-fresh-session.md Step 2
+     and commands/code-review-fresh-session.md Step 3 — change all three together. -->
+
 Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 
 ```markdown
@@ -782,7 +791,13 @@ Options:
 
 **Based on user response:**
 
-- **"Новая итерация":** Execute `/claude-mesh:continue-plan-fresh-session` skill via Skill tool with instruction to run `/claude-mesh:mesh-design-review` in the new session, then go to Step 16
+- **"Новая итерация":** Execute `/claude-mesh:design-review-fresh-session` via the Skill tool
+  (it generates the prompt for the next iteration and knows this may run in a sandbox), then
+  go to Step 16. If that command does not resolve — an older plugin in this environment —
+  warn that the plugin needs an update for the review-generator flow and fall back to
+  `/claude-mesh:continue-plan-fresh-session` **with an instruction to run
+  `/claude-mesh:mesh-design-review` in the new session**, as before this feature — then go to
+  Step 16 either way
 - **"Остановиться и начать работу":** Execute `/claude-mesh:continue-plan-fresh-session` skill via Skill tool, then go to Step 16
 
 ### Step 16: Present Final Summary
