@@ -93,156 +93,19 @@ Scope grew by one file on a user ruling: `skills/shared/tests/test-command-sync.
 
 ### Task 8: Close the loop in the two existing files
 
-**Files:**
-- Modify: `skills/mesh-design-review/SKILL.md` (Step 15 only)
-- Modify: `commands/do-plan.md` (Step 7 only)
-
-**Interfaces:**
-- Consumes: `/claude-mesh:design-review-fresh-session` (Task 6) and `/claude-mesh:code-review-fresh-session` (Task 7).
-- Produces: nothing new — this is the wiring that makes both commands reachable without the user remembering them.
-
-- [ ] **Step 1: Point the next-iteration branch at the new generator**
-
-In `skills/mesh-design-review/SKILL.md`, Step 15, "Based on user response", replace the
-`"Новая итерация"` action with:
-
-```markdown
-- **"Новая итерация":** Execute `/claude-mesh:design-review-fresh-session` via the Skill tool
-  (it generates the prompt for the next iteration and knows this may run in a sandbox), then
-  go to Step 16. If that command does not resolve — an older plugin in this environment —
-  warn that the plugin needs an update for the review-generator flow and fall back to
-  `/claude-mesh:continue-plan-fresh-session`, as before this feature
-```
-
-Leave the option labels and the `"Остановиться и начать работу"` branch — which still routes to
-`/claude-mesh:continue-plan-fresh-session` — exactly as they are.
-
-Also add three one-line counter-notes in the same file — the repo's sync convention is two-way
-("change all copies or none"), and the generator now mirrors these steps. Step 1 (TOPIC
-derivation), Step 2 (iteration counting) and Step 13 (date source) each gain:
-
-```markdown
-<!-- SYNC: mirrored by commands/design-review-fresh-session.md Step 2 — change together -->
-```
-
-- [ ] **Step 2: Verify the edit is confined to Step 15**
-
-```bash
-git diff --stat skills/mesh-design-review/SKILL.md
-git diff skills/mesh-design-review/SKILL.md | grep -c '^[-+]' 
-```
-
-Expected: one file; the Step 15 branch replacement plus exactly three one-line SYNC comments
-at Steps 1, 2 and 13. Any other diff — Steps 5, 6, the mirrored selection/watch blocks — is
-out of scope for this plan; revert it.
-
-- [ ] **Step 3: Add the end-of-plan hint to `/do-plan`**
-
-In `commands/do-plan.md`, Step 7 "End of plan", append:
-
-```markdown
-Offer the code review BEFORE `superpowers:finishing-a-development-branch`, and if the user
-takes it, hold finishing entirely — no push, no PR, and no local merge either (finishing
-deletes the branch after merging, and review fixes need somewhere to land) — until that
-external review has run and its findings are applied. The order is the point: a
-merged-and-deleted branch cannot absorb what the review finds.
-
-`/claude-mesh:code-review-fresh-session` generates the prompt, carrying the git range and what
-only this session knows — deviations from the plan, what was left unfinished, known weak spots.
-
-Whether this session can finish the branch is a fact to check, not to guess: run
-`GIT_TERMINAL_PROMPT=0 timeout 8 git ls-remote --exit-code origin HEAD` (or reuse a preflight
-verdict already printed in this session). If the remote does not answer, say plainly that
-`superpowers:finishing-a-development-branch` cannot finish the job here: push and PR creation
-need a network that is not available. Leave the branch for the user to finish outside. Do not
-attempt the push to find out.
-```
-
-- [ ] **Step 4: Confirm both files still read correctly**
-
-Run: `grep -n "design-review-fresh-session" skills/mesh-design-review/SKILL.md && grep -n "code-review-fresh-session" commands/do-plan.md`
-Expected: one hit in each file, in the step named above.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add skills/mesh-design-review/SKILL.md commands/do-plan.md
-git commit -m "feat(flow): route the next review iteration and the post-plan review into fresh sessions"
-```
+✅ Done — see commit(s): `021e715`, `b64ec73`
 
 ---
 
 ### Task 9: README and CHANGELOG
 
-**Files:**
-- Modify: `README.md` (Features → session helpers; Dependencies if needed)
-- Modify: `CHANGELOG.md` (new `## [Unreleased]` section at the top)
+✅ Done — see commit(s): `90651ef`, `466f4bf`
 
-**Interfaces:**
-- Consumes: everything above.
-- Produces: the user-facing record. No code depends on this task.
+---
 
-- [ ] **Step 1: Extend the session-helper line in README**
+### Post-plan: final whole-branch review and its single fix wave
 
-In the Features list, the `**Session helpers**` bullet gains the two new commands:
-
-```markdown
-- **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
-  `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
-  `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`
-- **Sandbox-aware review sessions** — the two `*-review-fresh-session` commands generate a prompt
-  for a fresh session that reviews rather than implements, and never name a model: the session
-  runs `skills/shared/preflight-env.sh` where it actually lives and picks reviewers from what
-  that reports. For reviews that will run in an environment with a different `config.yaml` —
-  typically another machine, VM or sandbox. Workflow: generate the prompt on the host, paste
-  it into a fresh session inside the sandbox; that session probes its own environment and
-  selects reviewers from what it finds
-```
-
-- [ ] **Step 2: Add the CHANGELOG entry**
-
-Insert directly under the `All notable changes…` line:
-
-```markdown
-## [Unreleased]
-
-### Added
-- `/claude-mesh:design-review-fresh-session` and `/claude-mesh:code-review-fresh-session`
-  generate the prompt for a fresh session that reviews a design+plan, or a finished
-  implementation, instead of executing it. Both are built for a review that runs somewhere
-  else — typically a sandbox VM sharing the working copy — so neither generator reads
-  `config.yaml` and neither prompt names a model: the reviewing session runs the new
-  `skills/shared/preflight-env.sh` in its own environment and selects from what that reports.
-  The probe emits one row per capability (plugin identity, config state, the built-in `claude`
-  reviewer, the Claude catalog, codex/gemini gated on their config section first and their
-  network second, one probe per provider through the existing `token-precheck.sh` /
-  `ollama-precheck.sh`, git remote, gh/glab, clipboard) and a `SUMMARY` block naming the
-  reviewers that can actually be selected there. Every verdict exits 0 — a non-zero exit means
-  the probe is broken or could not start (bash 4+ is required), never that the environment is
-  poor. Provider tokens never reach the output and exported env files are removed through a
-  trap.
-  `mesh-design-review` Step 15 now routes its next iteration into the new generator, and
-  `/do-plan` Step 7 points at the code-review one and states that a sandbox cannot finish a
-  branch that needs a push.
-```
-
-- [ ] **Step 3: Verify**
-
-Run: `grep -n "review-fresh-session" README.md CHANGELOG.md | head`
-Expected: hits in both files.
-
-- [ ] **Step 4: Run the full shared test suite one last time**
-
-Run: `FAILED=0; for t in skills/shared/tests/test-*.sh; do echo "== $t"; bash "$t" >/dev/null || { echo "SUITE FAILED: $t"; FAILED=1; }; done; [ "$FAILED" -eq 0 ] && echo "all suites done"; [ "$FAILED" -eq 0 ]`
-Expected: `all suites done` and exit 0 — the command itself fails when any suite fails,
-instead of hiding the failure behind an unconditional final echo.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add README.md CHANGELOG.md
-git commit -m "docs: record the two fresh-session review commands and the environment probe"
-```
+✅ Done — see commit(s): `8660f4a`, `e45dbdc`, `52991bf`, `5d8caa2`
 
 ---
 
