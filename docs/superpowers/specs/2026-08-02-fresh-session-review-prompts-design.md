@@ -164,12 +164,12 @@ Both generators emit the same shape. Sections appear in this order; the tails di
 One sentence: review this design/plan (or this implementation). Do not implement anything.
 
 ## DO NOT
-- Do not implement the plan, and do not fix what the review finds — the review skill owns its
-  own fix phases.
-- Do not push, do not open a PR/MR, do not call gh/glab. They are unlikely to work here and
-  are not part of this task.
-- Take no action beyond reading the documents and running the preflight block below until the
-  user explicitly says to start.
+
+- Do not implement the plan, and do not fix what the review finds — the review skill owns
+  its own fix phases.
+- Do not push, do not open a PR/MR, do not call gh/glab.
+- Take no action beyond reading the documents and running the preflight block below until
+  the user explicitly says to start.
 
 ## DOCUMENTS
 - Design: <path>
@@ -351,12 +351,18 @@ itself not found → `config MISSING (config-loader.sh not found)`. All of these
 are facts about the environment, not failures of the probe.
 
 Whenever `config` is not `OK`, `SUMMARY available` prints `—` and claude moves to
-`SUMMARY unavailable` with the reason (`config.yaml required for the orchestrators to
-start`): the built-in reviewer itself needs no config section, but **neither orchestrator
-starts without a usable config.yaml** — `mesh-review` Step 0/1 and `mesh-design-review`
-Step 5.0 exit before any reviewer can be selected, so promising `claude` there would send the
-session into a dead end. After the SUMMARY the probe prints the one-line fix:
-`hint: cp config.example.yaml <data-dir>/config.yaml`.
+`SUMMARY unavailable` with the reason for that state (`config.yaml required for the
+orchestrators to start` when the file is absent): the built-in reviewer itself needs no config
+section, but **neither orchestrator starts without a usable config.yaml** — `mesh-review`
+Step 0/1 and `mesh-design-review` Step 5.0 exit before any reviewer can be selected, so
+promising `claude` there would send the session into a dead end. After the SUMMARY the probe
+prints one `hint:` line, and its text is chosen by **which** state produced the block, because
+the hint is meant to be executed as written: `cp config.example.yaml <data-dir>/config.yaml`
+only for `MISSING`; `edit <data-dir>/config.yaml …` for `INVALID`, where a real config.yaml
+exists and copying over it would destroy the operator's tokens; and for `UNKNOWN` the fix for
+whatever stopped the evaluation (install the loader toolchain, naming Python-yq specifically —
+or make TMPDIR usable), with the reminder that config.yaml was never read, so nothing above
+says anything about its contents.
 
 `config OK` asserts exactly one thing: **the orchestrator will start here.** `list-models`
 alone validates only `providers` and `models`, while Step 5.0 also dies on `defaults`,

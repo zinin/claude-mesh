@@ -16,7 +16,7 @@
 - Every config read goes through `skills/shared/config-loader.sh`. Raw `yq` is forbidden anywhere in this work.
 - The probe **always exits 0** for any delivered verdict. A non-zero exit means the probe itself is broken — or was interrupted: on INT/TERM the trap cleans up and exits non-zero, an interrupt is not a verdict.
 - Closed status set, nothing else may be printed in the status column: `OK`, `MISSING`, `NO-NETWORK`, `AUTH-FAILED`, `INVALID`, `SKIPPED`, `UNKNOWN`.
-- Row format is exactly `printf '%-16s %-12s %s\n' "$name" "$status" "$detail"`. A name longer than 16 columns (`provider:deepseek`) overflows the pad — harmless, parsing is word-based; do not "fix" it by truncating names.
+- Row format is exactly `printf '%-18s %-12s %s\n' "$name" "$status" "$detail"`. A name longer than 18 columns (`provider:openrouter`) overflows the pad — harmless, parsing is word-based; do not "fix" it by truncating names, and do not compute the width from the rows (it would mean buffering the table, and the rows are the only progress signal a 25-50 s run gives — see the comment at the `row()` helper).
 - Row order: `plugin`, `yq` / `jq` (only when missing), `config`, `builtin-claude`, `claude-models`, `curl` (only when missing), `ext-claude-deps` (only when something is missing), `codex`, `gemini`, `provider:*` in order of first appearance in `models` (aggregate row `provider` instead, when providers are not probed at all), `git-remote`, `gh`, `glab`, `clipboard`, then `SUMMARY available:` and `SUMMARY unavailable:`.
 - No secret ever reaches stdout or stderr. Exported env files are deleted through a `trap … EXIT`.
 - Prechecks are invoked as `env -u SKIP_TOKEN_PRECHECK …`.
@@ -33,7 +33,7 @@
 
 | File | Responsibility |
 |---|---|
-| `skills/shared/preflight-env.sh` | The environment probe. One row per capability, two SUMMARY lines, exit 0 |
+| `skills/shared/preflight-env.sh` | The environment probe. One row per capability, a SUMMARY block, exit 0 |
 | `skills/shared/tests/test-preflight-env.sh` | Its regression suite: fixture configs + shimmed `curl`/`git` |
 | `skills/shared/tests/fixtures/valid-claude-models.yaml` | Fixture with a `claude.models` catalog (none of the existing fixtures has one) |
 | `skills/shared/tests/fixtures/invalid-claude-scalar.yaml` | Fixture with valid providers/models and a scalar `claude: false` — the `claude-models INVALID` case |
@@ -213,12 +213,14 @@ Insert directly under the `All notable changes…` line:
   else — typically a sandbox VM sharing the working copy — so neither generator reads
   `config.yaml` and neither prompt names a model: the reviewing session runs the new
   `skills/shared/preflight-env.sh` in its own environment and selects from what that reports.
-  The probe emits one row per capability (config state, the Claude catalog, codex/gemini gated
-  on their config section first and their network second, one probe per provider through the
-  existing `token-precheck.sh` / `ollama-precheck.sh`, git remote, gh/glab, clipboard) and two
-  `SUMMARY` lines naming the reviewers that can actually be selected there. Every verdict
-  exits 0 — a non-zero exit means the probe is broken, not the environment. Provider tokens
-  never reach the output and exported env files are removed through a trap.
+  The probe emits one row per capability (plugin identity, config state, the built-in `claude`
+  reviewer, the Claude catalog, codex/gemini gated on their config section first and their
+  network second, one probe per provider through the existing `token-precheck.sh` /
+  `ollama-precheck.sh`, git remote, gh/glab, clipboard) and a `SUMMARY` block naming the
+  reviewers that can actually be selected there. Every verdict exits 0 — a non-zero exit means
+  the probe is broken or could not start (bash 4+ is required), never that the environment is
+  poor. Provider tokens never reach the output and exported env files are removed through a
+  trap.
   `mesh-design-review` Step 15 now routes its next iteration into the new generator, and
   `/do-plan` Step 7 points at the code-review one and states that a sandbox cannot finish a
   branch that needs a push.

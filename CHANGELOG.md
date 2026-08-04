@@ -11,17 +11,21 @@ All notable changes to claude-mesh will be documented here.
   else — typically a sandbox VM sharing the working copy — so neither generator reads
   `config.yaml` and neither prompt names a model: the reviewing session runs the new
   `skills/shared/preflight-env.sh` in its own environment and selects from what that reports.
-  The probe emits one row per capability (config state, the Claude catalog, codex/gemini gated
-  on their config section first and their network second, one probe per provider through the
-  existing `token-precheck.sh` / `ollama-precheck.sh`, git remote, gh/glab, clipboard) and two
-  `SUMMARY` lines naming the reviewers that can actually be selected there. Every verdict
-  exits 0 — a non-zero exit means the probe is broken, not the environment. Provider tokens
-  never reach the output and exported env files are removed through a trap. A new
-  `skills/shared/tests/test-command-sync.sh` holds the two command files byte-identical where
-  the prompt's experimentally measured wording lives — the `DO NOT` gate and the `PREFLIGHT`
-  block — which until now was held by a comment alone. `mesh-design-review` Step 15 now routes
-  its next iteration into the new generator, and `/do-plan` Step 7 points at the code-review
-  one and states that a sandbox cannot finish a branch that needs a push.
+  The probe emits one row per capability (plugin identity, config state, the built-in `claude`
+  reviewer, the Claude catalog, codex/gemini gated on their config section first and their
+  network second, one probe per provider through the existing `token-precheck.sh` /
+  `ollama-precheck.sh`, git remote, gh/glab, clipboard) and a `SUMMARY` block naming the
+  reviewers that can actually be selected there. Every verdict exits 0 — a non-zero exit means
+  the probe is broken or could not start (bash 4+ is required), never that the environment is
+  poor. Provider tokens never reach the output and exported env files are removed through a
+  trap. `skills/ext-claude-exec/ollama-precheck.sh` grew three env knobs so a caller on a fixed
+  budget can shrink its retries — `OLLAMA_PRECHECK_TRIES`, `OLLAMA_PRECHECK_ATTEMPT_TIMEOUT` and
+  `OLLAMA_PRECHECK_TAGS_TIMEOUT`; the defaults reproduce the previous fixed 3×2s budget exactly.
+  A new `skills/shared/tests/test-command-sync.sh` holds the two command files byte-identical
+  where the prompt's experimentally measured wording lives — the `DO NOT` gate and the
+  `PREFLIGHT` block — which until now was held by a comment alone. `mesh-design-review` Step 15
+  now routes its next iteration into the new generator, and `/do-plan` Step 7 points at the
+  code-review one and states that a sandbox cannot finish a branch that needs a push.
 
 ## [0.6.0] - 2026-07-28
 

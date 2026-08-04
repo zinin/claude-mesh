@@ -3,11 +3,13 @@
 #
 # Written for a session that did not configure the machine it runs on: a review session in a
 # sandbox, whose config.yaml, reachable providers and git remote are not the ones the prompt
-# was written against. It prints one row per capability and two SUMMARY lines naming the
+# was written against. It prints one row per capability and a SUMMARY block naming the
 # reviewers that can be selected here.
 #
 # EVERY verdict exits 0 — "nothing is reachable" is an answer, not a failure. A non-zero exit
-# means this script is broken (same contract as shared/watch-runs.sh).
+# means this script is broken, could not start (64, the bash-4 check below — stock macOS bash
+# is 3.2, exactly the machine this probe exists for) or was interrupted (130/143) — never that
+# the environment is poor (same contract as shared/watch-runs.sh).
 #
 # Env: PREFLIGHT_HTTP_TIMEOUT (5)  PREFLIGHT_GIT_TIMEOUT (8)
 #      PREFLIGHT_CURL_BIN (curl)   PREFLIGHT_GIT_BIN (git)
@@ -65,6 +67,14 @@ trap 'cleanup; exit 143' TERM
 # a red verdict. Every gate that parses this table splits on whitespace (awk $1/$2), so the pad
 # is presentation only — but this table IS the deliverable the generated prompts tell a session
 # to print verbatim, so a ragged column is a defect in the product, not a cosmetic detail.
+#
+# 18 is not "wide enough" either, and no fixed number is: `provider:openrouter` is 19 characters
+# and needs nothing but an operator writing that id in their own config.yaml. The width is
+# deliberately NOT computed from the rows, and this is the trade: computing it means buffering
+# every row until the last provider has been probed, and the rows ARE the progress signal —
+# a full sequential run takes 25-50 s and prints nothing else while it works. A reader watching
+# a silent terminal cannot tell a slow probe from a hung one. One ragged row on an unusual
+# provider id costs less than that, so an overflow here is a known cost, not an oversight.
 row() { printf '%-18s %-12s %s\n' "$1" "$2" "${3:-}"; }
 
 # EVERY temp file in this probe comes from here, and every caller checks the return. An
