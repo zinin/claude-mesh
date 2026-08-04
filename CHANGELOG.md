@@ -18,15 +18,38 @@ All notable changes to claude-mesh will be documented here.
   reviewers that can actually be selected there. Every verdict exits 0 — a non-zero exit means
   the probe is broken, could not start (bash 4+ is required) or was interrupted, never that the
   environment is poor. Provider tokens never reach the output and exported env files are removed
-  through a trap. `skills/ext-claude-exec/ollama-precheck.sh` grew three env knobs so a caller on
+  through a trap. Its two budgets — `PREFLIGHT_HTTP_TIMEOUT` and `PREFLIGHT_GIT_TIMEOUT` — are
+  validated as positive integers rather than pasted into `curl --max-time` and `timeout` as
+  given: a bad value there did not degrade a verdict, it decided one (`--help` made `timeout`
+  print its usage and exit 0 without running git, and the row then read `git-remote OK` about a
+  remote nothing had contacted). The probe invokes `config-loader.sh` and both prechecks as
+  `bash <script>` — the same reason the generated PREFLIGHT block runs the probe itself that
+  way: a shared-folder mount, the environment this is built for, drops the exec bit.
+  `skills/ext-claude-exec/ollama-precheck.sh` grew three env knobs so a caller on
   a fixed budget can shrink its retries — `OLLAMA_PRECHECK_TRIES`,
   `OLLAMA_PRECHECK_ATTEMPT_TIMEOUT` and `OLLAMA_PRECHECK_TAGS_TIMEOUT`; the defaults reproduce
-  the previous fixed 3×2s budget exactly.
+  the previous fixed 3×2s budget exactly, and all three are validated now that the probe has
+  made them a public interface (`TRIES=0` skipped the loop and still reported `UNREACHABLE`
+  "after 0x2s").
   A new `skills/shared/tests/test-command-sync.sh` holds the two command files byte-identical
   where the prompt's experimentally measured wording lives — the `DO NOT` gate and the
   `PREFLIGHT` block — which until now was held by a comment alone. `mesh-design-review` Step 15
   now routes its next iteration into the new generator, and `/do-plan` Step 7 points at the
   code-review one and states that a sandbox cannot finish a branch that needs a push.
+- `/claude-mesh:mesh-review` takes `BASE_BRANCH=<branch>` and carries it to every reviewer,
+  re-dispatch included. Without it each review skill re-detects the base itself — `git
+  symbolic-ref refs/remotes/origin/HEAD`, falling back to `master` — so in a repository whose
+  default branch is `main`, or when reviewing against anything but the default branch,
+  `merge-base` finds nothing and the codex / gemini skills fall back to `HEAD~1`: a single
+  commit reviewed while the caller believes the whole branch was, with nothing on screen saying
+  otherwise. `/claude-mesh:code-review-fresh-session` resolves the base locally and emits the
+  argument in the invocation it writes.
+
+### Fixed
+- `skills/shared/config-loader.sh` rejects a newline inside a model label, as it already
+  rejected `|`. One entry otherwise became two, and the phantom reached `preflight-env.sh` as a
+  row whose name held spaces — shifting an arbitrary word into the status column, where it can
+  read `AUTH-FAILED` and satisfy every closed-set check with a verdict nothing measured.
 
 ## [0.6.0] - 2026-07-28
 
