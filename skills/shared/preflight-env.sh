@@ -67,6 +67,20 @@ trap 'cleanup; exit 143' TERM
 # to print verbatim, so a ragged column is a defect in the product, not a cosmetic detail.
 row() { printf '%-18s %-12s %s\n' "$1" "$2" "${3:-}"; }
 
+# EVERY temp file in this probe comes from here, and every caller checks the return. An
+# unwritable or full TMPDIR is not exotic on the machines this probe exists for, and an
+# unchecked mktemp fails in the one direction this file never tolerates: the empty name turns
+# `cmd 2>"$f"` into an ambiguous redirect, which fails the command it was only supposed to
+# watch — so the probe reports a verdict about a config it never read, and prints mktemp's and
+# head's own complaints on the stderr that must carry probe chatter and nothing else.
+# The emptiness test is not redundant with the exit code: a name is only usable if BOTH hold.
+mktemp_or_fail() {      # echoes a temp-file path; non-zero and silent when it cannot
+    local f
+    f="$(mktemp 2>/dev/null)" || return 1
+    [ -n "$f" ] || return 1
+    printf '%s\n' "$f"
+}
+
 # ---------------------------------------------------------------- identity
 # Which probe is this? The reading session must be able to tell "the probe is old" from
 # "the capability is absent", and a stale cache pick must be visible instead of silent.
@@ -94,15 +108,26 @@ CONFIG_DETAIL=""
 MODELS=""
 HAS_CODEX=0
 HAS_GEMINI=0
+# WHICH way the probe failed to decide. UNKNOWN has more than one cause and their fixes have
+# nothing in common, so the blocker hint at the bottom branches on this rather than guessing
+# from TOOLCHAIN_MISSING — see the case there. Set it wherever CONFIG_STATUS becomes UNKNOWN.
+CONFIG_UNKNOWN_CAUSE=""
 
 if [ "$TOOLCHAIN_OK" = 0 ]; then
     CONFIG_STATUS="UNKNOWN"
+    CONFIG_UNKNOWN_CAUSE="toolchain"
     CONFIG_DETAIL="cannot evaluate — loader toolchain missing (see rows above)"
 elif [ ! -x "$LOADER" ]; then
     CONFIG_STATUS="MISSING"
     CONFIG_DETAIL="config-loader.sh not found at $LOADER — broken install"
+elif ! LERR="$(mktemp_or_fail)"; then
+    # Before the loader is invoked, so nothing here is a claim about config.yaml: without the
+    # file to catch its stderr the read below would fail on the redirect alone and be reported
+    # as INVALID — a healthy config accused of being malformed, with no detail to argue back.
+    CONFIG_STATUS="UNKNOWN"
+    CONFIG_UNKNOWN_CAUSE="tmpfile"
+    CONFIG_DETAIL="cannot evaluate — no temp file could be created (TMPDIR unwritable or full)"
 else
-    LERR="$(mktemp)"
     # A bare $() swallows the loader's exit code, and rc=2 (no config yet) must not be
     # misread as rc=1 (config rejected) — the same distinction every caller in this repo makes.
     MODELS="$("$LOADER" list-models 2>"$LERR")"; LRC=$?
@@ -114,7 +139,14 @@ else
            # codex/gemini stay out of this gate on purpose: a broken optional section fails
            # its own row (typed getter in Task 3), never the whole environment.
            for CHECK in "get-defaults design_review" "get-flag dispatch_model"; do
-               CH_ERR="$(mktemp)"
+               # Same guard as the LERR one above, and it matters more here: this branch is
+               # reached only after the loader ANSWERED, so an OK is already on the table and
+               # an unchecked failure would downgrade a config that just proved itself.
+               if ! CH_ERR="$(mktemp_or_fail)"; then
+                   CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="tmpfile"
+                   CONFIG_DETAIL="cannot finish the check — no temp file could be created (TMPDIR unwritable or full)"
+                   MODELS=""; break
+               fi
                # shellcheck disable=SC2086
                if ! "$LOADER" $CHECK >/dev/null 2>"$CH_ERR"; then
                    CONFIG_STATUS="INVALID"; CONFIG_DETAIL="$(head -1 "$CH_ERR")"; MODELS=""
@@ -138,19 +170,28 @@ CLAUDE_MODELS=""
 # "rejected" means the orchestrator exits on this very read and offers nothing at all.
 CLAUDE_CATALOG_OK=1
 if [ "$CONFIG_STATUS" = "OK" ]; then
-    CM_ERR="$(mktemp)"
-    CLAUDE_MODELS="$("$LOADER" list-claude-models 2>"$CM_ERR")"; CM_RC=$?
-    if [ "$CM_RC" -ne 0 ]; then
-        # mesh-review Step 1 refuses to start on this same read — "no catalog" would be a lie.
-        row claude-models INVALID "$(head -1 "$CM_ERR")"
+    # CLAUDE_CATALOG_OK stays 1 deliberately: 0 means "both orchestrators exit on this read",
+    # which is a claim about the section's CONTENTS, and its blocker says the section is
+    # rejected. A temp file we could not create is no evidence for that accusation. The summary
+    # then falls back to a bare `claude` — one reviewer on the dispatch model, the only claim
+    # that needs no catalog — exactly as it does when there is no catalog at all.
+    if ! CM_ERR="$(mktemp_or_fail)"; then
+        row claude-models UNKNOWN "cannot create a temp file (TMPDIR full or unwritable) — catalog not read"
         CLAUDE_MODELS=""
-        CLAUDE_CATALOG_OK=0
-    elif [ -n "$CLAUDE_MODELS" ]; then
-        row claude-models OK "$(printf '%s' "$CLAUDE_MODELS" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
     else
-        row claude-models MISSING "no claude.models catalog — one claude reviewer on the dispatch model"
+        CLAUDE_MODELS="$("$LOADER" list-claude-models 2>"$CM_ERR")"; CM_RC=$?
+        if [ "$CM_RC" -ne 0 ]; then
+            # mesh-review Step 1 refuses to start on this same read — "no catalog" would be a lie.
+            row claude-models INVALID "$(head -1 "$CM_ERR")"
+            CLAUDE_MODELS=""
+            CLAUDE_CATALOG_OK=0
+        elif [ -n "$CLAUDE_MODELS" ]; then
+            row claude-models OK "$(printf '%s' "$CLAUDE_MODELS" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+        else
+            row claude-models MISSING "no claude.models catalog — one claude reviewer on the dispatch model"
+        fi
+        rm -f "$CM_ERR"
     fi
-    rm -f "$CM_ERR"
     HAS_CODEX="$("$LOADER" get-flag has_codex 2>/dev/null)" || HAS_CODEX=0
     HAS_GEMINI="$("$LOADER" get-flag has_gemini 2>/dev/null)" || HAS_GEMINI=0
 else
@@ -224,8 +265,9 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
     # Checked, because the failure is silent and ugly: gerr="" makes `2>"$gerr"` an ambiguous
     # redirect, which fails the command, which makes the branch below look like a REJECTED
     # section — and then `head -1 ""` prints its own complaint on the probe's stderr. A full
-    # TMPDIR must not be reported as a malformed config.
-    if ! gerr="$(mktemp 2>/dev/null)" || [ -z "$gerr" ]; then
+    # TMPDIR must not be reported as a malformed config. (This site is where the guard was
+    # written first; mktemp_or_fail is that check, hoisted so the other four cannot skip it.)
+    if ! gerr="$(mktemp_or_fail)"; then
         CLI_STATUS="UNKNOWN"
         row "$1" UNKNOWN "cannot create a temp file (TMPDIR full or unwritable) — section not validated"
         return 0
@@ -272,7 +314,15 @@ PROV_STATUS=""
 PROV_DETAIL=""
 probe_provider() {      # $1 = a model id of the provider; sets PROV_STATUS / PROV_DETAIL
     local mid="$1" eerr first out rc rest kind url
-    eerr="$(mktemp)"
+    # Unlike the sites above, the verdict here was already honest without the guard — export
+    # would fail on the redirect and land in the UNKNOWN arm below. What the check buys is the
+    # stderr: three raw mktemp/head diagnostics on the stream the suite gates on, from a probe
+    # whose stdout is meant to be the whole report.
+    if ! eerr="$(mktemp_or_fail)"; then
+        PROV_STATUS="UNKNOWN"
+        PROV_DETAIL="cannot create a temp file (TMPDIR full or unwritable) — endpoint not probed"
+        return 0
+    fi
     # Assigned STRAIGHT into the global, never into a local first: the mode-600 token file
     # exists from the moment export returns, so any window in which the file is on disk and
     # CURRENT_ENVF is not yet set is a window in which a signal leaks it.
@@ -460,16 +510,37 @@ case "$CONFIG_STATUS" in
     INVALID)
         BLOCKER="config.yaml is rejected — see the config row"
         BLOCKER_HINT="edit $DATA_DIR/config.yaml to fix what the config row reports — do NOT overwrite it with config.example.yaml: it is user-owned and holds your provider tokens" ;;
-    *)
+    UNKNOWN)
         # UNKNOWN: the loader never ran, so nothing above is a statement about the file's
-        # contents. Naming the tool matters more than usual here — Go-yq is a DIFFERENT program
-        # that config-loader.sh rejects on sight (config-loader.sh:71), so "install yq" alone
-        # sends a fair number of people to the wrong binary.
+        # contents. MORE THAN ONE cause reaches here and their fixes have nothing in common —
+        # an operator whose TMPDIR is unwritable must not be sent to install yq, and this arm
+        # used to be spelled `*)` and say exactly that to both. Branch on the cause recorded
+        # where the verdict was made, never re-derive it here: a third cause that forgets to
+        # set it must fall through to "read the row", not inherit whichever advice is last.
         BLOCKER="config state could not be evaluated"
-        T_FIX=""
-        case "$TOOLCHAIN_MISSING" in *yq*) T_FIX="pipx install yq (Python-yq — NOT brew/Go-yq)" ;; esac
-        case "$TOOLCHAIN_MISSING" in *jq*) T_FIX="${T_FIX:+$T_FIX; }apt install jq (or brew install jq)" ;; esac
-        BLOCKER_HINT="install the loader toolchain — ${T_FIX:-see README Dependencies} — then re-run; $DATA_DIR/config.yaml was never read, so nothing above says anything about its contents" ;;
+        U_FIX=""
+        case "$CONFIG_UNKNOWN_CAUSE" in
+            toolchain)
+                # Naming the tool matters more than usual here — Go-yq is a DIFFERENT program
+                # that config-loader.sh rejects on sight (config-loader.sh:71), so "install yq"
+                # alone sends a fair number of people to the wrong binary.
+                T_FIX=""
+                case "$TOOLCHAIN_MISSING" in *yq*) T_FIX="pipx install yq (Python-yq — NOT brew/Go-yq)" ;; esac
+                case "$TOOLCHAIN_MISSING" in *jq*) T_FIX="${T_FIX:+$T_FIX; }apt install jq (or brew install jq)" ;; esac
+                U_FIX="install the loader toolchain — ${T_FIX:-see README Dependencies}" ;;
+            tmpfile)
+                U_FIX="make TMPDIR writable, free space on it, or point TMPDIR at a directory that has both" ;;
+            *)
+                U_FIX="fix what the config row above reports" ;;
+        esac
+        BLOCKER_HINT="$U_FIX — then re-run; $DATA_DIR/config.yaml was never read, so nothing above says anything about its contents" ;;
+    *)
+        # Defence in depth: every member of the closed status set is spelled out above, so this
+        # arm is unreachable today. It exists because the alternative to an unreachable arm is a
+        # silent one — a status added later would leave BLOCKER empty and the summary would
+        # cheerfully offer reviewers the orchestrator never reaches.
+        BLOCKER="config state is not usable ($CONFIG_STATUS)"
+        BLOCKER_HINT="see the config row above — this probe has no advice for that state" ;;
 esac
 if [ -z "$BLOCKER" ] && [ "$CLAUDE_CATALOG_OK" = 0 ]; then
     BLOCKER="the claude: section is rejected and both orchestrators exit on that read"

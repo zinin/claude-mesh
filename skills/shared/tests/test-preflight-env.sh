@@ -189,6 +189,26 @@ assert_eq   "missing yq exits 0"              0        "$RC"
 assert_eq   "missing yq -> its own row"       MISSING  "$(field yq "$OUT")"
 assert_eq   "missing yq -> config UNKNOWN, not INVALID" UNKNOWN "$(field config "$OUT")"
 
+# The OTHER way to reach UNKNOWN, and the one that looked like a rejected config until it was
+# guarded: with an unwritable TMPDIR the probe cannot create the file that catches the loader's
+# stderr, `cmd 2>""` fails on the redirect alone, and the row read `INVALID` with an EMPTY
+# detail — a healthy config.yaml accused of being malformed by a probe that never opened it,
+# with nothing printed for the operator to act on. The fixture is deliberately the valid one:
+# every claim on this table must come from the environment, never from the config.
+run_probe valid-claude-models.yaml TMPDIR="$WORK/no-such-tmpdir"
+assert_eq   "unwritable TMPDIR exits 0"       0        "$RC"
+assert_eq   "unwritable TMPDIR -> config UNKNOWN, not INVALID" UNKNOWN "$(field config "$OUT")"
+# An UNKNOWN whose detail is empty is the defect restated, not the fix: the whole point is that
+# the reader learns WHICH of the two UNKNOWN causes happened without leaving the table.
+assert_match "…and the detail names the real cause"  "TMPDIR" "$OUT"
+assert_no_match "…without blaming the config file"   "INVALID" "$OUT"
+# mktemp, the failed redirect and `head -1 ""` each printed their own complaint here. stdout is
+# the report and stderr is probe chatter; raw tool diagnostics belong to neither. (The final
+# gate at the bottom enforces this over every scenario — these two name the regression.)
+assert_no_match "…and mktemp does not complain on stderr" "mktemp:" "$ERR"
+assert_no_match "…nor does head"                          "head:"   "$ERR"
+assert_eq   "…leaving stderr silent in a run that probes nothing" "" "$ERR"
+
 # A broken claude: section is INVALID with the validator's reason — mesh-review refuses to
 # start on this same read, so "no catalog" (MISSING) would be a lie.
 run_probe invalid-claude-scalar.yaml
@@ -590,6 +610,21 @@ assert_match "…claude says exactly that, and not that a file is missing" "clau
 assert_match "…the hint names the tool the rows above reported" "pipx install yq" "$OUT"
 assert_match "…and says the config itself was never read"       "was never read"  "$OUT"
 assert_no_match "…never offering to overwrite an unread config" "cp config.example.yaml" "$OUT"
+
+# UNKNOWN has TWO causes and one hint line, so the hint has to know which one it is advising
+# about. It used to be a `*)` arm prescribing yq/jq for both — an operator whose TMPDIR is
+# unwritable sent to install a toolchain that is already installed, against a config row that
+# says nothing about it. The two assertions are a pair: the second is what makes the first
+# more than "the arm printed something".
+run_probe valid-claude-models.yaml TMPDIR="$WORK/no-such-tmpdir"
+assert_eq   "unevaluated config (no temp file) -> nothing selectable" "SUMMARY available: —" \
+    "$(grep '^SUMMARY available:' <<<"$OUT")"
+assert_match "…claude blocked with the same could-not-evaluate reason" "claude (config state could not be evaluated" "$OUT"
+assert_match "…and the hint points at TMPDIR"                   "hint: make TMPDIR" "$OUT"
+assert_no_match "…not at a toolchain that is already installed" "install the loader toolchain" "$OUT"
+assert_no_match "…and never at yq"                              "pipx install yq" "$OUT"
+assert_match "…while still saying the config was never read"    "was never read"  "$OUT"
+assert_no_match "…and never offering to overwrite it"           "cp config.example.yaml" "$OUT"
 
 # The note qualifies "(UNKNOWN)" markers. With no usable config every entry reads (SKIPPED) and
 # there is no network verdict to qualify, so the note would point at a marker that is not on the
