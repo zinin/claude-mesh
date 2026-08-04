@@ -109,6 +109,28 @@ Scope grew by one file on a user ruling: `skills/shared/tests/test-command-sync.
 
 ---
 
+### Post-plan: external code review through `/claude-mesh:mesh-review`
+
+✅ Done — see commit(s): `35015b9` (six disputed findings, each decided by the user),
+`cab2e2d` (thirteen unambiguous fixes).
+
+Eight reviewers, all delegating for real (guard: 6/6 wrappers `REAL`, 5–60 turns each):
+`claude:opus`, `claude:fable`, `codex`, and ext-claude on `zai/glm`, `alibaba/qwen`,
+`deepseek/v4-pro`, `ollama/kimi`, `ollama/minimax`. Suites went 693 → 710 assertions.
+
+---
+
+## Remaining before the PR
+
+- [ ] `CHANGELOG.md` `## [Unreleased]` does not yet mention what the two review waves added —
+      most visibly the new **`BASE_BRANCH=` argument of `/claude-mesh:mesh-review`**, which is
+      user-facing behaviour, plus the probe's validated budgets and the `bash`-invocation fix.
+- [ ] `git rm` the five tracked files under `docs/superpowers/` (project convention; they stay
+      in branch history).
+- [ ] Release metadata: `.claude-plugin/plugin.json` is still `0.6.0` while `## [Unreleased]`
+      has content. The probe reports that version, so the two move together at release.
+- [ ] Push and open the PR.
+
 ## Done criteria
 
 - `bash skills/shared/tests/test-preflight-env.sh` passes, and so does every other suite in `skills/shared/tests/`.
