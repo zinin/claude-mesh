@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.7.1] - 2026-08-04
 
 ### Fixed
 - `ext-claude-exec` invoked `claude -p` with no permission flag at all, so every reviewer on
