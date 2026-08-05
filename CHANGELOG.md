@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.8.0] - 2026-08-05
 
 ### Fixed
 - Wrapper reviewers launched their external engine as a **foreground** Bash call, and the
@@ -58,7 +58,7 @@ All notable changes to claude-mesh will be documented here.
   the same round number as the foreground-cap signature, and neither can compute it for itself.
   A `SIGINT` no longer blames the Bash cap, which raises `SIGTERM` and cannot produce a 130.
 
-### Fixed (follow-ups from review of this branch)
+### Fixed (second pass — found by reviewing this release's own changes)
 - `/mesh-review` Step 6.0.4b said "Wait for completion" after re-dispatching, which the same
   branch turned into a no-op: a wrapper now launches its engine in the background and ends its
   turn, so its Task returns within seconds and the guard in step c inspected a run dir that had
