@@ -3,11 +3,11 @@
 #
 # verify-delegation.sh classifies whether a wrapper reviewer (ext-claude / codex /
 # gemini) actually DELEGATED to its external engine and produced a REAL review, vs
-# self-reviewed on the session model (FLIP), was killed mid-flight (STALLED), or got an
-# engine-broken empty/thinking-only result (BROKEN).
+# self-reviewed on the session model (FLIP), died on its own (STALLED), was terminated
+# from outside (KILLED), or got an engine-broken empty/thinking-only result (BROKEN).
 #
 # Verdicts (stdout) + exit codes:
-#   REAL=0  FLIP=3  STALLED=2  BROKEN=4  DEGRADED=5
+#   REAL=0  FLIP=3  STALLED=2  BROKEN=4  DEGRADED=5  KILLED=6
 #
 # Criteria are derived from real run-dir fixtures observed on 2026-05-30:
 #   REAL    (kimi):     final symlink + result num_turns>1 + non-empty output.txt
@@ -857,6 +857,119 @@ EOF
 run codex - 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
 assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# --- KILLED: terminated from outside, not by anything inside the run -------------------
+#
+# watchdog.sh traps the two signals it can be killed by and records them as its own exit code
+# (`trap 'cleanup 143' TERM`, `trap 'cleanup 130' INT`, watchdog.sh:287-288). It writes
+# `watchdog.exit` ONLY when it decides to stop by itself — retries exhausted or global timeout.
+# So a cleanup of 143/130 with NO watchdog.exit beside it says: nothing inside the run decided
+# anything, the signal came from outside.
+#
+# Measured 2026-08-05 (CC 2.1.222): five ext-claude runs launched as FOREGROUND Bash calls with
+# `timeout: 600000` died at 600-605s while writing steadily, each tool result reading
+# "Exit code 143 / Command timed out after 10m 0s"; every run launched with
+# `run_in_background: true` outlived the cap (812s, 1397s, 2001s, 2028s). A re-dispatch of a
+# killed run repeats whatever killed it, so this must not read as STALLED, which mesh-review
+# Step 6.0.4 retries.
+echo "=== Test: ext-claude KILLED — cleanup 143, no watchdog.exit ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-killed)
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}' > "$rd/attempt-1/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:53:45+0300","event":"alive","attempt":1,"details":{"event_count":10422,"age_sec":0}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: ext-claude KILLED — SIGINT (130) counts too ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-int)
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":130}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# The discriminator is watchdog.exit, not the code: when the watchdog bailed on its own it
+# writes that file, and the run is a STALLED the orchestrator may usefully retry.
+echo "=== Test: ext-claude STALLED — watchdog.exit present means it decided, not was killed ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-bailed)
+echo '{"reason":"retries_exhausted","attempts":3,"elapsed_sec":900}' > "$rd/watchdog.exit"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# A run with no watchdog.log at all is the pre-supervised shape: unfinalized says nothing about
+# WHO stopped it, so it stays STALLED rather than being guessed into KILLED.
+echo "=== Test: ext-claude STALLED — unfinalized with no watchdog.log stays STALLED ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-nolog)
+echo '{"type":"assistant"}' > "$rd/attempt-1/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# The signal is only a verdict when it cost the review. A run that finalized with a real
+# review before something SIGTERMed its tail is REAL — the findings are on disk.
+echo "=== Test: ext-claude REAL — a 143 after a finalized, agentic run is not KILLED ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/ollama/kimi" 2026-08-05-09-44-20-1000-late143)
+echo '### Findings
+- storage/RecoveryOrderMongoRepositoryImpl.java: the CAS retry drops the audit stamp.' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":46}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:20+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:50:11+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude ollama/kimi 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# codex/gemini reach the same conclusion down a different path: their branch reads the watchdog
+# cleanup code directly, and used to call every non-zero one STALLED.
+echo "=== Test: codex KILLED — finalized output but cleanup 143, no watchdog.exit ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-killed)
+echo 'partial findings' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# Any other non-zero watchdog code is the engine failing, not a signal — still STALLED.
+echo "=== Test: codex STALLED — cleanup 2 is the watchdog bailing, not an outside kill ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-bail)
+echo 'partial' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":2}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
 rm -rf "$TDIR"
 
 echo ""

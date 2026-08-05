@@ -2,6 +2,48 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Fixed
+- Wrapper reviewers launched their external engine as a **foreground** Bash call, and the
+  harness caps one at `BASH_MAX_TIMEOUT_MS` — ten minutes out of the box — then SIGTERMs it at
+  the cap, taking the whole process group with it. `watchdog.sh`'s `trap 'cleanup 143' TERM`
+  recorded `exit_code: 143` and the run died mid-flight while its stream was still growing. On
+  2026-08-05 (CC 2.1.222) a `/mesh-review` lost five of eight reviewers that way — all five
+  dying at 600-605s, each tool result reading `Exit code 143 / Command timed out after 10m 0s`
+  — while every run that happened to be launched with `run_in_background: true` outlived the
+  cap: 812s, 1397s, 2001s, 2028s. Nothing in the plugin had ever specified the launch mode
+  (`run_in_background` appeared in no file), so each wrapper model chose for itself, which is
+  why the same model both died and survived in one session. Worse, the three agent files said
+  the opposite of the orchestrator: "Wait for the Bash call to return" (there since the first
+  commit, `46302fd`) against `mesh-review.md`'s "launches its external engine as a background
+  Bash task", on which the whole `watch-runs.sh` + ping machinery is built. The budgets those
+  agent files advertise — two watchdog restarts, a 60-minute wall clock — all sit above the cap
+  and were unreachable by construction on the foreground path. `ext-claude-exec`, `codex-exec`
+  and `gemini-exec` now require the supervised block to run as a background task, and the three
+  reviewer agents were rewritten to match: launch, name the run dir, go idle, read the results
+  when pinged. No work moved — extraction, report generation and bail diagnostics already ran
+  inside that one block.
+- Wrapper reviewers no longer relaunch a dead run on their own initiative. That behaviour was
+  never specified; the models improvised it (`setsid nohup`, a hand-written driver script) once
+  their runs started dying, and it left a second run dir the orchestrator was not tracking —
+  `watch-runs.sh` follows the newest dir, so attribution moved to a run nobody had asked for
+  and the work was duplicated. Retry belongs to `runtime.max_redispatch`.
+
+### Added
+- `shared/verify-delegation.sh` gained a sixth verdict, `KILLED` (exit 6), for a run stopped by
+  a signal from outside it: the watchdog's last `cleanup` carries 143 (SIGTERM) or 130 (SIGINT)
+  and no `watchdog.exit` sits beside it — the file the watchdog writes only when it stops on its
+  own judgement — so nothing inside the run decided anything. Such a run used to score
+  `STALLED`, which `/mesh-review` Step 6.0.4 re-dispatches as "retry helps"; on 2026-08-05 three
+  of those re-dispatches died exactly as the runs they replaced. `KILLED` is excluded from
+  `PROBLEMS` and reported for what it was — the review was alive when it was killed, so the
+  fault is in the launch, not in the model. The check is engine-agnostic and deliberately does
+  **not** key on a lifetime near the cap: the same session produced 143s from three different
+  senders (the harness cap, an orchestrator `TaskStop` on the wrapper, and a wrapper killing its
+  own run), and a corridor heuristic would have confused them. A run that finalized with a real
+  review before something signalled its tail still scores `REAL`.
+
 ## [0.7.1] - 2026-08-04
 
 ### Fixed

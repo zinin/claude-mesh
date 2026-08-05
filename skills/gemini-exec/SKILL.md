@@ -281,7 +281,27 @@ cat "$OUTPUT_FILE"
 
 #### Supervised execution (SUPERVISED_MODE=shell)
 
-Execute as ONE Bash call. Key points:
+Execute as ONE **background** Bash call — `run_in_background: true`, never a foreground one.
+
+**Why it must be background.** The harness caps a foreground call at `BASH_MAX_TIMEOUT_MS` (ten
+minutes out of the box; the effective ceiling is the larger of that and
+`BASH_DEFAULT_TIMEOUT_MS`) and SIGTERMs it at the cap, taking the whole process group with it.
+`watchdog.sh`'s `trap 'cleanup 143' TERM` then records `exit_code: 143` and the run is lost with
+no `watchdog.exit` to explain it — the shape `verify-delegation.sh` reports as `KILLED`. Every
+budget below sits ABOVE that cap (`timeout 1800` per attempt, `GLOBAL_TIMEOUT=3600` across
+retries), so on a foreground launch neither the restarts nor the wall-clock deadline is
+reachable. Measured 2026-08-05 on CC 2.1.222 across the sibling ext-claude path: 5 of 5
+foreground runs died at 600-605s with their streams still growing, each tool result reading
+`Exit code 143 / Command timed out after 10m 0s`; every background launch outlived the cap
+(812s, 1397s, 2001s, 2028s).
+
+Backgrounding costs nothing, because everything the caller needs happens INSIDE this block:
+watchdog, copy-up, extraction, report generation and the bail diagnostics. Report the work dir,
+end the turn, and read `$WORK_DIR/output.txt` / `report.md` — and the launch's stdout file for
+an `rc=2` bail — once you are woken. Do NOT wrap the launch in a foreground wait or poll loop:
+such a call carries the same cap. If the run dies, report the death rather than relaunching it.
+
+Key points:
 - `command -v jq` precondition fails fast with a clear message if `jq` is missing.
 - `timeout 1800 stdbuf -oL -eL gemini ...` keeps `timeout` as the immediate child under watchdog and disables full buffering for the CLI stream.
 - `watchdog.sh` exit code is captured with `|| WATCHDOG_RC=$?` so diagnostics run when watchdog returns 2 or 3.

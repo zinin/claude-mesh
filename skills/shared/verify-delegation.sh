@@ -28,11 +28,16 @@
 #              codex/gemini: watchdog cleanup exit 0 (when logged), non-empty output, and a
 #              stream carrying a terminal event, at least one tool call, and no final result
 #              with an explicit status != "success"
-#   STALLED=2  killed mid-flight or delivered nothing usable: no final / no result event /
+#   STALLED=2  died mid-flight or delivered nothing usable: no final / no result event /
 #              no successful result event with an integer num_turns / final result event
 #              is_error:true / engine rc!=0 / agentic but blank output — and for codex/gemini:
 #              no stream file at all, no terminal event, or an error-status final result
 #              (retry helps)
+#   KILLED=6   the run was stopped by a signal from OUTSIDE it: the watchdog's last cleanup
+#              carries 143 (SIGTERM) or 130 (SIGINT) and no watchdog.exit sits beside it, so
+#              nothing inside the run decided to stop. Distinct from STALLED because retry is
+#              not the remedy — whatever sent the signal sends it again. The commonest sender
+#              is the harness capping a FOREGROUND Bash call at BASH_MAX_TIMEOUT_MS
 #   FLIP=3     no TIMESTAMP-NAMED run dir of THIS session for this engine in the dispatch
 #              window — the reviewer self-reviewed on the session model, the model argument was
 #              truncated and BASE is a provider directory (its children never match the run-dir
@@ -170,8 +175,39 @@ done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
 [ -n "$NEWEST" ] || emit FLIP "no run dir newer than dispatch time — reviewer did not delegate" 3
 RD="$NEWEST"
 
-# --- 2. did it finalize? (killed mid-flight = no final symlink AND no root output.txt) ---
+# --- 1.5. was it stopped from OUTSIDE the run? -------------------------------------------
+# watchdog.sh records the two signals it can be killed by as its own exit code
+# (`trap 'cleanup 143' TERM`, `trap 'cleanup 130' INT` — watchdog.sh:287-288) and writes
+# `watchdog.exit` ONLY when it stops on its own judgement (retries exhausted / global timeout).
+# A cleanup of 143/130 with no watchdog.exit beside it therefore says: nothing inside the run
+# decided anything, the signal came from outside — and whatever sent it will send it again.
+# That is the whole reason this is not STALLED, which /mesh-review Step 6.0.4 re-dispatches:
+# on 2026-08-05 three such re-dispatches died exactly as the runs they replaced.
+#
+# The commonest sender is the harness itself. A FOREGROUND Bash call is capped at
+# BASH_MAX_TIMEOUT_MS — ten minutes out of the box — and SIGTERMed at the cap, taking the whole
+# process group with it; five ext-claude runs died that way at 600-605s while still writing,
+# each tool result reading "Exit code 143 / Command timed out after 10m 0s", while every run
+# launched with `run_in_background: true` outlived the cap (812s, 1397s, 2001s, 2028s). Every
+# engine budget here sits ABOVE that cap (single_run_sec 1800, global_sec 3600), so on a
+# foreground launch none of them is reachable. The launch side is fixed in the exec skills; this
+# is the reading side, and it covers the two other senders seen the same day just as well — an
+# orchestrator TaskStop on the wrapper, and a wrapper killing its own run.
+WDOG_CLEANUP_RC=""
+[ ! -f "$RD/watchdog.log" ] ||
+    WDOG_CLEANUP_RC="$(grep '"event":"cleanup"' "$RD/watchdog.log" 2>/dev/null | tail -1 |
+                       grep -o '"exit_code":[[:space:]]*-\?[0-9]\+' | grep -o -- '-\?[0-9]\+$')"
+SIGNALLED=0
+SIGNAL_NAME=""
+case "$WDOG_CLEANUP_RC" in
+    143) [ -f "$RD/watchdog.exit" ] || { SIGNALLED=1; SIGNAL_NAME=SIGTERM; } ;;
+    130) [ -f "$RD/watchdog.exit" ] || { SIGNALLED=1; SIGNAL_NAME=SIGINT; } ;;
+esac
+KILLED_REASON="terminated from outside ($SIGNAL_NAME: watchdog cleanup exit $WDOG_CLEANUP_RC, no watchdog.exit) — nothing inside the run chose to stop, so the run itself was healthy. Do NOT re-dispatch: an identical launch is killed identically. A foreground Bash call is the usual sender — the harness caps one at BASH_MAX_TIMEOUT_MS (10 min by default) and SIGTERMs it there; the exec skills launch in the background for exactly this reason"
+
+# --- 2. did it finalize? (died mid-flight = no final symlink AND no root output.txt) ---
 if [ ! -e "$RD/final" ] && [ ! -f "$RD/output.txt" ]; then
+    [ "$SIGNALLED" = 0 ] || emit KILLED "$KILLED_REASON" 6
     emit STALLED "run dir present but not finalized (killed mid-flight)" 2
 fi
 
@@ -195,10 +231,13 @@ case "$ENGINE" in
             [ "$RCV" = "0" ] || emit STALLED "engine exit code != 0 ($RCV)" 2
         fi
         # The watchdog records its own exit in watchdog.log; that file really is written.
-        if [ -f "$RD/watchdog.log" ]; then
-            WRC="$(grep '"event":"cleanup"' "$RD/watchdog.log" 2>/dev/null | tail -1 |
-                   grep -o '"exit_code":[[:space:]]*-\?[0-9]\+' | grep -o -- '-\?[0-9]\+$')"
-            [ -z "$WRC" ] || [ "$WRC" = 0 ] || emit STALLED "watchdog cleanup exit code $WRC" 2
+        # Read it from the value step 1.5 already parsed, so both readings of the same field
+        # can never disagree. A signalled death is KILLED, not STALLED — same reasoning as
+        # there, reached down a different path: this branch sees runs that DID finalize, so a
+        # codex run killed after writing output.txt lands here rather than at the check above.
+        if [ -n "$WDOG_CLEANUP_RC" ] && [ "$WDOG_CLEANUP_RC" != 0 ]; then
+            [ "$SIGNALLED" = 0 ] || emit KILLED "$KILLED_REASON" 6
+            emit STALLED "watchdog cleanup exit code $WDOG_CLEANUP_RC" 2
         fi
         [ -s "$OUT" ] || emit STALLED "output.txt empty — no usable review produced" 2
         # Content, when a stream is present. codex emits turn.completed / command_execution;

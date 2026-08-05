@@ -238,6 +238,26 @@ fi
 
 #### Supervised mode (SUPERVISED_MODE=shell)
 
+**Run this block as a BACKGROUND Bash task — `run_in_background: true`, not a foreground call.**
+The harness caps a foreground call at `BASH_MAX_TIMEOUT_MS` (ten minutes out of the box; the
+effective ceiling is the larger of that and `BASH_DEFAULT_TIMEOUT_MS`) and SIGTERMs it at the
+cap, taking the whole process group with it. `watchdog.sh`'s `trap 'cleanup 143' TERM` then
+records `exit_code: 143` and the run is lost with no `watchdog.exit` to explain it — the shape
+`verify-delegation.sh` reports as `KILLED`. Every budget this block passes down sits ABOVE that
+cap (`single_run_sec` 1800, `global_sec` 3600), so on a foreground launch the watchdog's
+restarts and its wall-clock deadline are unreachable by construction. Measured 2026-08-05 on
+CC 2.1.222: 5 of 5 foreground runs died at 600-605s with their streams still growing
+(`age_sec` 0-6), each tool result reading `Exit code 143 / Command timed out after 10m 0s`;
+every run launched with `run_in_background: true` outlived the cap — 812s, 1397s, 2001s, 2028s.
+
+Backgrounding costs nothing here, because everything the caller needs happens INSIDE this
+block: watchdog, copy-up, `extract-result.py`, `generate-md.sh` and the bail diagnostics. The
+launch returns a task id and the path of the file this block's stdout is written to. Report the
+work dir, end the turn, and read `$WORK_DIR/output.txt` / `report.md` — and that stdout file for
+an `rc=2` bail — once you are woken. Do NOT wrap the launch in a foreground wait or a poll loop:
+such a call is capped exactly like the one you just avoided. If the run dies, report the death
+rather than relaunching it — a second, untracked run dir is worse than a reported failure.
+
 ```bash
 set -euo pipefail
 command -v jq >/dev/null 2>&1 || { echo "supervised mode requires jq" >&2; exit 64; }
