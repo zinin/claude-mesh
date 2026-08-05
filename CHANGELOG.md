@@ -80,6 +80,13 @@ All notable changes to claude-mesh will be documented here.
 - `config.example.yaml`'s `max_redispatch` comment still said a run killed mid-flight is
   re-dispatched, and listed `BROKEN` as the only verdict never retried. It now names all three
   (`BROKEN`, `DEGRADED`, `KILLED`).
+- `shared/preflight-env.sh` gained a `bash-timeout` row: it compares the harness's foreground
+  ceiling — the larger of `BASH_MAX_TIMEOUT_MS` and `BASH_DEFAULT_TIMEOUT_MS`, both defaulted as
+  Claude Code defaults them — against `runtime.timeouts.global_sec × 1000`, and reports `LOW`
+  with the exact value to set when the ceiling is below it. Not a blocker (background launches
+  are not subject to the cap) and not `MISSING` (the stock values are valid Claude Code
+  settings, just too small for these budgets); it is for the machine that never set them, where
+  the alternative to a row is diagnosing a `KILLED` after a review dies at 600s.
 - The three `*-executor` agents run the same supervised block as the reviewer agents —
   `/mesh-design-review` dispatches them with `SUPERVISED_MODE: shell` — but only the reviewers
   got the background-launch and no-self-relaunch rules. Both now sit on the executors too.

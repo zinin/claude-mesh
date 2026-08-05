@@ -94,7 +94,9 @@ each tool result reading `Exit code 143 / Command timed out after 10m 0s`. Value
 Since the release that made the exec skills launch their engine as a background task, this
 ceiling is no longer load-bearing for reviews — a background task is not subject to it at all.
 Keep it raised anyway as a safety net for a wrapper that ignores the instruction, and read
-`KILLED` in a delegation table as the sign that one did (see Troubleshooting).
+`KILLED` in a delegation table as the sign that one did (see Troubleshooting). The environment
+probe checks the rule for you: a ceiling below `global_sec × 1000` shows up as a `bash-timeout
+LOW` row carrying the exact value to set.
 
 **`BASH_DEFAULT_TIMEOUT_MS` — 300000 (5 min) is a sane middle.** This one governs ordinary
 commands that pass no timeout of their own: builds, test runs, `git log -S` sweeps over full
