@@ -80,6 +80,27 @@ All notable changes to claude-mesh will be documented here.
 - `config.example.yaml`'s `max_redispatch` comment still said a run killed mid-flight is
   re-dispatched, and listed `BROKEN` as the only verdict never retried. It now names all three
   (`BROKEN`, `DEGRADED`, `KILLED`).
+- `REAL` now requires a review, not merely a non-empty file. The only content test it ever
+  applied was "output.txt is not blank", and a model that delegates the work and reports the
+  delegation clears that: on 2026-08-05 `deepseek/v4-pro` delivered "Ревью запущено … Ожидаю
+  результаты, уведомлю вас по завершении" twice — with `num_turns` 7 and 5 behind 24 and 17 tool
+  calls, agentic by every signal the gate had — and `/mesh-review` counted both as cross-
+  validating reviewers. A stub that passes is worse than a run that fails: it inflates "N models
+  agreed" with a model that said nothing. The floor is a length because nothing more specific
+  survives the archive — the stubs share no distinguishing tool and no distinguishing turn count
+  (a genuine 460-byte review ran 15 turns; a stub ran 7), and keying on their wording is the
+  mistake the `permission_denials` check already documents. Across every archived run with a
+  non-empty output (336 ext-claude, 78 codex) everything under **400 non-space bytes** was a
+  stub, a torn fragment, leaked tool grammar or an "approve this command" note, while the
+  shortest genuine review measured 460 (ext-claude) and 1746 (codex). Replaying all 624 archived
+  runs through both versions of the gate, the floor moves exactly the two stubs out of `REAL`
+  — every one of the other 198 `REAL` verdicts is unchanged — plus five `DEGRADED` runs whose
+  "review" was an approval request, DSML grammar, or a summary of findings that are not in the
+  file. `STALLED` and not `BROKEN`: a stub is not proof the engine cannot review (the same
+  session's 11428-byte review came from a comparable model on a later attempt), so one
+  re-dispatch is a fair use of the budget — and on a signalled run the verdict stays `KILLED`.
+  For codex and gemini the floor is checked **after** the tool-call test, so "finished a turn and
+  ran nothing" keeps saying `BROKEN`.
 - `shared/preflight-env.sh` gained a `bash-timeout` row: it compares the harness's foreground
   ceiling — the larger of `BASH_MAX_TIMEOUT_MS` and `BASH_DEFAULT_TIMEOUT_MS`, both defaulted as
   Claude Code defaults them — against `runtime.timeouts.global_sec × 1000`, and reports `LOW`

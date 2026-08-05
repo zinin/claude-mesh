@@ -259,6 +259,31 @@ fail() {   # fail <verdict> <reason> <exit-code>
     emit "$1" "$2" "$3"
 }
 
+# --- how much text counts as a review ----------------------------------------------------
+# "Non-empty" was the only content test REAL ever applied, and a model that delegates the work
+# and reports the delegation clears it. On 2026-08-05 deepseek/v4-pro delivered
+# "Ревью запущено … Ожидаю результаты, уведомлю вас по завершении" twice, with num_turns 7 and
+# 5 and 24 and 17 tool calls behind it — agentic by every signal here — and `/mesh-review`
+# counted both as cross-validating reviewers. A stub that passes is worse than a run that fails:
+# it inflates "N models agreed" with a model that said nothing.
+#
+# The floor is a length, because nothing more specific survives contact with the archive: the
+# stubs use no distinguishing tool, no distinguishing turn count (a genuine 460-byte review ran
+# 15 turns, a stub ran 7), and keying on their wording is the mistake the permission_denials
+# check below already documents. Measured over every archived run with a non-empty output — 336
+# ext-claude, 78 codex — everything under 400 non-space bytes was a stub, a torn fragment,
+# leaked tool grammar or an "approve this command" note, while the shortest genuine review
+# measured 460 (ext-claude) and 1746 (codex). BYTES, not characters: LC_ALL=C is set above for
+# reasons of its own, so `wc -c` is what there is — which makes the floor stricter for Cyrillic
+# (~2 bytes per character) than for ASCII, and Cyrillic reviews are what calibrated it.
+#
+# STALLED rather than BROKEN, and so through `fail`: a stub is not proof the engine cannot
+# review — the run that delivered the 11428-byte review the same day was the same kind of model
+# on a later attempt — so one re-dispatch is a fair use of the budget, and a signalled run stays
+# KILLED.
+MIN_REVIEW_BYTES=400
+out_bytes() { tr -d '[:space:]' < "$1" 2>/dev/null | wc -c | tr -d ' '; }
+
 # --- 2. did it finalize? (died mid-flight = no final symlink AND no root output.txt) ---
 if [ ! -e "$RD/final" ] && [ ! -f "$RD/output.txt" ]; then
     fail STALLED "run dir present but not finalized (killed mid-flight)" 2
@@ -334,6 +359,12 @@ case "$ENGINE" in
             # prove the run was agentic, so fail closed instead of silently skipping the gate.
             fail STALLED "no stream file (raw.jsonl / log.jsonl) — cannot verify the run did anything" 2
         fi
+        # The review floor comes AFTER the tool-call check, not before it: "finished a turn and
+        # ran nothing" is a broken engine whatever length its narration reached, and BROKEN says
+        # so precisely. A run that DID work and then delivered two sentences is the other case.
+        OUT_BYTES="$(out_bytes "$OUT")"
+        [ "$OUT_BYTES" -ge "$MIN_REVIEW_BYTES" ] ||
+            fail STALLED "the run used tools but output.txt holds only $OUT_BYTES non-space bytes — a notice or a fragment, not a review (the shortest genuine codex review in the archive is 1746)" 2
         emit REAL "delegated, non-empty review" 0
         ;;
     ext-claude)
@@ -390,8 +421,12 @@ case "$ENGINE" in
             fail BROKEN "num_turns=$NT: model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)" 4
         fi
         # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
-        grep -q '[^[:space:]]' "$OUT" 2>/dev/null \
-            || fail STALLED "num_turns=$NT but output.txt has no content — retry" 2
+        OUT_BYTES="$(out_bytes "$OUT")"
+        if [ "$OUT_BYTES" = 0 ]; then
+            fail STALLED "num_turns=$NT but output.txt has no content — retry" 2
+        elif [ "$OUT_BYTES" -lt "$MIN_REVIEW_BYTES" ]; then
+            fail STALLED "num_turns=$NT but output.txt holds only $OUT_BYTES non-space bytes — the run worked and then delivered a notice, not a review (the shortest genuine review in the archive is 460)" 2
+        fi
 
         # --- was it allowed to READ what it reviewed? ---
         # Every check above can pass on a run that never got outside its own cwd. Under `-p`
