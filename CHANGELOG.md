@@ -80,6 +80,18 @@ All notable changes to claude-mesh will be documented here.
 - `config.example.yaml`'s `max_redispatch` comment still said a run killed mid-flight is
   re-dispatched, and listed `BROKEN` as the only verdict never retried. It now names all three
   (`BROKEN`, `DEGRADED`, `KILLED`).
+- Both orchestrators now fall back to **reading the run's `output.txt` themselves** when a
+  wrapper stays silent through two pings, instead of writing the reviewer off. A report is how
+  findings travel, and travel is the part that breaks: the harness sends an idle subagent no
+  notification when its background task exits, and a composed report can still be lost on top of
+  that. On 2026-08-05 an `alibaba/qwen` run finished with `num_turns=22` and an 11428-byte review
+  on disk while the same session recorded that model as having produced nothing across five runs
+  and dropped it from the cross-validation — the review was never missing, only undelivered. The
+  rule both files now state: a reviewer is never "silent" or "empty-handed" while
+  `verify-delegation.sh` scores its run `REAL`, because that verdict is a statement about the
+  file, made from the disk. `output.txt` specifically, never `report.md` — the latter is the
+  whole run rendered by `generate-md.sh` and measures 137–250 KB in the archive, against 11 KB
+  for a large review.
 - `REAL` now requires a review, not merely a non-empty file. The only content test it ever
   applied was "output.txt is not blank", and a model that delegates the work and reports the
   delegation clears that: on 2026-08-05 `deepseek/v4-pro` delivered "Ревью запущено … Ожидаю
