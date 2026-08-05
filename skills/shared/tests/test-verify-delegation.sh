@@ -39,6 +39,16 @@ assert_match() {
     esac
 }
 
+# The reason line is prose an orchestrator relays verbatim, so a wrong CLAIM in it is a defect
+# even when the verdict is right: the SIGINT case must not be told the Bash cap killed it.
+assert_no_match() {
+    local desc="$1" pattern="$2" actual="$3"
+    case "$actual" in
+        *"$pattern"*) FAIL=$((FAIL+1)); echo "  FAIL: $desc ('$pattern' present in '$actual')" ;;
+        *) PASS=$((PASS+1)); echo "  PASS: $desc" ;;
+    esac
+}
+
 # run the script and capture verdict + rc. REASON is cleared, not left over: without this a
 # stale reason from an earlier run_full survives into the next test and an assertion on it
 # passes against the previous case's string.
@@ -958,18 +968,186 @@ assert_eq "verdict KILLED" "KILLED" "$VERDICT"
 assert_eq "exit 6" "6" "$RC"
 rm -rf "$TDIR"
 
-# Any other non-zero watchdog code is the engine failing, not a signal — still STALLED.
+# Any other non-zero watchdog code is the engine failing, not a signal — still STALLED. The
+# fixture carries a healthy STREAM on purpose: without one the run is STALLED anyway ("no stream
+# file"), so the assertion would hold with the cleanup-code branch deleted and pin nothing. Assert
+# the REASON for the same reason — the verdict alone cannot say which branch produced it.
 echo "=== Test: codex STALLED — cleanup 2 is the watchdog bailing, not an outside kill ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-bail)
 echo 'partial' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+printf '{"type":"command_execution","call_id":"c1"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
 cat > "$rd/watchdog.log" <<'EOF'
 {"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
 {"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":2}}
 EOF
-run codex - 1 "$TDIR"
+run_full codex - 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
 assert_eq "exit 2" "2" "$RC"
+assert_match "reason names the cleanup code" "watchdog cleanup exit code 2" "$REASON"
+rm -rf "$TDIR"
+
+# --- KILLED is what a signal COST, not the signal itself ---------------------------------
+#
+# The verdict answers "was the review lost?", and only then "who stopped the run?". A signalled
+# run that had already delivered a usable review is REAL — the findings are on disk and dropping
+# them buys nothing. This is what CHANGELOG promises for every engine; it used to hold for
+# ext-claude only, because the codex/gemini branch emitted KILLED from the watchdog exit code
+# before it ever looked at the content.
+echo "=== Test: codex REAL — signalled AFTER delivering a complete review ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-late143)
+printf '### Findings\n- Critical: the CAS retry drops the audit stamp.\n' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+printf '{"type":"command_execution","call_id":"c1"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# ...and the mirror image: a signalled run whose review is NOT usable is KILLED down every path
+# that would otherwise have said STALLED. The ext-claude branch never consulted the signal at
+# all, so a torn stream on a killed run was reported as "killed mid-flight" and RE-DISPATCHED
+# into an identical death — the exact loop this verdict exists to break.
+echo "=== Test: ext-claude KILLED — finalized dir, torn stream, cleanup 143 ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-58-40-1000-torn)
+ln -s attempt-1 "$rd/final"
+echo 'partial review text' > "$rd/output.txt"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:58:40+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:08:42+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# num_turns<=1 on a SIGNALLED ext-claude run is not a broken engine. A run that dispatches a
+# background subagent answers "started" (num_turns 1) and delivers the review in a later segment;
+# a kill before that segment leaves exactly this shape. BROKEN would be terminal AND would tell
+# the user to swap a model that did nothing wrong.
+echo "=== Test: ext-claude KILLED — num_turns=1 on a signalled run is not BROKEN ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-58-40-1000-seg1)
+ln -s attempt-1 "$rd/final"
+echo 'started' > "$rd/output.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:58:40+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:08:42+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# An unsignalled num_turns=1 is still BROKEN — the signal is what moves it, nothing else.
+echo "=== Test: ext-claude BROKEN — num_turns=1 with no signal stays BROKEN ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-58-40-1000-nt1)
+ln -s attempt-1 "$rd/final"
+echo 'thinking only' > "$rd/output.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:58:40+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:08:42+0300","event":"cleanup","attempt":1,"details":{"exit_code":0}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+# codex/gemini keep BROKEN even when signalled: a terminal turn event with zero tool calls says
+# the CLI finished its turn and did nothing, which no signal can explain away. There is no
+# subagent-split shape on these engines to confuse it with.
+echo "=== Test: codex BROKEN — narration plus a late 143 is still BROKEN ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-narration)
+echo 'I would review this by first...' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+printf '{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+# A dead `.watchdog_rc` check used to run BEFORE the signal was consulted, so a fixture (or any
+# future writer) putting 143 there masked KILLED behind "engine exit code != 0".
+echo "=== Test: codex KILLED — .watchdog_rc 143 does not mask the signal ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-rcfile)
+echo 'partial' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+echo '143' > "$rd/.watchdog_rc"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# The orchestrators are told to report the lifetime ("terminated from outside after Ns") and that
+# a cluster of deaths at the same round number is the foreground-cap signature. The number has to
+# come from the guard, or the model invents it: 09:44:45 -> 09:54:46 is 601s.
+echo "=== Test: KILLED reason carries the run's lifetime ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-life)
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:53:45+0300","event":"alive","attempt":1,"details":{"event_count":10422,"age_sec":0}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run_full ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_match "reason names the lifetime" "after 601s" "$REASON"
+assert_match "reason names the cap for a SIGTERM" "BASH_MAX_TIMEOUT_MS" "$REASON"
+rm -rf "$TDIR"
+
+# A SIGINT is a user pressing ESC or an orchestrator stopping the wrapper. Naming the Bash cap
+# there states a cause that cannot apply — the cap raises TERM, never INT.
+echo "=== Test: KILLED reason does not blame the Bash cap for a SIGINT ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-intreason)
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":130}}
+EOF
+run_full ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_no_match "no cap claim on a SIGINT" "BASH_MAX_TIMEOUT_MS" "$REASON"
+assert_match "reason names an interrupt" "interrupt" "$REASON"
+rm -rf "$TDIR"
+
+# "I read the evidence and it says nothing happened" and "I could not read the evidence" are
+# different states. Swallowing the read error turns the second into the first, and STALLED sends
+# the run back into whatever killed it.
+echo "=== Test: STALLED — an unreadable watchdog.log is reported, not swallowed ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-unreadable)
+echo '{"type":"assistant"}' > "$rd/attempt-1/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+chmod 000 "$rd/watchdog.log"
+if [ -r "$rd/watchdog.log" ]; then
+    echo "  SKIP: running as root — chmod 000 does not deny reads"
+else
+    run_full ext-claude zai/glm 1 "$TDIR"
+    assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+    assert_match "reason names the unreadable log" "unreadable" "$REASON"
+fi
+chmod 644 "$rd/watchdog.log"
 rm -rf "$TDIR"
 
 echo ""

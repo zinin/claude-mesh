@@ -33,11 +33,16 @@
 #              is_error:true / engine rc!=0 / agentic but blank output — and for codex/gemini:
 #              no stream file at all, no terminal event, or an error-status final result
 #              (retry helps)
-#   KILLED=6   the run was stopped by a signal from OUTSIDE it: the watchdog's last cleanup
+#   KILLED=6   a review LOST to a signal from OUTSIDE the run: the watchdog's last cleanup
 #              carries 143 (SIGTERM) or 130 (SIGINT) and no watchdog.exit sits beside it, so
 #              nothing inside the run decided to stop. Distinct from STALLED because retry is
 #              not the remedy — whatever sent the signal sends it again. The commonest sender
-#              is the harness capping a FOREGROUND Bash call at BASH_MAX_TIMEOUT_MS
+#              is the harness capping a FOREGROUND Bash call at BASH_MAX_TIMEOUT_MS.
+#              It answers what the signal COST, not whether one arrived: a run that had already
+#              delivered a usable review scores REAL however its tail died, on every engine.
+#              Every non-REAL outcome routes through `fail`, which promotes it to KILLED when
+#              the run was signalled — so BROKEN also becomes KILLED for ext-claude, where a
+#              truncated subagent-split stream is indistinguishable from a lone num_turns=1
 #   FLIP=3     no TIMESTAMP-NAMED run dir of THIS session for this engine in the dispatch
 #              window — the reviewer self-reviewed on the session model, the model argument was
 #              truncated and BASE is a provider directory (its children never match the run-dir
@@ -193,22 +198,70 @@ RD="$NEWEST"
 # foreground launch none of them is reachable. The launch side is fixed in the exec skills; this
 # is the reading side, and it covers the two other senders seen the same day just as well — an
 # orchestrator TaskStop on the wrapper, and a wrapper killing its own run.
+WDOG_CLEANUP_LINE=""
 WDOG_CLEANUP_RC=""
-[ ! -f "$RD/watchdog.log" ] ||
-    WDOG_CLEANUP_RC="$(grep '"event":"cleanup"' "$RD/watchdog.log" 2>/dev/null | tail -1 |
+# An EXISTING but unreadable watchdog.log is not the same state as an absent one, and 2>/dev/null
+# below cannot tell them apart: both leave WDOG_CLEANUP_RC empty, SIGNALLED 0, and the run falls
+# through to STALLED — "retry helps" — when the evidence that would have said KILLED was simply
+# not readable. Record it so `fail` can say so instead of guessing.
+WDOG_UNREADABLE=0
+if [ -f "$RD/watchdog.log" ] && [ ! -r "$RD/watchdog.log" ]; then
+    WDOG_UNREADABLE=1
+elif [ -f "$RD/watchdog.log" ]; then
+    WDOG_CLEANUP_LINE="$(grep '"event":"cleanup"' "$RD/watchdog.log" 2>/dev/null | tail -1)"
+    WDOG_CLEANUP_RC="$(printf '%s\n' "$WDOG_CLEANUP_LINE" |
                        grep -o '"exit_code":[[:space:]]*-\?[0-9]\+' | grep -o -- '-\?[0-9]\+$')"
+fi
 SIGNALLED=0
 SIGNAL_NAME=""
 case "$WDOG_CLEANUP_RC" in
     143) [ -f "$RD/watchdog.exit" ] || { SIGNALLED=1; SIGNAL_NAME=SIGTERM; } ;;
     130) [ -f "$RD/watchdog.exit" ] || { SIGNALLED=1; SIGNAL_NAME=SIGINT; } ;;
 esac
-KILLED_REASON="terminated from outside ($SIGNAL_NAME: watchdog cleanup exit $WDOG_CLEANUP_RC, no watchdog.exit) — nothing inside the run chose to stop, so the run itself was healthy. Do NOT re-dispatch: an identical launch is killed identically. A foreground Bash call is the usual sender — the harness caps one at BASH_MAX_TIMEOUT_MS (10 min by default) and SIGTERMs it there; the exec skills launch in the background for exactly this reason"
+
+# How long the run lived, from the log's first entry to the cleanup that ended it. Both
+# orchestrators are told to report it — "terminated from outside after Ns" — and to read a cluster
+# of deaths at the same round number as the foreground-cap signature, which is unreadable without
+# the number. Neither can compute it: they get this reason line and nothing else. Best-effort by
+# design — an unparsable stamp drops the clause rather than failing the verdict.
+LIFETIME=""
+if [ -n "$WDOG_CLEANUP_LINE" ]; then
+    _t0="$(head -1 "$RD/watchdog.log" 2>/dev/null | grep -o '"ts":"[^"]*"' | head -1 | cut -d'"' -f4)"
+    _t1="$(printf '%s\n' "$WDOG_CLEANUP_LINE" | grep -o '"ts":"[^"]*"' | head -1 | cut -d'"' -f4)"
+    if [ -n "$_t0" ] && [ -n "$_t1" ]; then
+        _s0="$(date -d "$_t0" +%s 2>/dev/null)" || _s0=""
+        _s1="$(date -d "$_t1" +%s 2>/dev/null)" || _s1=""
+        [ -n "$_s0" ] && [ -n "$_s1" ] && [ "$_s1" -ge "$_s0" ] && LIFETIME=" after $(( _s1 - _s0 ))s"
+    fi
+fi
+
+# The cap raises SIGTERM and only SIGTERM, so naming it under a SIGINT states a cause that cannot
+# apply — and the orchestrators relay this line verbatim. A 130 is somebody deciding: a user at
+# the keyboard, or an orchestrator stopping the wrapper.
+if [ "$SIGNAL_NAME" = SIGINT ]; then
+    KILLED_CAUSE="SIGINT is a deliberate interrupt — a user pressing ESC, or an orchestrator stopping the wrapper that owns the run. The harness timeout is not a candidate: it raises SIGTERM"
+else
+    KILLED_CAUSE="A foreground Bash call is the usual sender — the harness caps one at BASH_MAX_TIMEOUT_MS (10 min by default) and SIGTERMs it there; the exec skills launch in the background for exactly this reason"
+fi
+KILLED_REASON="terminated from outside ($SIGNAL_NAME: watchdog cleanup exit $WDOG_CLEANUP_RC, no watchdog.exit)$LIFETIME — nothing inside the run chose to stop, so the run was healthy until the signal and simply did not get to deliver a usable review. Do NOT re-dispatch: an identical launch is killed identically. $KILLED_CAUSE"
+
+# Every NON-REAL outcome below routes through here. KILLED answers "what did the signal COST",
+# not "was there a signal": a run that had already delivered a usable review reaches `emit REAL`
+# and never calls this, which is what makes the promise "a run that finalized with a real review
+# before something signalled its tail still scores REAL" true on every engine rather than on
+# ext-claude alone. Everything else — torn stream, blank output, no result event — is a review
+# that was lost, and when the run was signalled the loss is the signal's doing, so re-dispatching
+# it repeats the death rather than the review.
+fail() {   # fail <verdict> <reason> <exit-code>
+    [ "$SIGNALLED" = 0 ] || emit KILLED "$KILLED_REASON" 6
+    [ "$WDOG_UNREADABLE" = 0 ] ||
+        emit "$1" "$2 — NOTE: watchdog.log exists but is unreadable, so an outside kill could not be ruled out; KILLED is decided from that file" "$3"
+    emit "$1" "$2" "$3"
+}
 
 # --- 2. did it finalize? (died mid-flight = no final symlink AND no root output.txt) ---
 if [ ! -e "$RD/final" ] && [ ! -f "$RD/output.txt" ]; then
-    [ "$SIGNALLED" = 0 ] || emit KILLED "$KILLED_REASON" 6
-    emit STALLED "run dir present but not finalized (killed mid-flight)" 2
+    fail STALLED "run dir present but not finalized (killed mid-flight)" 2
 fi
 
 # -s, not -f, on the root file: gemini-exec pre-creates a zero-byte output.txt at launch and
@@ -228,18 +281,23 @@ case "$ENGINE" in
         RCF="$RD/.watchdog_rc"
         if [ -f "$RCF" ]; then
             RCV=""; IFS= read -r RCV < "$RCF" 2>/dev/null || true
-            [ "$RCV" = "0" ] || emit STALLED "engine exit code != 0 ($RCV)" 2
+            # Through `fail`, not `emit`: this check runs before the signal is weighed, and a 143
+            # in this file used to be reported as "engine exit code != 0" — masking KILLED behind
+            # a verdict that re-dispatches. Nothing under skills/ writes the file today (see
+            # above), but the test fixtures do, and a future writer would inherit the mask.
+            [ "$RCV" = "0" ] || fail STALLED "engine exit code != 0 ($RCV)" 2
         fi
-        # The watchdog records its own exit in watchdog.log; that file really is written.
-        # Read it from the value step 1.5 already parsed, so both readings of the same field
-        # can never disagree. A signalled death is KILLED, not STALLED — same reasoning as
-        # there, reached down a different path: this branch sees runs that DID finalize, so a
-        # codex run killed after writing output.txt lands here rather than at the check above.
-        if [ -n "$WDOG_CLEANUP_RC" ] && [ "$WDOG_CLEANUP_RC" != 0 ]; then
-            [ "$SIGNALLED" = 0 ] || emit KILLED "$KILLED_REASON" 6
+        # The watchdog records its own exit in watchdog.log; that file really is written. Read it
+        # from the value step 1.5 already parsed, so both readings of the same field can never
+        # disagree. A SIGNALLED run deliberately falls THROUGH to the content checks instead of
+        # emitting here: this branch sees runs that DID finalize, so a codex run signalled after
+        # writing a complete review reaches `emit REAL` below and keeps its findings. Everything
+        # further down routes through `fail`, so if the review is not usable the verdict is still
+        # KILLED — just decided by what was lost rather than by the exit code alone.
+        if [ -n "$WDOG_CLEANUP_RC" ] && [ "$WDOG_CLEANUP_RC" != 0 ] && [ "$SIGNALLED" = 0 ]; then
             emit STALLED "watchdog cleanup exit code $WDOG_CLEANUP_RC" 2
         fi
-        [ -s "$OUT" ] || emit STALLED "output.txt empty — no usable review produced" 2
+        [ -s "$OUT" ] || fail STALLED "output.txt empty — no usable review produced" 2
         # Content, when a stream is present. codex emits turn.completed / command_execution;
         # gemini emits result / tool_use. No terminal event means the CLI was killed mid-flight
         # and output.txt is salvage. A terminal event with no tool call at all is the codex and
@@ -250,7 +308,7 @@ case "$ENGINE" in
         [ -s "$STREAM" ] || STREAM="$RD/log.jsonl"
         if [ -s "$STREAM" ]; then
             grep -q '"type":"turn\.completed"\|"type":"result"' "$STREAM" 2>/dev/null ||
-                emit STALLED "stream has no terminal event — killed mid-flight" 2
+                fail STALLED "stream has no terminal event — killed mid-flight" 2
             # gemini can exit 0 while reporting an API failure as a result event with
             # status!="success" — gemini-exec's own extraction then writes "API Error: …" into
             # output.txt (SKILL.md:350-357), so every other signal here looks healthy. Reject an
@@ -261,8 +319,12 @@ case "$ENGINE" in
             LAST_RES="$(grep '"type":"result"' "$STREAM" 2>/dev/null | tail -1)"
             if printf '%s\n' "$LAST_RES" | grep -q '"status"' &&
                ! printf '%s\n' "$LAST_RES" | grep -q '"status":[[:space:]]*"success"'; then
-                emit STALLED "final result event carries status != \"success\" — the engine reported an error, not a review" 2
+                fail STALLED "final result event carries status != \"success\" — the engine reported an error, not a review" 2
             fi
+            # `emit`, not `fail`: a terminal turn event with zero tool calls says the CLI finished
+            # its turn and did nothing, which no signal can explain away — and unlike ext-claude
+            # there is no subagent-split shape here for a kill to truncate into this one. Reporting
+            # such a run as KILLED would blame the launch for a model that narrated.
             grep -q '"type":"command_execution"\|"type":"tool_use"' "$STREAM" 2>/dev/null ||
                 emit BROKEN "terminal event but no tool call — narration, not a review" 4
         else
@@ -270,7 +332,7 @@ case "$ENGINE" in
             # raw.jsonl copied back, default-mode runs write log.jsonl (0 of 75 archived runs
             # lack both). No stream means the layout is not one our tooling wrote — nothing can
             # prove the run was agentic, so fail closed instead of silently skipping the gate.
-            emit STALLED "no stream file (raw.jsonl / log.jsonl) — cannot verify the run did anything" 2
+            fail STALLED "no stream file (raw.jsonl / log.jsonl) — cannot verify the run did anything" 2
         fi
         emit REAL "delegated, non-empty review" 0
         ;;
@@ -307,7 +369,7 @@ case "$ENGINE" in
         LAST_ERR="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
             | jq -Rr 'fromjson? | objects | select(.type == "result") | .is_error' 2>/dev/null | tail -1)"
         if [ "$LAST_ERR" = "true" ]; then
-            emit STALLED "final result event is_error:true — the delivered output is the failed segment, not a review" 2
+            fail STALLED "final result event is_error:true — the delivered output is the failed segment, not a review" 2
         fi
 
         NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
@@ -316,14 +378,20 @@ case "$ENGINE" in
             | sort -n | tail -1)"
         if [ -z "$NT" ]; then
             # finalized dir but no successful result event carried an integer num_turns
-            emit STALLED "no usable result event in raw.jsonl — killed mid-flight" 2
+            fail STALLED "no usable result event in raw.jsonl — killed mid-flight" 2
         fi
+        # `fail`, not `emit`, and this is the one BROKEN that a signal DOES move. A run that
+        # dispatches a background subagent answers "started" with num_turns 1 and delivers the
+        # review in a later segment of the same stream; a kill landing between the two leaves
+        # exactly this shape. BROKEN is terminal — mesh-review never retries it — and its reason
+        # tells the user to swap a model that did nothing wrong, so on a signalled run the honest
+        # verdict is KILLED. Unsignalled, it stays BROKEN.
         if [ "$NT" -le 1 ]; then
-            emit BROKEN "num_turns=$NT: model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)" 4
+            fail BROKEN "num_turns=$NT: model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)" 4
         fi
         # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
         grep -q '[^[:space:]]' "$OUT" 2>/dev/null \
-            || emit STALLED "num_turns=$NT but output.txt has no content — retry" 2
+            || fail STALLED "num_turns=$NT but output.txt has no content — retry" 2
 
         # --- was it allowed to READ what it reviewed? ---
         # Every check above can pass on a run that never got outside its own cwd. Under `-p`

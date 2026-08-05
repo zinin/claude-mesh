@@ -42,6 +42,8 @@ They are NOT part of `PROMPT`.
 
 - **TASK_NAME** — short identifier for log files (default: "task")
 - **SUPERVISED_MODE** — `none` (default) or `shell`. `shell` wraps the `claude -p` run in `shared/watchdog.sh`, which restarts the CLI on a stall or a torn stream and writes a `watchdog.log` the caller can watch for liveness. Orchestrated runs (`/mesh-design-review`) pass `shell`; a one-off interactive run leaves it unset, which keeps the live `progress-monitor.sh` output.
+  - **Under `shell`, launch the skill's supervised block as a BACKGROUND Bash task (`run_in_background: true`) and never wait for that call in the foreground.** The harness caps a foreground call at `BASH_MAX_TIMEOUT_MS` — ten minutes out of the box — and SIGTERMs it at the cap, taking the whole process group with it; the watchdog records `exit_code: 143` and the run dies mid-flight. Every budget it supervises (1800s per attempt, 3600s overall) sits above that cap, so on a foreground launch none of them is reachable. Launch, report the work dir, end your turn, and read `$WORK_DIR/output.txt` / `report.md` when the orchestrator pings you — extraction, report generation and bail diagnostics all run inside the launched block.
+  - If the run dies, report the death — do **not** relaunch it yourself. A second run dir nobody is tracking breaks attribution: `watch-runs.sh` follows the newest dir, so the orchestrator starts watching a run it never asked for.
 
 ## PROHIBITIONS
 
