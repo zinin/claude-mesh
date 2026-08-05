@@ -3,11 +3,11 @@
 #
 # verify-delegation.sh classifies whether a wrapper reviewer (ext-claude / codex /
 # gemini) actually DELEGATED to its external engine and produced a REAL review, vs
-# self-reviewed on the session model (FLIP), was killed mid-flight (STALLED), or got an
-# engine-broken empty/thinking-only result (BROKEN).
+# self-reviewed on the session model (FLIP), died on its own (STALLED), was terminated
+# from outside (KILLED), or got an engine-broken empty/thinking-only result (BROKEN).
 #
 # Verdicts (stdout) + exit codes:
-#   REAL=0  FLIP=3  STALLED=2  BROKEN=4  DEGRADED=5
+#   REAL=0  FLIP=3  STALLED=2  BROKEN=4  DEGRADED=5  KILLED=6
 #
 # Criteria are derived from real run-dir fixtures observed on 2026-05-30:
 #   REAL    (kimi):     final symlink + result num_turns>1 + non-empty output.txt
@@ -36,6 +36,16 @@ assert_match() {
     case "$actual" in
         *"$pattern"*) PASS=$((PASS+1)); echo "  PASS: $desc" ;;
         *) FAIL=$((FAIL+1)); echo "  FAIL: $desc (no '$pattern' in '$actual')" ;;
+    esac
+}
+
+# The reason line is prose an orchestrator relays verbatim, so a wrong CLAIM in it is a defect
+# even when the verdict is right: the SIGINT case must not be told the Bash cap killed it.
+assert_no_match() {
+    local desc="$1" pattern="$2" actual="$3"
+    case "$actual" in
+        *"$pattern"*) FAIL=$((FAIL+1)); echo "  FAIL: $desc ('$pattern' present in '$actual')" ;;
+        *) PASS=$((PASS+1)); echo "  PASS: $desc" ;;
     esac
 }
 
@@ -75,6 +85,19 @@ sid_stamp() { printf '%s\n' "$2" > "$1/.session_id"; }
 # $1 base dir (e.g. $TDIR/runs/ext-claude/zai/glm), $2 run name
 mk_run() { mkdir -p "$1/$2/attempt-1"; echo "$1/$2"; }
 
+# An output.txt that stands for a DELIVERED REVIEW. A bare `echo findings` used to do, because
+# REAL asked only that the file be non-blank; it no longer is — a run that delivers a one-line
+# notice now scores STALLED (see the review-floor tests at the bottom). So every fixture whose
+# subject is a review that ARRIVED has to be long enough to be one, while the fixtures that test
+# emptiness, torn streams or leaked tool grammar keep writing exactly what they mean.
+# The headline argument keeps each test's output recognisable in a failure message.
+mk_output() {   # mk_output <file> [headline]
+    { printf '%s\n' "${2:-### Findings}"
+      for i in 1 2 3 4 5; do
+          printf -- '- storage/RecoveryOrderRepositoryImpl.java:%d — the CAS retry drops the audit stamp when the version check loses a race.\n' "$i"
+      done; } > "$1"
+}
+
 # === Test 1: FLIP — no run-dir under the engine path ===
 echo "=== Test 1: ext-claude FLIP (no run dir) ==="
 TDIR=$(mktemp -d)
@@ -88,7 +111,7 @@ rm -rf "$TDIR"
 echo "=== Test 2: ext-claude FLIP (run-dir older than since) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-old)
-echo 'review' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'review'; ln -s attempt-1 "$rd/final"
 run ext-claude zai/glm 9999999999 "$TDIR"   # since far in the future
 assert_eq "verdict FLIP" "FLIP" "$VERDICT"
 assert_eq "exit 3" "3" "$RC"
@@ -135,7 +158,7 @@ rm -rf "$TDIR"
 echo "=== Test 6: ext-claude BROKEN (num_turns 1, plain text) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-1turn)
-echo 'Looks fine to me, no issues.' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'Looks fine to me, no issues.'; ln -s attempt-1 "$rd/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$rd/raw.jsonl"
 run ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
@@ -146,8 +169,8 @@ rm -rf "$TDIR"
 echo "=== Test 7: ext-claude REAL (num_turns 46) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/ollama/kimi" 2026-07-28-11-00-00-1000-real)
-echo '### Strengths
-- connection.py singleton cold-start race is properly guarded.' > "$rd/output.txt"
+mk_output "$rd/output.txt" '### Strengths
+- connection.py singleton cold-start race is properly guarded.'
 ln -s attempt-1 "$rd/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":46}' > "$rd/raw.jsonl"
 run ext-claude ollama/kimi 1 "$TDIR"
@@ -159,7 +182,7 @@ rm -rf "$TDIR"
 echo "=== Test 8: codex REAL (.watchdog_rc=0) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-codex-ok)
-echo 'I reviewed the diff; here are the findings...' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'I reviewed the diff; here are the findings...'
 ln -s attempt-1 "$rd/final"; echo 0 > "$rd/.watchdog_rc"
 printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
 run codex - 1 "$TDIR"
@@ -172,7 +195,7 @@ rm -rf "$TDIR"
 echo "=== Test 9: codex STALLED (.watchdog_rc=124) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-codex-kill)
-echo 'partial findings before kill...' > "$rd/output.txt"; echo 124 > "$rd/.watchdog_rc"
+mk_output "$rd/output.txt" 'partial findings before kill...'; echo 124 > "$rd/.watchdog_rc"
 run codex - 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
 assert_eq "exit 2" "2" "$RC"
@@ -191,7 +214,7 @@ rm -rf "$TDIR"
 echo "=== Test 11: ext-claude STALLED (no result event) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-noresult)
-echo 'partial output' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'partial output'; ln -s attempt-1 "$rd/final"
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}' > "$rd/raw.jsonl"
 run ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
@@ -219,8 +242,8 @@ rm -rf "$TDIR"
 echo "=== Test 13: ext-claude REAL (two result events, num_turns 5 then 1) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/deepseek/v4-pro" 2026-07-28-11-00-00-1000-multiresult)
-echo '## Code Review
-- Critical: connection leak in pool.py:42' > "$rd/output.txt"
+mk_output "$rd/output.txt" '## Code Review
+- Critical: connection leak in pool.py:42'
 ln -s attempt-1 "$rd/final"
 {
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":5,"result":"Review launched in background via subagent code-reviewer."}'
@@ -238,7 +261,7 @@ rm -rf "$TDIR"
 echo "=== Test 14: ext-claude BROKEN (two result events, num_turns 1 and 1) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/ollama/deepseek" 2026-07-28-11-00-00-1000-multibroken)
-echo 'Looks fine to me, no issues.' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'Looks fine to me, no issues.'
 ln -s attempt-1 "$rd/final"
 {
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}'
@@ -255,7 +278,7 @@ rm -rf "$TDIR"
 echo "=== Test 15: ext-claude STALLED (result events without num_turns) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-noturns)
-echo 'partial output' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'partial output'; ln -s attempt-1 "$rd/final"
 echo '{"type":"result","subtype":"error_during_execution","is_error":true}' > "$rd/raw.jsonl"
 run ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
@@ -273,7 +296,7 @@ rm -rf "$TDIR"
 echo "=== Test 16: ext-claude REAL (valid result before a truncated line) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/alibaba/qwen" 2026-07-28-11-00-00-1000-truncated)
-echo 'Frontend reviewed. Critical findings: ...' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'Frontend reviewed. Critical findings: ...'
 ln -s attempt-1 "$rd/final"
 {
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":12}'
@@ -292,7 +315,7 @@ rm -rf "$TDIR"
 echo "=== Test 17: ext-claude STALLED (single is_error result, num_turns 95) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/ollama/kimi" 2026-07-28-11-00-00-1000-prompt-too-long)
-echo 'Prompt is too long' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'Prompt is too long'; ln -s attempt-1 "$rd/final"
 echo '{"type":"result","subtype":"success","is_error":true,"num_turns":95,"result":"Prompt is too long"}' > "$rd/raw.jsonl"
 run ext-claude ollama/kimi 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
@@ -305,7 +328,7 @@ rm -rf "$TDIR"
 echo "=== Test 18: ext-claude BROKEN (is_error 95 then success 1) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-err-then-weak)
-echo 'Looks fine to me.' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'Looks fine to me.'; ln -s attempt-1 "$rd/final"
 {
   echo '{"type":"result","subtype":"success","is_error":true,"num_turns":95,"result":"Prompt is too long"}'
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Looks fine to me."}'
@@ -338,7 +361,7 @@ rm -rf "$TDIR"
 echo "=== Test 20: ext-claude STALLED (non-integer num_turns only) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-bogus-turns)
-echo 'some text' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'some text'; ln -s attempt-1 "$rd/final"
 {
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":"bogus"}'
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1.5}'
@@ -373,7 +396,7 @@ BASE="$TDIR/runs/ext-claude/zai/glm"
 abandoned=$(mk_run "$BASE" 2026-07-28-11-00-00-1000-task)
 retry=$(mk_run "$BASE" 2026-07-28-11-05-00-2000-task-retry)
 printf '{"type":"result","num_turns":20,"is_error":false}\n' > "$retry/raw.jsonl"
-echo 'review' > "$retry/output.txt"; ln -s attempt-1 "$retry/final"
+mk_output "$retry/output.txt" 'review'; ln -s attempt-1 "$retry/final"
 touch -d '2026-07-28 11:06:00' "$retry"
 touch -d '2026-07-28 11:20:00' "$abandoned"     # the corpse is touched LAST
 run ext-claude zai/glm 1 "$TDIR"
@@ -399,7 +422,7 @@ rm -rf "$TDIR"
 echo "=== Test: codex stream cut off mid-flight → STALLED ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
-echo 'partial' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'partial'
 printf '{"type":"thread.started"}\n{"type":"command_execution"}\n' > "$rd/raw.jsonl"
 run codex - 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
@@ -410,7 +433,7 @@ rm -rf "$TDIR"
 echo "=== Test: codex with a terminal event and tool calls → REAL ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
 run codex - 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
@@ -427,7 +450,7 @@ rm -rf "$TDIR"
 echo "=== Test: stray runs/codex/tmp beside a finished run → still REAL ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
 mkdir -p "$TDIR/runs/codex/tmp"
 run codex - 1 "$TDIR"
@@ -444,7 +467,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude with a truncated model argument → FLIP ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-task)
-echo 'review' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'review'; ln -s attempt-1 "$rd/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":9}' > "$rd/raw.jsonl"
 run ext-claude zai 1 "$TDIR"
 assert_eq "verdict FLIP" "FLIP" "$VERDICT"
@@ -472,7 +495,7 @@ rm -rf "$TDIR"
 echo "=== Test: gemini result status:success → REAL ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/gemini" 2026-07-28-11-00-00-1000-task)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 printf '{"type":"tool_use","name":"read_file"}\n{"type":"result","status":"success","stats":{"duration_ms":8100}}\n' > "$rd/raw.jsonl"
 run gemini - 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
@@ -486,7 +509,7 @@ rm -rf "$TDIR"
 echo "=== Test: gemini result without a status field → REAL ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/gemini" 2026-07-28-11-00-00-1000-task)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 printf '{"type":"tool_use"}\n{"type":"result","stats":{"total_tokens":512}}\n' > "$rd/raw.jsonl"
 run gemini - 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
@@ -501,7 +524,7 @@ rm -rf "$TDIR"
 echo "=== Test: gemini output.txt but no stream file → STALLED ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/gemini" 2026-07-28-11-00-00-1000-task)
-echo 'plausible findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'plausible findings'
 run gemini - 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
 assert_eq "exit 2" "2" "$RC"
@@ -513,7 +536,7 @@ rm -rf "$TDIR"
 echo "=== Test: run identity — the foreign newest run is not inspected ==="
 TDIR=$(mktemp -d)
 mine=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-mine)
-echo 'real review' > "$mine/output.txt"; ln -s attempt-1 "$mine/final"
+mk_output "$mine/output.txt" 'real review'; ln -s attempt-1 "$mine/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$mine/raw.jsonl"
 sid_stamp "$mine" sid-A
 theirs=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-12-00-00-1000-theirs)
@@ -527,7 +550,7 @@ rm -rf "$TDIR"
 echo "=== Test: run identity — an unstamped run is still inspected ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-legacy)
-echo 'real review' > "$rd/output.txt"; ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'real review'; ln -s attempt-1 "$rd/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$rd/raw.jsonl"
 run_as sid-A ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
@@ -537,7 +560,7 @@ rm -rf "$TDIR"
 echo "=== Test: run identity — no reader identity means no filtering ==="
 TDIR=$(mktemp -d)
 theirs=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-theirs)
-echo 'real review' > "$theirs/output.txt"; ln -s attempt-1 "$theirs/final"
+mk_output "$theirs/output.txt" 'real review'; ln -s attempt-1 "$theirs/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$theirs/raw.jsonl"
 sid_stamp "$theirs" sid-B
 run_as - ext-claude zai/glm 1 "$TDIR"
@@ -548,7 +571,7 @@ rm -rf "$TDIR"
 echo "=== Test: run identity — only foreign runs present → FLIP ==="
 TDIR=$(mktemp -d)
 theirs=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-07-28-11-00-00-1000-theirs)
-echo 'real review' > "$theirs/output.txt"; ln -s attempt-1 "$theirs/final"
+mk_output "$theirs/output.txt" 'real review'; ln -s attempt-1 "$theirs/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$theirs/raw.jsonl"
 sid_stamp "$theirs" sid-B
 run_as sid-A ext-claude zai/glm 1 "$TDIR"
@@ -571,7 +594,7 @@ TDIR=$(mktemp -d)
 NOW_T=$(date +%s)
 OLD_NAME="$(date -d "@$(( NOW_T - 900 ))" +%Y-%m-%d-%H-%M-%S)-1000-task"
 rd=$(mk_run "$TDIR/runs/codex" "$OLD_NAME")
-echo 'findings' > "$rd/output.txt"                       # written NOW → mtime inside the window
+mk_output "$rd/output.txt" 'findings'                       # written NOW → mtime inside the window
 printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
 run codex - "$(( NOW_T - 300 ))" "$TDIR"
 assert_eq "verdict FLIP" "FLIP" "$VERDICT"
@@ -584,7 +607,7 @@ TDIR=$(mktemp -d)
 NOW_T=$(date +%s)
 IN_NAME="$(date -d "@$(( NOW_T - 300 ))" +%Y-%m-%d-%H-%M-%S)-1000-task"
 rd=$(mk_run "$TDIR/runs/codex" "$IN_NAME")
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
 run codex - "$(( NOW_T - 900 ))" "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
@@ -610,7 +633,7 @@ TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-07-28-11-00-00-1000-task)
 ln -sfn attempt-1 "$rd/final"
 : > "$rd/output.txt"
-echo 'findings' > "$rd/attempt-1/output.txt"
+mk_output "$rd/attempt-1/output.txt" 'findings'
 printf '{"type":"command_execution"}\n{"type":"turn.completed"}\n' > "$rd/attempt-1/raw.jsonl"
 run codex - 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
@@ -639,8 +662,8 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude DEGRADED (one denial in an otherwise REAL run) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/deepseek/v4-pro" 2026-08-04-11-00-00-1000-degraded)
-echo '### Critical
-- The API signature could not be verified against the real source.' > "$rd/output.txt"
+mk_output "$rd/output.txt" '### Critical
+- The API signature could not be verified against the real source.'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":24,"permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01","tool_input":{"file_path":"/opt/git/common-backend/pom.xml"}}]}
@@ -655,7 +678,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude DEGRADED counts every denial and names each tool ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/ollama/kimi" 2026-08-04-11-00-00-1000-count)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":40,"permission_denials":[{"tool_name":"Read","tool_input":{"file_path":"/opt/a.java"}},{"tool_name":"Read","tool_input":{"file_path":"/opt/b.java"}},{"tool_name":"Bash","tool_input":{"command":"grep -rn Foo /opt/svc"}}]}
@@ -671,7 +694,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude REAL — permission_denials present and empty ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-empty-denials)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":18,"permission_denials":[]}
@@ -686,7 +709,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude REAL — result event with no permission_denials field ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/alibaba/qwen" 2026-08-04-11-00-00-1000-nofield)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":22}
@@ -702,7 +725,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude REAL — is_error tool_result that is NOT a denial ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-ordinary-err)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Error: File does not exist. Did you mean src/main/java/App.java?","is_error":true}]}}
@@ -720,7 +743,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude REAL — failed tool call whose OUTPUT quotes refusal wordings ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-quoted)
-echo 'a complete review of claude-mesh' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'a complete review of claude-mesh'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"verify-delegation.sh:313: grep -c 'requested permissions' ...\nSKILL.md:207: allowed working directories\nClaude requested permissions to read from /x, but you haven't granted it yet.","is_error":true}]}}
@@ -736,7 +759,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude REAL — denial wording in assistant prose ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/alibaba/qwen" 2026-08-04-11-00-00-1000-prose)
-echo 'the handler requested permissions it never checks' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'the handler requested permissions it never checks'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The handler requested permissions to read from the vault but you haven't granted it yet — that path is unreachable in prod."}]}}
@@ -754,7 +777,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude REAL — denials only in the FAILED segment ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/ollama/minimax" 2026-08-04-11-00-00-1000-segments)
-echo 'findings from the resumed segment' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings from the resumed segment'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":true,"num_turns":4,"result":"Prompt is too long","permission_denials":[{"tool_name":"Read","tool_input":{"file_path":"/opt/x.java"}},{"tool_name":"Read","tool_input":{"file_path":"/opt/y.java"}}]}
@@ -770,7 +793,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude DEGRADED — denials summed across successful segments ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/ollama/minimax" 2026-08-04-11-00-00-1000-segsum)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":1,"permission_denials":[{"tool_name":"Read","tool_input":{"file_path":"/opt/a.java"}}]}
@@ -786,7 +809,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude DEGRADED — one segment without the field, one with denials ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-mixed-shape)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":3}
@@ -802,7 +825,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude DEGRADED — truncated trailing line does not break the scan ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-04-11-00-00-1000-torn)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":12,"permission_denials":[{"tool_name":"Read","tool_input":{"file_path":"/opt/a.java"}}]}
@@ -819,7 +842,7 @@ rm -rf "$TDIR"
 echo "=== Test: ext-claude BROKEN wins over DEGRADED (num_turns<=1 + denials) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/ext-claude/ollama/minimax" 2026-08-04-11-00-00-1000-broken-deny)
-echo 'narration' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'narration'
 ln -s attempt-1 "$rd/final"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"result","subtype":"success","is_error":false,"num_turns":1,"permission_denials":[{"tool_name":"Read","tool_input":{"file_path":"/opt/x.java"}}]}
@@ -848,7 +871,7 @@ rm -rf "$TDIR"
 echo "=== Test: codex REAL — denial-shaped payload in the stream is not scanned ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/codex" 2026-08-04-11-00-00-1000-codex-textual)
-echo 'findings' > "$rd/output.txt"
+mk_output "$rd/output.txt" 'findings'
 ln -s attempt-1 "$rd/final"; echo 0 > "$rd/.watchdog_rc"
 cat > "$rd/raw.jsonl" <<'EOF'
 {"type":"command_execution","text":"permission_denials: the reviewer discussed this field","permission_denials":[{"tool_name":"Read"}]}
@@ -857,6 +880,371 @@ EOF
 run codex - 1 "$TDIR"
 assert_eq "verdict REAL" "REAL" "$VERDICT"
 assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# --- KILLED: terminated from outside, not by anything inside the run -------------------
+#
+# watchdog.sh traps the two signals it can be killed by and records them as its own exit code
+# (`trap 'cleanup 143' TERM`, `trap 'cleanup 130' INT`, watchdog.sh:287-288). It writes
+# `watchdog.exit` ONLY when it decides to stop by itself — retries exhausted or global timeout.
+# So a cleanup of 143/130 with NO watchdog.exit beside it says: nothing inside the run decided
+# anything, the signal came from outside.
+#
+# Measured 2026-08-05 (CC 2.1.222): five ext-claude runs launched as FOREGROUND Bash calls with
+# `timeout: 600000` died at 600-605s while writing steadily, each tool result reading
+# "Exit code 143 / Command timed out after 10m 0s"; every run launched with
+# `run_in_background: true` outlived the cap (812s, 1397s, 2001s, 2028s). A re-dispatch of a
+# killed run repeats whatever killed it, so this must not read as STALLED, which mesh-review
+# Step 6.0.4 retries.
+echo "=== Test: ext-claude KILLED — cleanup 143, no watchdog.exit ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-killed)
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}' > "$rd/attempt-1/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:53:45+0300","event":"alive","attempt":1,"details":{"event_count":10422,"age_sec":0}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: ext-claude KILLED — SIGINT (130) counts too ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-int)
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":130}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# The discriminator is watchdog.exit, not the code: when the watchdog bailed on its own it
+# writes that file, and the run is a STALLED the orchestrator may usefully retry.
+echo "=== Test: ext-claude STALLED — watchdog.exit present means it decided, not was killed ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-bailed)
+echo '{"reason":"retries_exhausted","attempts":3,"elapsed_sec":900}' > "$rd/watchdog.exit"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# A run with no watchdog.log at all is the pre-supervised shape: unfinalized says nothing about
+# WHO stopped it, so it stays STALLED rather than being guessed into KILLED.
+echo "=== Test: ext-claude STALLED — unfinalized with no watchdog.log stays STALLED ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-nolog)
+echo '{"type":"assistant"}' > "$rd/attempt-1/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# The signal is only a verdict when it cost the review. A run that finalized with a real
+# review before something SIGTERMed its tail is REAL — the findings are on disk.
+echo "=== Test: ext-claude REAL — a 143 after a finalized, agentic run is not KILLED ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/ollama/kimi" 2026-08-05-09-44-20-1000-late143)
+mk_output "$rd/output.txt" '### Findings
+- storage/RecoveryOrderMongoRepositoryImpl.java: the CAS retry drops the audit stamp.'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":46}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:20+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:50:11+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude ollama/kimi 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# codex/gemini reach the same conclusion down a different path: their branch reads the watchdog
+# cleanup code directly, and used to call every non-zero one STALLED.
+echo "=== Test: codex KILLED — finalized output but cleanup 143, no watchdog.exit ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-killed)
+mk_output "$rd/output.txt" 'partial findings'; ln -s attempt-1 "$rd/final"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# Any other non-zero watchdog code is the engine failing, not a signal — still STALLED. The
+# fixture carries a healthy STREAM on purpose: without one the run is STALLED anyway ("no stream
+# file"), so the assertion would hold with the cleanup-code branch deleted and pin nothing. Assert
+# the REASON for the same reason — the verdict alone cannot say which branch produced it.
+echo "=== Test: codex STALLED — cleanup 2 is the watchdog bailing, not an outside kill ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-bail)
+mk_output "$rd/output.txt" 'partial'; ln -s attempt-1 "$rd/final"
+printf '{"type":"command_execution","call_id":"c1"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":2}}
+EOF
+run_full codex - 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+assert_match "reason names the cleanup code" "watchdog cleanup exit code 2" "$REASON"
+rm -rf "$TDIR"
+
+# --- KILLED is what a signal COST, not the signal itself ---------------------------------
+#
+# The verdict answers "was the review lost?", and only then "who stopped the run?". A signalled
+# run that had already delivered a usable review is REAL — the findings are on disk and dropping
+# them buys nothing. This is what CHANGELOG promises for every engine; it used to hold for
+# ext-claude only, because the codex/gemini branch emitted KILLED from the watchdog exit code
+# before it ever looked at the content.
+echo "=== Test: codex REAL — signalled AFTER delivering a complete review ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-late143)
+mk_output "$rd/output.txt" '### Findings — Critical: the CAS retry drops the audit stamp.'
+ln -s attempt-1 "$rd/final"
+printf '{"type":"command_execution","call_id":"c1"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# ...and the mirror image: a signalled run whose review is NOT usable is KILLED down every path
+# that would otherwise have said STALLED. The ext-claude branch never consulted the signal at
+# all, so a torn stream on a killed run was reported as "killed mid-flight" and RE-DISPATCHED
+# into an identical death — the exact loop this verdict exists to break.
+echo "=== Test: ext-claude KILLED — finalized dir, torn stream, cleanup 143 ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-58-40-1000-torn)
+ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'partial review text'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:58:40+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:08:42+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# num_turns<=1 on a SIGNALLED ext-claude run is not a broken engine. A run that dispatches a
+# background subagent answers "started" (num_turns 1) and delivers the review in a later segment;
+# a kill before that segment leaves exactly this shape. BROKEN would be terminal AND would tell
+# the user to swap a model that did nothing wrong.
+echo "=== Test: ext-claude KILLED — num_turns=1 on a signalled run is not BROKEN ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-58-40-1000-seg1)
+ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'started'
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:58:40+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:08:42+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# An unsignalled num_turns=1 is still BROKEN — the signal is what moves it, nothing else.
+echo "=== Test: ext-claude BROKEN — num_turns=1 with no signal stays BROKEN ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-58-40-1000-nt1)
+ln -s attempt-1 "$rd/final"
+mk_output "$rd/output.txt" 'thinking only'
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:58:40+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:08:42+0300","event":"cleanup","attempt":1,"details":{"exit_code":0}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+# codex/gemini keep BROKEN even when signalled: a terminal turn event with zero tool calls says
+# the CLI finished its turn and did nothing, which no signal can explain away. There is no
+# subagent-split shape on these engines to confuse it with.
+echo "=== Test: codex BROKEN — narration plus a late 143 is still BROKEN ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-narration)
+mk_output "$rd/output.txt" 'I would review this by first...'; ln -s attempt-1 "$rd/final"
+printf '{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+# A dead `.watchdog_rc` check used to run BEFORE the signal was consulted, so a fixture (or any
+# future writer) putting 143 there masked KILLED behind "engine exit code != 0".
+echo "=== Test: codex KILLED — .watchdog_rc 143 does not mask the signal ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-rcfile)
+mk_output "$rd/output.txt" 'partial'; ln -s attempt-1 "$rd/final"
+echo '143' > "$rd/.watchdog_rc"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:46:10+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T10:19:58+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run codex - 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# The orchestrators are told to report the lifetime ("terminated from outside after Ns") and that
+# a cluster of deaths at the same round number is the foreground-cap signature. The number has to
+# come from the guard, or the model invents it: 09:44:45 -> 09:54:46 is 601s.
+echo "=== Test: KILLED reason carries the run's lifetime ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-life)
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:53:45+0300","event":"alive","attempt":1,"details":{"event_count":10422,"age_sec":0}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run_full ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_match "reason names the lifetime" "after 601s" "$REASON"
+assert_match "reason names the cap for a SIGTERM" "BASH_MAX_TIMEOUT_MS" "$REASON"
+rm -rf "$TDIR"
+
+# A SIGINT is a user pressing ESC or an orchestrator stopping the wrapper. Naming the Bash cap
+# there states a cause that cannot apply — the cap raises TERM, never INT.
+echo "=== Test: KILLED reason does not blame the Bash cap for a SIGINT ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-intreason)
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":130}}
+EOF
+run_full ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_no_match "no cap claim on a SIGINT" "BASH_MAX_TIMEOUT_MS" "$REASON"
+assert_match "reason names an interrupt" "interrupt" "$REASON"
+rm -rf "$TDIR"
+
+# "I read the evidence and it says nothing happened" and "I could not read the evidence" are
+# different states. Swallowing the read error turns the second into the first, and STALLED sends
+# the run back into whatever killed it.
+echo "=== Test: STALLED — an unreadable watchdog.log is reported, not swallowed ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-unreadable)
+echo '{"type":"assistant"}' > "$rd/attempt-1/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+chmod 000 "$rd/watchdog.log"
+if [ -r "$rd/watchdog.log" ]; then
+    echo "  SKIP: running as root — chmod 000 does not deny reads"
+else
+    run_full ext-claude zai/glm 1 "$TDIR"
+    assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+    assert_match "reason names the unreadable log" "unreadable" "$REASON"
+fi
+chmod 644 "$rd/watchdog.log"
+rm -rf "$TDIR"
+
+# --- a delivered notice is not a delivered review ----------------------------------------
+#
+# Until this check existed, REAL asked only that output.txt be non-blank, so a model that
+# delegated the work and reported the delegation passed as a cross-validation. Measured
+# 2026-08-05 on the archive that produced these fixtures (336 ext-claude runs with a non-empty
+# output, 78 codex): every output under 400 non-space BYTES was a stub, a torn fragment, leaked
+# tool grammar or an "I need approval" note; the shortest genuine ext-claude review measured 460
+# and the shortest genuine codex one 1746. Bytes rather than characters because the script runs
+# under LC_ALL=C — which also means the floor is stricter for Cyrillic (~2 bytes per character)
+# than for ASCII, and the archive's Russian-language reviews are what calibrated it.
+# The first fixture is a verbatim copy of what deepseek/v4-pro delivered twice that day, while
+# `/mesh-review` counted it as one of its cross-validating reviewers.
+echo "=== Test: ext-claude STALLED — an agentic run that delivered only a start notice ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/deepseek/v4-pro" 2026-08-05-09-55-27-1000-stub)
+ln -s attempt-1 "$rd/final"
+printf '%s\n' "Ревью запущено — агент анализирует 82 изменённых файла (6648 строк добавлено, 637 удалено) из двух крупных workstream'ов: слой точечной записи в MongoDB и генерация XML документа." \
+    "" "Ожидаю результаты, уведомлю вас по завершении." > "$rd/output.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":7}' > "$rd/raw.jsonl"
+run_full ext-claude deepseek/v4-pro 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+assert_match "reason names the delivered length" "non-space bytes" "$REASON"
+rm -rf "$TDIR"
+
+# A short review is still a review. The floor is deliberately below the shortest genuine one in
+# the archive, so "no findings, here is why" survives.
+echo "=== Test: ext-claude REAL — a brief but substantive review passes ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-brief)
+ln -s attempt-1 "$rd/final"
+{ printf '### Critical\n'
+  for i in 1 2 3 4 5 6 7 8; do
+      printf -- '- storage/RecoveryOrderMongoRepositoryImpl.java:%d — the CAS retry drops the audit stamp on conflict.\n' "$i"
+  done; } > "$rd/output.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":7}' > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# The floor counts CHARACTERS, not bytes, and ignores whitespace — otherwise a page of newlines
+# or a UTF-8 text would clear it without saying anything.
+echo "=== Test: ext-claude STALLED — padding with whitespace does not clear the floor ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-padded)
+ln -s attempt-1 "$rd/final"
+{ printf 'Review done.'; for i in $(seq 1 300); do printf '   \n'; done; } > "$rd/output.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":31}' > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# codex/gemini reach the floor down their own path — theirs only ever checked `-s`.
+echo "=== Test: codex STALLED — terminal event and tool calls, but only a notice delivered ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/codex" 2026-08-05-09-45-39-1000-notice)
+ln -s attempt-1 "$rd/final"
+printf 'Review kicked off in the background; I will report once it finishes.\n' > "$rd/output.txt"
+printf '{"type":"command_execution","call_id":"c1"}\n{"type":"turn.completed"}\n' > "$rd/raw.jsonl"
+run_full codex - 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+assert_match "reason names the delivered length" "non-space bytes" "$REASON"
+rm -rf "$TDIR"
+
+# Precedence: a signalled run whose output is thin is KILLED, not STALLED. The floor routes
+# through `fail` like every other non-REAL outcome, so re-dispatch stays off the table.
+echo "=== Test: ext-claude KILLED — a thin output on a signalled run is not retryable ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-05-09-44-24-1000-thinkilled)
+ln -s attempt-1 "$rd/final"
+printf 'Starting the review now.\n' > "$rd/output.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":9}' > "$rd/raw.jsonl"
+cat > "$rd/watchdog.log" <<'EOF'
+{"ts":"2026-08-05T09:44:45+0300","event":"attempt_start","attempt":1,"details":{"dir":"attempt-1"}}
+{"ts":"2026-08-05T09:54:46+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}
+EOF
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
 rm -rf "$TDIR"
 
 echo ""

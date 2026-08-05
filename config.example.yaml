@@ -239,8 +239,11 @@ runtime:
                                                #   `/do-plan <N>` overrides this for a single invocation.
 
   # /mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/ext-claude)
-  # flips to self-review (no run dir) or is killed mid-flight, re-dispatch it up to this many
-  # rounds. BROKEN engines (thinking-only/DSML output) are never retried — swap the model instead.
+  # flips to self-review (no run dir) or stalls mid-flight, re-dispatch it up to this many
+  # rounds. Three verdicts are never retried, because a second identical run cannot differ:
+  # BROKEN (the engine finished having done no work — swap the model instead), DEGRADED (the
+  # CLI refused the reviewer's tool calls; its partial findings are kept) and KILLED (something
+  # outside the run signalled it — the same launch is killed the same way).
   max_redispatch: 1                            # [optional] positive integer. default 1
 
   # Model for subagents dispatched by /do-plan, /mesh-review, /mesh-design-review.

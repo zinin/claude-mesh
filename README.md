@@ -56,6 +56,58 @@ cp ~/.claude/plugins/cache/*/claude-mesh/*/config.example.yaml \
 
 Any errors → fix as instructed in the message.
 
+## Claude Code settings (not plugin config)
+
+Two Claude Code environment variables bound how long a **single Bash tool call** may run. They
+belong in `~/.claude/settings.json` (or a project `.claude/settings.json` / `.local.json`) —
+**not** in the plugin's `config.yaml` — and they cap the harness, not the shell: nothing outside
+Claude Code sees them.
+
+| Variable | What it does | Claude Code default |
+|---|---|---|
+| `BASH_DEFAULT_TIMEOUT_MS` | timeout applied when the model passes none | `120000` (2 min) |
+| `BASH_MAX_TIMEOUT_MS` | ceiling on what the model may request; the effective ceiling is the **larger** of the two | `600000` (10 min) |
+
+A foreground Bash call that reaches its timeout is SIGTERMed, and the signal takes the whole
+process group with it — every child dies, mid-write, with no chance to finalize.
+
+Recommended:
+
+```json
+{
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "BASH_MAX_TIMEOUT_MS": "3600000"
+  }
+}
+```
+
+**`BASH_MAX_TIMEOUT_MS` — set it to at least `runtime.timeouts.global_sec × 1000`** (default
+`3600` → `3600000`). The rule is an invariant, not a preference: below it the plugin's own
+budgets are decorative. `global_sec` 3600 and `single_run_sec` 1800 both sit above the stock
+10-minute ceiling, so on the stock value a synchronous wait on a run is cut long before the
+watchdog's restarts or its wall clock can act. Measured 2026-08-05 on CC 2.1.222: five external
+reviewers launched as foreground calls died at 600–605 s while their streams were still growing,
+each tool result reading `Exit code 143 / Command timed out after 10m 0s`. Values are JSON
+**strings**; `settings.json` changes apply on save, a shell `export` from the next `claude`.
+
+Since the release that made the exec skills launch their engine as a background task, this
+ceiling is no longer load-bearing for reviews — a background task is not subject to it at all.
+Keep it raised anyway as a safety net for a wrapper that ignores the instruction, and read
+`KILLED` in a delegation table as the sign that one did (see Troubleshooting). The environment
+probe checks the rule for you: a ceiling below `global_sec × 1000` shows up as a `bash-timeout
+LOW` row carrying the exact value to set.
+
+**`BASH_DEFAULT_TIMEOUT_MS` — 300000 (5 min) is a sane middle.** This one governs ordinary
+commands that pass no timeout of their own: builds, test runs, `git log -S` sweeps over full
+history, `find` over large trees. The 2-minute stock value is tight enough that this plugin's
+own test suite does not fit: `skills/shared/tests/` runs 182 s end to end (2026-08-05, 580
+assertions — `test-preflight-env.sh` 97 s, `test-config-loader.sh` 59 s, `test-watch-runs.sh`
+21 s), so a foreground run of it dies partway through the longest suite. 5 minutes clears that
+with room to spare. Do not push it near the max:
+it applies to *every* untimed command, so a genuinely wedged one holds the turn for the whole
+value before the harness intervenes — which is exactly the runaway the default exists to catch.
+
 ## Dependencies
 
 The plugin requires:
@@ -122,6 +174,7 @@ to a safe location before uninstalling.
 | `Daemon up but /api/tags returns error` | `ollama signin` |
 | `HTTP 404 / 501 from LiteLLM provider` | LiteLLM is in OpenAI-compat mode — enable Anthropic mode in your LiteLLM config, or pass `SKIP_TOKEN_PRECHECK=1` to `ext-claude-exec` |
 | Want to back up `config.yaml` before `/plugin uninstall` | Run `~/.claude/plugins/cache/*/claude-mesh/*/scripts/backup-config.sh` — it writes `~/claude-mesh-config-backup-<timestamp>.yaml` outside the plugin data dir |
+| External review dies at ~600 s; `watchdog.log` ends with `"event":"cleanup" … "exit_code":143` and there is no `watchdog.exit` | The wrapper launched its engine as a **foreground** Bash call and the harness SIGTERMed it at `BASH_MAX_TIMEOUT_MS`. `verify-delegation.sh` reports this as `KILLED` (exit 6) and `/mesh-review` does **not** re-dispatch it — an identical launch dies identically. The exec skills require a background launch; raise the ceiling as a safety net (see "Claude Code settings"). A cluster of deaths at the same round number is the signature |
 | `runs/` directory grows large over time | No automatic cleanup (intentional — personal-use plugin, hot-path I/O minimised). Add a cron one-liner: `0 3 * * 0 find ~/.claude/plugins/data/claude-mesh*/runs -mindepth 4 -maxdepth 4 -type d -mtime +30 -exec rm -rf {} +` (Sunday 03:00 weekly, deletes per-run dirs older than 30 days). Adjust `+30` to your retention preference. |
 
 ## License

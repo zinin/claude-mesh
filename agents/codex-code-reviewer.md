@@ -61,7 +61,9 @@ Phase 1 supervised mode is shell-only; there is no Phase 2 polling loop yet.
 - If `codex` stalls with no stream output for 10 minutes, the watchdog auto-restarts it up to twice.
 - A global 60-minute wall-clock deadline caps the total duration.
 - Artifacts land in `$WORK_DIR/final/` and are copied to the `$WORK_DIR/` root for legacy consumers.
-- Do NOT poll or supervise the process yourself. Wait for the Bash call to return, then read the results.
+- **Launch the skill's supervised block as a BACKGROUND Bash task (`run_in_background: true`), and never wait for that call in the foreground.** The harness caps a foreground call at `BASH_MAX_TIMEOUT_MS` — ten minutes out of the box — and SIGTERMs it at the cap, killing the whole process group: the watchdog records `exit_code: 143` and the run dies mid-flight. Both guarantees above sit ABOVE that cap, so on a foreground launch neither is reachable. Measured 2026-08-05 (CC 2.1.222): 5 of 5 foreground runs died at 600-605s while still writing steadily; every run launched in the background outlived the cap (812s, 1397s, 2001s, 2028s).
+- After launching, name the run dir in an interim status, end your turn and go idle. Read the results only once the orchestrator pings you — extraction, report generation and bail diagnostics all run INSIDE the launched block, so nothing is lost by not watching it. Do NOT poll or supervise the process yourself; a foreground poll walks back into the same cap.
+- If the run dies, report the death — do NOT relaunch it yourself. Wrapper-level retry belongs to the orchestrator (`runtime.max_redispatch`). A self-relaunch creates a second run dir nobody is tracking, and `watch-runs.sh` then follows the newest dir, so attribution of "whose run is this" breaks and the work is duplicated.
 - If the watchdog bailed (`exit 2`) or restarted (`attempt-2/` exists), the skill appends a `## Review Diagnostics` block to the results. Do not invent diagnostics; reproduce what the skill surfaces.
 - Do NOT implement supervision logic yourself; the skill handles it entirely.
 

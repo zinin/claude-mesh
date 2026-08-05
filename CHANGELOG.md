@@ -2,6 +2,128 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Fixed
+- Wrapper reviewers launched their external engine as a **foreground** Bash call, and the
+  harness caps one at `BASH_MAX_TIMEOUT_MS` — ten minutes out of the box — then SIGTERMs it at
+  the cap, taking the whole process group with it. `watchdog.sh`'s `trap 'cleanup 143' TERM`
+  recorded `exit_code: 143` and the run died mid-flight while its stream was still growing. On
+  2026-08-05 (CC 2.1.222) a `/mesh-review` lost five of eight reviewers that way — all five
+  dying at 600-605s, each tool result reading `Exit code 143 / Command timed out after 10m 0s`
+  — while every run that happened to be launched with `run_in_background: true` outlived the
+  cap: 812s, 1397s, 2001s, 2028s. Nothing in the plugin had ever specified the launch mode of
+  that Bash call — the string `run_in_background` appeared exactly once anywhere in the plugin,
+  on `mesh-review.md`'s **Task** dispatch, and never on a Bash launch — so each wrapper model
+  chose for itself, which is why the same model both died and survived in one session. Worse, the three agent files said
+  the opposite of the orchestrator: "Wait for the Bash call to return" (there since the first
+  commit, `46302fd`) against `mesh-review.md`'s "launches its external engine as a background
+  Bash task", on which the whole `watch-runs.sh` + ping machinery is built. The budgets those
+  agent files advertise — two watchdog restarts, a 60-minute wall clock — all sit above the cap
+  and were unreachable by construction on the foreground path. `ext-claude-exec`, `codex-exec`
+  and `gemini-exec` now require the supervised block to run as a background task, and the three
+  reviewer agents were rewritten to match: launch, name the run dir, go idle, read the results
+  when pinged. No work moved — extraction, report generation and bail diagnostics already ran
+  inside that one block.
+- Wrapper reviewers no longer relaunch a dead run on their own initiative. That behaviour was
+  never specified; the models improvised it (`setsid nohup`, a hand-written driver script) once
+  their runs started dying, and it left a second run dir the orchestrator was not tracking —
+  `watch-runs.sh` follows the newest dir, so attribution moved to a run nobody had asked for
+  and the work was duplicated. Retry belongs to `runtime.max_redispatch`.
+
+### Added
+- `shared/verify-delegation.sh` gained a sixth verdict, `KILLED` (exit 6), for a run stopped by
+  a signal from outside it: the watchdog's last `cleanup` carries 143 (SIGTERM) or 130 (SIGINT)
+  and no `watchdog.exit` sits beside it — the file the watchdog writes only when it stops on its
+  own judgement — so nothing inside the run decided anything. Such a run used to score
+  `STALLED`, which `/mesh-review` Step 6.0.4 re-dispatches as "retry helps"; on 2026-08-05 three
+  of those re-dispatches died exactly as the runs they replaced. `KILLED` is excluded from
+  `PROBLEMS` and reported for what it was — the review was alive when it was killed, so the
+  fault is in the launch, not in the model. The check is engine-agnostic and deliberately does
+  **not** key on a lifetime near the cap: the same session produced 143s from three different
+  senders (the harness cap, an orchestrator `TaskStop` on the wrapper, and a wrapper killing its
+  own run), and a corridor heuristic would have confused them. The verdict weighs what the signal
+  **cost**, not that one arrived: every non-`REAL` outcome routes through one `fail` helper that
+  promotes it to `KILLED` when the run was signalled, while a run that had already delivered a
+  usable review reaches `REAL` and keeps its findings. That holds on every engine — the first cut
+  emitted `KILLED` from the watchdog exit code before the codex/gemini branch had looked at the
+  content, so a finished codex review with a signalled tail was excluded rather than kept, and
+  the ext-claude branch never consulted the signal at all, so a killed run there was still
+  re-dispatched (`STALLED`) or dropped as a broken engine (`BROKEN`) — the latter telling the
+  user to swap a model that had done nothing wrong. `num_turns<=1` is the one `BROKEN` a signal
+  moves: a run that dispatches a background subagent answers "started" with `num_turns` 1 and
+  delivers the review in a later segment, and a kill between the two leaves exactly that shape.
+  The reason line now also carries the run's lifetime (`after 601s`), computed from
+  `watchdog.log` — both orchestrators are told to report it and to read a cluster of deaths at
+  the same round number as the foreground-cap signature, and neither can compute it for itself.
+  A `SIGINT` no longer blames the Bash cap, which raises `SIGTERM` and cannot produce a 130.
+
+### Fixed (follow-ups from review of this branch)
+- `/mesh-review` Step 6.0.4b said "Wait for completion" after re-dispatching, which the same
+  branch turned into a no-op: a wrapper now launches its engine in the background and ends its
+  turn, so its Task returns within seconds and the guard in step c inspected a run dir that had
+  barely been created — scoring every re-dispatch `STALLED` or `FLIP` and spending the whole
+  `max_redispatch` budget without a single run finishing. It now runs the same disk-watch + ping
+  loop as Step 5a against the re-dispatched roster.
+- `watchdog.sh`'s `cleanup` tore down the process group *before* writing the `cleanup` heartbeat
+  that the `KILLED` verdict is read from — up to 15 seconds later (10 grace seconds on TERM plus
+  5 on KILL). A sender that follows its SIGTERM with a SIGKILL inside that window left a log
+  ending at the last `alive` line, indistinguishable from a genuine stall. The record is now
+  written first.
+- An existing-but-unreadable `watchdog.log` failed open into `STALLED`: the read error was
+  swallowed, so "the evidence says nothing happened" and "the evidence could not be read" gave
+  the same answer, and the run was re-dispatched into whatever had killed it. The verdict now
+  says which of the two it is.
+- A dead `.watchdog_rc` check ran before the signal was weighed, so a 143 in that file masked
+  `KILLED` behind "engine exit code != 0". Nothing under `skills/` writes it, but the test
+  fixtures do, and any future writer would have inherited the mask.
+- `config.example.yaml`'s `max_redispatch` comment still said a run killed mid-flight is
+  re-dispatched, and listed `BROKEN` as the only verdict never retried. It now names all three
+  (`BROKEN`, `DEGRADED`, `KILLED`).
+- Both orchestrators now fall back to **reading the run's `output.txt` themselves** when a
+  wrapper stays silent through two pings, instead of writing the reviewer off. A report is how
+  findings travel, and travel is the part that breaks: the harness sends an idle subagent no
+  notification when its background task exits, and a composed report can still be lost on top of
+  that. On 2026-08-05 an `alibaba/qwen` run finished with `num_turns=22` and an 11428-byte review
+  on disk while the same session recorded that model as having produced nothing across five runs
+  and dropped it from the cross-validation — the review was never missing, only undelivered. The
+  rule both files now state: a reviewer is never "silent" or "empty-handed" while
+  `verify-delegation.sh` scores its run `REAL`, because that verdict is a statement about the
+  file, made from the disk. `output.txt` specifically, never `report.md` — the latter is the
+  whole run rendered by `generate-md.sh` and measures 137–250 KB in the archive, against 11 KB
+  for a large review.
+- `REAL` now requires a review, not merely a non-empty file. The only content test it ever
+  applied was "output.txt is not blank", and a model that delegates the work and reports the
+  delegation clears that: on 2026-08-05 `deepseek/v4-pro` delivered "Ревью запущено … Ожидаю
+  результаты, уведомлю вас по завершении" twice — with `num_turns` 7 and 5 behind 24 and 17 tool
+  calls, agentic by every signal the gate had — and `/mesh-review` counted both as cross-
+  validating reviewers. A stub that passes is worse than a run that fails: it inflates "N models
+  agreed" with a model that said nothing. The floor is a length because nothing more specific
+  survives the archive — the stubs share no distinguishing tool and no distinguishing turn count
+  (a genuine 460-byte review ran 15 turns; a stub ran 7), and keying on their wording is the
+  mistake the `permission_denials` check already documents. Across every archived run with a
+  non-empty output (336 ext-claude, 78 codex) everything under **400 non-space bytes** was a
+  stub, a torn fragment, leaked tool grammar or an "approve this command" note, while the
+  shortest genuine review measured 460 (ext-claude) and 1746 (codex). Replaying all 624 archived
+  runs through both versions of the gate, the floor moves exactly the two stubs out of `REAL`
+  — every one of the other 198 `REAL` verdicts is unchanged — plus five `DEGRADED` runs whose
+  "review" was an approval request, DSML grammar, or a summary of findings that are not in the
+  file. `STALLED` and not `BROKEN`: a stub is not proof the engine cannot review (the same
+  session's 11428-byte review came from a comparable model on a later attempt), so one
+  re-dispatch is a fair use of the budget — and on a signalled run the verdict stays `KILLED`.
+  For codex and gemini the floor is checked **after** the tool-call test, so "finished a turn and
+  ran nothing" keeps saying `BROKEN`.
+- `shared/preflight-env.sh` gained a `bash-timeout` row: it compares the harness's foreground
+  ceiling — the larger of `BASH_MAX_TIMEOUT_MS` and `BASH_DEFAULT_TIMEOUT_MS`, both defaulted as
+  Claude Code defaults them — against `runtime.timeouts.global_sec × 1000`, and reports `LOW`
+  with the exact value to set when the ceiling is below it. Not a blocker (background launches
+  are not subject to the cap) and not `MISSING` (the stock values are valid Claude Code
+  settings, just too small for these budgets); it is for the machine that never set them, where
+  the alternative to a row is diagnosing a `KILLED` after a review dies at 600s.
+- The three `*-executor` agents run the same supervised block as the reviewer agents —
+  `/mesh-design-review` dispatches them with `SUPERVISED_MODE: shell` — but only the reviewers
+  got the background-launch and no-self-relaunch rules. Both now sit on the executors too.
+
 ## [0.7.1] - 2026-08-04
 
 ### Fixed

@@ -757,7 +757,7 @@ assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard " \
+  "plugin config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines
@@ -810,6 +810,44 @@ assert_eq   "…and so is the private directory that held it" 0 \
             "$(find "$ICFG" -maxdepth 1 -type d -name 'tmp.*' 2>/dev/null | grep -c . | tr -d ' ')"
 
 # ============================================================================
+echo "== Bash tool timeout ceiling =="
+
+# The harness caps a FOREGROUND Bash call at the LARGER of BASH_MAX_TIMEOUT_MS and
+# BASH_DEFAULT_TIMEOUT_MS and SIGTERMs it at the cap, taking the whole process group with it.
+# The exec skills launch their engine in the background, where the cap does not apply, so a low
+# ceiling is not a blocker — it is what a wrapper that ignores that instruction runs into, and
+# what any long foreground command a session runs by hand (this suite takes ~3 minutes) runs
+# into. On a machine whose settings.json carries no env block the user has no way to know the
+# number until a review dies at 600s, which is precisely the case the probe exists for.
+run_probe valid-claude-models.yaml BASH_MAX_TIMEOUT_MS=3600000
+assert_eq   "ceiling at global_sec -> OK"        OK  "$(field bash-timeout "$OUT")"
+
+run_probe valid-claude-models.yaml BASH_MAX_TIMEOUT_MS=600000
+assert_eq   "stock 10-minute ceiling -> LOW"     LOW "$(field bash-timeout "$OUT")"
+# The detail must carry the number to set, not just the complaint: the fixture has no runtime
+# section, so global_sec is the 3600 default and the remedy is 3600000.
+assert_match "LOW detail names the value to set" "BASH_MAX_TIMEOUT_MS=3600000" "$OUT"
+
+# Unset is not "no opinion" — it is the harness default of 600000, which sits below the budget.
+# Passed as an empty assignment because `env -u` cannot be threaded through run_probe's "$@",
+# and because the developer running this suite may well have the variable exported already.
+run_probe valid-claude-models.yaml BASH_MAX_TIMEOUT_MS=
+assert_eq   "unset -> LOW on the stock default"  LOW "$(field bash-timeout "$OUT")"
+
+# The effective ceiling is the larger of the two, so a raised DEFAULT alone clears it.
+run_probe valid-claude-models.yaml BASH_MAX_TIMEOUT_MS=600000 BASH_DEFAULT_TIMEOUT_MS=3600000
+assert_eq   "default above max lifts the ceiling" OK "$(field bash-timeout "$OUT")"
+
+# A non-numeric value is what the harness would ignore; the probe must read it as the default
+# rather than feeding it to `[ -ge ]`, where the error would be swallowed and the row skipped.
+run_probe valid-claude-models.yaml BASH_MAX_TIMEOUT_MS=abc
+assert_eq   "garbage value falls back to default" LOW "$(field bash-timeout "$OUT")"
+
+# No config means no global_sec to compare against — the row says so instead of inventing one.
+run_probe none
+assert_eq   "no config -> ceiling SKIPPED"   SKIPPED "$(field bash-timeout "$OUT")"
+
+# ============================================================================
 # FINAL GATES — must stay LAST. Tasks 2-4 append their scenario sections ABOVE
 # this banner. Both gates read every scenario's output, not just the last one.
 # ============================================================================
@@ -827,7 +865,7 @@ assert_eq   "…and so is the private directory that held it" 0 \
 # (provider:zai, Task 2),
 # so a shape check is the same forward-compatibility trap in a new costume.
 ROWS="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ && $1 != "hint:" {print $2}' <<<"$ALL_OUT")"
-BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|SKIPPED|UNKNOWN)$' || true)"
+BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|LOW|SKIPPED|UNKNOWN)$' || true)"
 assert_eq   "status column stays in the closed set (every scenario)" "" "$BAD"
 # Both gates above and below pass on empty input, so they must prove they looked at something.
 # Today: 7 scenarios x 4-5 rows = 29. The floor only gets safer as Tasks 2-4 add scenarios.

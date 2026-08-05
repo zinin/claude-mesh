@@ -587,6 +587,43 @@ else
     row clipboard MISSING "no xclip/xsel/pbcopy — print generated prompts into the chat"
 fi
 
+# ------------------------------------------- Bash tool timeout ceiling (Claude Code, not config)
+# Last of the environment rows, and an environment row it is: these two variables are Claude
+# Code's, not the plugin's, and live in settings.json rather than config.yaml.
+#
+# The harness caps a FOREGROUND Bash call at the LARGER of BASH_MAX_TIMEOUT_MS and
+# BASH_DEFAULT_TIMEOUT_MS and SIGTERMs it at the cap, taking the whole process group with it —
+# the shape verify-delegation.sh reports as KILLED. Below `runtime.timeouts.global_sec` the
+# plugin's own budgets are unreachable by construction, which is the invariant README states.
+#
+# LOW, not MISSING: the stock values are perfectly valid Claude Code settings, just too small
+# for these budgets. And not a blocker: the exec skills launch their engine as a background
+# task, where the cap does not apply. What this row buys is the machine that never set them — a
+# wrapper ignoring the background rule dies at 600s there, and so does any long FOREGROUND
+# command the session runs by hand (this repo's own test suite takes ~3 minutes). Naming the
+# number beforehand beats diagnosing a KILLED afterwards.
+if [ "$CONFIG_STATUS" = "OK" ]; then
+    GLOBAL_SEC="$(bash "$LOADER" get-runtime 2>/dev/null | "$JQ_BIN" -r '.timeouts.global_sec // empty' 2>/dev/null)"
+    # Every value here is range-checked before it reaches `[ -ge ]`: a non-numeric one would make
+    # `[` fail, and with its error swallowed the row would silently vanish from the table. An
+    # unset or unusable value is read as the default the harness itself would apply.
+    case "$GLOBAL_SEC" in ''|*[!0-9]*) GLOBAL_SEC=3600 ;; esac
+    BASH_CAP_MS="${BASH_MAX_TIMEOUT_MS:-600000}"
+    BASH_DEF_MS="${BASH_DEFAULT_TIMEOUT_MS:-120000}"
+    case "$BASH_CAP_MS" in ''|*[!0-9]*) BASH_CAP_MS=600000 ;; esac
+    case "$BASH_DEF_MS" in ''|*[!0-9]*) BASH_DEF_MS=120000 ;; esac
+    BASH_EFF_MS="$BASH_CAP_MS"
+    [ "$BASH_DEF_MS" -le "$BASH_EFF_MS" ] || BASH_EFF_MS="$BASH_DEF_MS"
+    BASH_NEED_MS=$(( GLOBAL_SEC * 1000 ))
+    if [ "$BASH_EFF_MS" -ge "$BASH_NEED_MS" ]; then
+        row bash-timeout OK "foreground ceiling ${BASH_EFF_MS}ms >= runtime.timeouts.global_sec (${GLOBAL_SEC}s)"
+    else
+        row bash-timeout LOW "foreground ceiling ${BASH_EFF_MS}ms < global_sec ${GLOBAL_SEC}s — a foreground run is SIGTERMed there; set \"BASH_MAX_TIMEOUT_MS=${BASH_NEED_MS}\" in the env block of ~/.claude/settings.json (background launches are unaffected)"
+    fi
+else
+    row bash-timeout SKIPPED "no usable config — runtime.timeouts.global_sec unknown"
+fi
+
 # ---------------------------------------------------------------- summary
 # The two lines the reading session actually acts on. Names are spelled exactly as the
 # selection UI of /mesh-review and /mesh-design-review spells them, so nothing has to be

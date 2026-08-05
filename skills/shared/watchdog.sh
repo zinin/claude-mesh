@@ -124,10 +124,17 @@ cleanup() {
         return "$rc"
     fi
     _CLEANING=1
+    # Record FIRST, tear down after. This line is the only durable evidence of HOW the run ended:
+    # verify-delegation.sh reads the last `cleanup` event and, seeing 143/130 with no
+    # watchdog.exit beside it, reports KILLED instead of re-dispatching into an identical death.
+    # Written after the teardown it could take up to 15s to reach the log (10 grace seconds on
+    # TERM plus 5 on KILL, terminate_process_group_with_grace below), and any sender that follows
+    # its SIGTERM with a SIGKILL inside that window would leave a log ending at the last `alive`
+    # heartbeat — indistinguishable from a genuine stall, which IS re-dispatched.
+    heartbeat "cleanup" "$(jq -nc --argjson exit_code "$rc" '{exit_code:$exit_code}')" || true
     if [[ -n "$CURRENT_PGID" ]]; then
         terminate_process_group_with_grace "$CURRENT_PGID" || true
     fi
-    heartbeat "cleanup" "$(jq -nc --argjson exit_code "$rc" '{exit_code:$exit_code}')" || true
     if [[ "${CLEAN_EXIT:-0}" = "1" ]]; then
         exit "$rc"
     fi
