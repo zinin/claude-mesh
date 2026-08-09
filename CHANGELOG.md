@@ -2,6 +2,58 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Added
+- `claude-md-writer` skill — best practices for writing and refactoring `CLAUDE.md`: size
+  budgets, the three-tier `CLAUDE.md` → `.claude/rules/` → co-located layout, `paths:`
+  frontmatter for conditional loading, and a quality checklist. It had been living unversioned
+  in `~/.claude/skills/`, i.e. on one machine and in no release; moving it here puts it under
+  the same version and install path as everything else the plugin ships. Vendored from
+  [serejaris/personal-corp-os](https://github.com/serejaris/personal-corp-os/tree/main/skills/claude-md-writer)
+  (MIT). Attribution and the upstream-diff recipe are in README's new Credits section.
+
+### Fixed
+- `claude-md-writer` was checked against the sources it cites and corrected — the upstream
+  copy is stamped "Updated: Jan 2026" and Claude Code has moved since. Six factual errors, in
+  a skill whose whole job is to state these facts: import depth is **four** hops, not five;
+  `/memory` lists and opens memory files while **`/context`** is what shows which ones
+  actually loaded; `CLAUDE.local.md` is **not** auto-gitignored, you add it yourself; the
+  memory hierarchy table was inverted at the bottom (`CLAUDE.local.md` is read *last*, not
+  lowest-priority), carried only the macOS managed-policy path — no use on Linux, which is
+  `/etc/claude-code/CLAUDE.md` — and omitted `~/.claude/rules/` entirely; the refactor
+  workflow prescribed `@file` imports as a way to shrink a bloated CLAUDE.md, which is
+  backwards, since imports load at launch too and only `.claude/rules/` with `paths:` cuts
+  startup context; and the 3-Tier system plus the 500-line rules budget were both billed as
+  official Anthropic recommendations when the first is the community Claude Code Development
+  Kit's and the second appears in no Anthropic doc. One cited source, `anthropic.com/
+  engineering/claude-code-best-practices`, now 308-redirects to `code.claude.com/docs/en/
+  best-practices`.
+- Same pass, additions from what the docs have gained since: auto memory
+  (`~/.claude/projects/<project>/memory/`, a second memory system the skill did not mention),
+  `AGENTS.md` interop, `claudeMdExcludes` for monorepos, `/doctor`'s trim proposals, the
+  brace-expansion budget and bracket-escaping rules for globs, the fact that path-scoped rules
+  are not re-injected after `/compact`, rules-directory symlinks, the `InstructionsLoaded`
+  hook for debugging what loaded, and the framing that makes the rest cohere: CLAUDE.md
+  arrives as a user message after the system prompt, so it is advisory context and anything
+  that must hold every time belongs in a hook.
+- One review finding was checked and **not** applied. An automated reviewer flagged the
+  skill's comma-separated `paths:` example, `"{src,lib}/**/*.ts, tests/**/*.test.ts"`, as a
+  single glob that would match nothing. Probed against CC 2.1.226 with `.claude/rules/`
+  fixtures and a negative control: a comma-joined value whose *second* pattern matches does
+  load the rule, one where neither side matches does not, and a lone non-matching pattern does
+  not — so Claude Code splits on the comma and the example works. The documented form is a
+  YAML list; the example stands as upstream wrote it.
+
+### Removed
+- `codex-review-native` skill and its `codex-native-reviewer` agent — the thin wrapper around
+  `codex exec review`. It was a second, weaker codex path (branch or uncommitted changes only,
+  no SHA range, output scraped out of the JSONL log) that `/mesh-review` never dispatched:
+  codex reviewers have always gone through `codex-code-reviewer` → `codex-code-review`, which
+  takes a custom prompt and writes its output with `-o`. Reachable only by invoking it by hand,
+  which nobody did. `mesh-review.md`'s base-branch note no longer cites it among the skills that
+  auto-detect the base; the historical entries below still name it, as they should.
+
 ## [0.8.0] - 2026-08-05
 
 ### Fixed

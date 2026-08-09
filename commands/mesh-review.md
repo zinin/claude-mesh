@@ -235,7 +235,7 @@ Launch all selected reviewers via Task tool, each `run_in_background: true`, in 
 
 **Base branch:** when the `BASE_BRANCH=<branch>` argument was given, prefix every WRAPPER prompt
 below with `BASE_BRANCH=<branch> `. Each wrapper's skill reads that name and otherwise
-auto-detects (`ext-claude-code-review` SKILL.md:20, `codex-review-native` :50, `codex-code-review`
+auto-detects (`ext-claude-code-review` SKILL.md:20, `codex-code-review`
 / `gemini-code-review` :84), so without the prefix the reviewers silently examine a different
 range than the caller asked for. This is a parameter exactly like `MODEL=<id>`, not review
 content — the CRITICAL rule below still forbids inlining scope, diff or focus areas. The builtin

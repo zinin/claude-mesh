@@ -23,6 +23,10 @@ daemon), and session helpers.
   typically another machine, VM or sandbox. Workflow: generate the prompt on the host, paste
   it into a fresh session inside the sandbox; that session probes its own environment and
   selects reviewers from what it finds
+- **`/claude-mesh:claude-md-writer`** — best practices for writing and refactoring `CLAUDE.md`:
+  size budgets, the three-tier `CLAUDE.md` → `.claude/rules/` → co-located layout, `paths:`
+  frontmatter for conditional loading, quality checklist. Vendored from an external project —
+  see [Credits](#credits)
 - **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else)
 
 ## Install
@@ -176,6 +180,16 @@ to a safe location before uninstalling.
 | Want to back up `config.yaml` before `/plugin uninstall` | Run `~/.claude/plugins/cache/*/claude-mesh/*/scripts/backup-config.sh` — it writes `~/claude-mesh-config-backup-<timestamp>.yaml` outside the plugin data dir |
 | External review dies at ~600 s; `watchdog.log` ends with `"event":"cleanup" … "exit_code":143` and there is no `watchdog.exit` | The wrapper launched its engine as a **foreground** Bash call and the harness SIGTERMed it at `BASH_MAX_TIMEOUT_MS`. `verify-delegation.sh` reports this as `KILLED` (exit 6) and `/mesh-review` does **not** re-dispatch it — an identical launch dies identically. The exec skills require a background launch; raise the ceiling as a safety net (see "Claude Code settings"). A cluster of deaths at the same round number is the signature |
 | `runs/` directory grows large over time | No automatic cleanup (intentional — personal-use plugin, hot-path I/O minimised). Add a cron one-liner: `0 3 * * 0 find ~/.claude/plugins/data/claude-mesh*/runs -mindepth 4 -maxdepth 4 -type d -mtime +30 -exec rm -rf {} +` (Sunday 03:00 weekly, deletes per-run dirs older than 30 days). Adjust `+30` to your retention preference. |
+
+## Credits
+
+`skills/claude-md-writer/` is vendored from
+[serejaris/personal-corp-os](https://github.com/serejaris/personal-corp-os/tree/main/skills/claude-md-writer)
+(MIT), then corrected against the current Claude Code docs — the upstream copy had drifted
+since it was written. The skill's own footer lists every change. Upstream still maintains it;
+to see what has moved there, diff against
+`https://raw.githubusercontent.com/serejaris/personal-corp-os/main/skills/claude-md-writer/SKILL.md`,
+expecting our corrections to show up as differences.
 
 ## License
 
