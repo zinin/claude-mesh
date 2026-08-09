@@ -2,6 +2,17 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Removed
+- `codex-review-native` skill and its `codex-native-reviewer` agent — the thin wrapper around
+  `codex exec review`. It was a second, weaker codex path (branch or uncommitted changes only,
+  no SHA range, output scraped out of the JSONL log) that `/mesh-review` never dispatched:
+  codex reviewers have always gone through `codex-code-reviewer` → `codex-code-review`, which
+  takes a custom prompt and writes its output with `-o`. Reachable only by invoking it by hand,
+  which nobody did. `mesh-review.md`'s base-branch note no longer cites it among the skills that
+  auto-detect the base; the historical entries below still name it, as they should.
+
 ## [0.8.0] - 2026-08-05
 
 ### Fixed
