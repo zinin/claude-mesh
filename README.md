@@ -185,9 +185,11 @@ to a safe location before uninstalling.
 
 `skills/claude-md-writer/` is vendored from
 [serejaris/personal-corp-os](https://github.com/serejaris/personal-corp-os/tree/main/skills/claude-md-writer)
-(MIT), copied verbatim apart from the `user_invocable:` frontmatter line this plugin needs.
-Upstream still maintains it — to pull later changes, diff against
-`https://raw.githubusercontent.com/serejaris/personal-corp-os/main/skills/claude-md-writer/SKILL.md`.
+(MIT), then corrected against the current Claude Code docs — the upstream copy had drifted
+since it was written. The skill's own footer lists every change. Upstream still maintains it;
+to see what has moved there, diff against
+`https://raw.githubusercontent.com/serejaris/personal-corp-os/main/skills/claude-md-writer/SKILL.md`,
+expecting our corrections to show up as differences.
 
 ## License
 

@@ -6,37 +6,56 @@ user_invocable: true
 
 # CLAUDE.md Writer
 
-Creates and refactors CLAUDE.md files following official Anthropic best practices (2025).
+Creates and refactors CLAUDE.md files following official Anthropic best practices.
+
+**CLAUDE.md is context, not configuration.** It is delivered as a user message after the
+system prompt — Claude reads it and tries to comply, but nothing enforces it. Anything that
+MUST happen every time belongs in a hook, not here.
 
 ## Golden Rules
 
 | Rule | Why |
 |------|-----|
 | **CLAUDE.md < 200 lines** | Loads on EVERY request, costs tokens |
-| **Rules files < 500 lines each** | Official recommendation per file |
-| **Critical rules FIRST** | Top = highest priority |
+| **Rules files < 500 lines each** | Rule of thumb, not an official limit — long files lose adherence |
+| **Critical rules FIRST** | A bloated file gets half-ignored; buried rules are the ones lost |
 | **Modular rules → `.claude/rules/`** | Conditional loading, organized |
 | **Use `paths:` frontmatter** | Load rules only for matching files |
 | **No linting rules** | Use ESLint/Prettier/Biome instead |
 | **Pointers over copies** | Files change, references stay valid |
+| **`@imports` do NOT save context** | Imported files load at launch too — only `paths:` rules cut tokens |
 
 ## Memory Hierarchy
 
-Claude Code loads memory in this order (higher = higher priority):
+Claude Code concatenates memory files rather than overriding them, in this load order —
+broadest scope first, most specific last, so the most specific is read last:
 
-| Priority | Type | Location |
-|----------|------|----------|
-| Highest | Enterprise | `/Library/Application Support/ClaudeCode/CLAUDE.md` |
-| ↓ | Project | `./CLAUDE.md` or `./.claude/CLAUDE.md` |
-| ↓ | Rules | `./.claude/rules/*.md` (conditional) |
-| ↓ | User | `~/.claude/CLAUDE.md` |
-| Lowest | Local | `./CLAUDE.local.md` (gitignored) |
+| Order | Type | Location |
+|-------|------|----------|
+| 1 | Managed policy | macOS `/Library/Application Support/ClaudeCode/CLAUDE.md` · Linux/WSL `/etc/claude-code/CLAUDE.md` · Windows `C:\Program Files\ClaudeCode\CLAUDE.md` |
+| 2 | User | `~/.claude/CLAUDE.md`, `~/.claude/rules/*.md` |
+| 3 | Project | `./CLAUDE.md` or `./.claude/CLAUDE.md`, `./.claude/rules/*.md` |
+| 4 | Local | `./CLAUDE.local.md` |
 
-Use `/memory` command to see currently loaded files.
+Managed policy cannot be excluded by user settings. Rules without `paths:` carry the same
+priority as the `CLAUDE.md` beside them; user rules load before project rules. Files in
+directories *above* the working directory load at launch; those in subdirectories load on
+demand when Claude reads a file there.
+
+`/memory` lists and opens memory files. **`/context` shows what actually loaded** — that is
+the one to check when a rule seems to be ignored.
+
+## Auto Memory
+
+A second, separate system: Claude writes its own notes to
+`~/.claude/projects/<project>/memory/`, indexed by `MEMORY.md`. Only the first 200 lines (or
+25 KB) of that index load each session; topic files beside it are read on demand. You write
+CLAUDE.md; Claude writes auto memory. Disable per project with `"autoMemoryEnabled": false`.
 
 ## 3-Tier Documentation System
 
-Official recommendation for large projects:
+Community pattern (Claude Code Development Kit), mapped onto Claude Code's own loaders.
+Useful for large projects; it is not an Anthropic recommendation:
 
 | Tier | Location | Loads | Target |
 |------|----------|-------|--------|
@@ -133,7 +152,21 @@ paths: "{src,lib}/**/*.ts, tests/**/*.test.ts"
 
 **Note:** Wrap patterns in quotes for YAML safety.
 
-Rules with `paths:` only load when working with matching files → saves tokens.
+Rules with `paths:` only load when working with matching files → saves tokens. This is the
+only mechanism that genuinely reduces startup context.
+
+Behaviour worth knowing:
+
+| Fact | Consequence |
+|------|-------------|
+| Matching triggers when Claude **reads** a matching file, not on every tool use | A rule can stay dormant for a whole session |
+| Path-scoped rules are **not re-injected after `/compact`** | They reload the next time a matching file is read |
+| Brace groups multiply: a rule's whole `paths:` list shares a budget of 1000 expanded patterns / 4 MiB | Over budget → the pattern is used unexpanded and its literal braces match nothing |
+| `[` starts a bracket expression | `photos [2024/**` matches nothing; escape it as `photos \[2024/**` |
+| `.claude/rules/` follows symlinks | `ln -s ~/shared-rules .claude/rules/shared` to share one set across projects |
+
+Debug what loaded with the `InstructionsLoaded` hook — it logs which instruction files
+loaded, when, and why.
 
 ## Workflow: New Project
 
@@ -151,8 +184,11 @@ Rules with `paths:` only load when working with matching files → saves tokens.
    - `database.md` - queries, schema, connection
    - `deploy.md` - deployment process
    - `messaging.md` - integrations (Telegram, etc.)
-4. **Use `@file` references** — don't duplicate
+4. **Move it, don't import it** — `@file` imports still load at launch, so they organise but
+   do not shrink context. Only `.claude/rules/` with `paths:` cuts what gets loaded.
 5. **Keep in CLAUDE.md** — only what applies to EVERY task
+6. **Run `/doctor`** — it proposes trims for a checked-in CLAUDE.md, cutting what Claude can
+   derive from the codebase and keeping pitfalls and conventions (needs CC 2.1.206+)
 
 ## What Goes Where
 
@@ -167,7 +203,7 @@ Rules with `paths:` only load when working with matching files → saves tokens.
 | Deployment steps | `.claude/rules/deploy.md` |
 | API documentation | `.claude/rules/api.md` |
 | Git workflow | `.claude/rules/git.md` |
-| Personal preferences | `CLAUDE.local.md` (gitignored) |
+| Personal preferences | `CLAUDE.local.md` (gitignore it) |
 | Code style rules | `.eslintrc` / `biome.json` (NOT docs) |
 
 ## Import Syntax
@@ -180,13 +216,31 @@ Reference files instead of duplicating:
 @~/.claude/snippets/common.md
 ```
 
-- Relative: `@docs/file.md`
+- Relative: `@docs/file.md` — resolves against the importing file, not the working directory
 - Absolute: `@~/path/file.md`
-- Max depth: 5 hops
+- Max depth: 4 hops
+- **Imports load at launch.** They organise content; they do not reduce context
+- An import in a project file that resolves *outside* the working directory is external:
+  Claude Code shows a one-time approval dialog. User-scope imports load without it
+- Parsing skips code spans and fenced blocks — write `` `@README` `` to mention a path
+  without importing it
+
+### AGENTS.md
+
+Claude Code reads `CLAUDE.md`, not `AGENTS.md`. If the repo already has one, import it
+(`@AGENTS.md` on the first line, Claude-specific rules below) or symlink `CLAUDE.md` to it.
+
+### Monorepos
+
+`claudeMdExcludes` in `.claude/settings.local.json` skips other teams' files by glob:
+
+```json
+{ "claudeMdExcludes": ["**/monorepo/CLAUDE.md", "/path/to/other-team/.claude/rules/**"] }
+```
 
 ## CLAUDE.local.md
 
-Personal project settings (auto-gitignored):
+Personal project settings — **add it to `.gitignore` yourself**, nothing does it for you:
 
 ```markdown
 # My Local Settings
@@ -205,8 +259,11 @@ Personal project settings (auto-gitignored):
 | "Run prettier" rules | Use tool config files |
 | Full API docs | → `rules/api.md` |
 | Deployment instructions | → `rules/deploy.md` |
-| Code in CLAUDE.md | Use `@file:line` references |
+| Code in CLAUDE.md | Cite the location in backticks: `` `src/api/auth.ts:42` `` |
 | Negative rules only | Add alternatives: "Don't X; use Y instead" |
+| `@imports` used to shrink the file | They load at launch — move content to `paths:` rules instead |
+| A rule that MUST hold every time | CLAUDE.md is advisory; use a hook |
+| Maintainer notes costing tokens | Block-level `<!-- HTML comments -->` are stripped before loading |
 
 ## Quality Checklist
 
@@ -221,29 +278,39 @@ Before finishing:
 - [ ] Subdirectories for components (frontend/, backend/)?
 - [ ] `paths:` frontmatter for conditional loading?
 - [ ] `@` references instead of duplication?
-- [ ] CLAUDE.local.md for personal prefs?
+- [ ] CLAUDE.local.md for personal prefs, and listed in `.gitignore`?
+- [ ] `/context` confirms the files actually loaded?
 
 ## Useful Commands
 
 | Command | Purpose |
 |---------|---------|
 | `/init` | Generate initial CLAUDE.md |
-| `/memory` | View loaded memory files |
+| `/memory` | List and open memory files; toggle auto memory |
+| `/context` | What actually loaded this session — the real check |
+| `/doctor` | Proposes trims for a checked-in CLAUDE.md (CC 2.1.206+) |
 
 ## Sources
 
 Official:
-- code.claude.com/docs/en/memory (Memory management, paths, globs)
-- anthropic.com/engineering/claude-code-best-practices
-- claude.com/blog/using-claude-md-files
+- code.claude.com/docs/en/memory (memory hierarchy, rules, `paths:` globs, auto memory)
+- code.claude.com/docs/en/best-practices (was anthropic.com/engineering/claude-code-best-practices)
+- claude.com/blog/using-claude-md-files (Nov 2025 — predates the "context, not system prompt" clarification)
 
 Community:
 - thedocumentation.org/claude-code-development-kit (3-Tier System)
 - claudefa.st/blog/guide/mechanics/rules-directory
 - humanlayer.dev/blog/writing-a-good-claude-md
 
-Updated: Jan 2026
+Updated: Aug 2026 — checked against the docs above and Claude Code 2.1.226.
 
 ---
 
-Vendored from [serejaris/personal-corp-os](https://github.com/serejaris/personal-corp-os/tree/main/skills/claude-md-writer) (MIT) — verbatim, apart from the `user_invocable:` frontmatter line this plugin needs.
+Vendored from [serejaris/personal-corp-os](https://github.com/serejaris/personal-corp-os/tree/main/skills/claude-md-writer)
+(MIT), then corrected against the current docs. Changes: `user_invocable:` frontmatter;
+import depth 4 not 5; `/context` (not `/memory`) shows what loaded; `CLAUDE.local.md` is not
+auto-gitignored; memory hierarchy rebuilt in documented load order with the Linux and Windows
+managed-policy paths; `@imports` no longer presented as a way to cut context; the 3-Tier
+system and the 500-line rule relabelled as community/heuristic rather than official; stale
+best-practices URL; plus auto memory, AGENTS.md, `claudeMdExcludes`, `/doctor`, glob budget
+and compaction behaviour.
