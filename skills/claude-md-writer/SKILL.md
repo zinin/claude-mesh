@@ -240,7 +240,8 @@ Claude Code reads `CLAUDE.md`, not `AGENTS.md`. If the repo already has one, imp
 
 ## CLAUDE.local.md
 
-Personal project settings — **add it to `.gitignore` yourself**, nothing does it for you:
+Personal project settings — **add it to `.gitignore` yourself**; it is not automatic (the
+exception: with `CLAUDE_CODE_NEW_INIT=1`, `/init`'s personal option does it for you):
 
 ```markdown
 # My Local Settings
