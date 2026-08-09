@@ -4,6 +4,16 @@ All notable changes to claude-mesh will be documented here.
 
 ## [Unreleased]
 
+### Added
+- `claude-md-writer` skill — best practices for writing and refactoring `CLAUDE.md`: size
+  budgets, the three-tier `CLAUDE.md` → `.claude/rules/` → co-located layout, `paths:`
+  frontmatter for conditional loading, and a quality checklist. It had been living unversioned
+  in `~/.claude/skills/`, i.e. on one machine and in no release; moving it here puts it under
+  the same version and install path as everything else the plugin ships. Vendored from
+  [serejaris/personal-corp-os](https://github.com/serejaris/personal-corp-os/tree/main/skills/claude-md-writer)
+  (MIT) verbatim, apart from the `user_invocable:` line every skill here carries. Attribution
+  and the upstream-diff recipe are in README's new Credits section.
+
 ### Removed
 - `codex-review-native` skill and its `codex-native-reviewer` agent — the thin wrapper around
   `codex exec review`. It was a second, weaker codex path (branch or uncommitted changes only,
