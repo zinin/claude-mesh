@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.9.0] - 2026-08-09
 
 ### Added
 - `claude-md-writer` skill — best practices for writing and refactoring `CLAUDE.md`: size

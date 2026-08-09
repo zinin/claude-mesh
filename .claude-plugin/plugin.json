@@ -1,6 +1,6 @@
 {
   "name": "claude-mesh",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "displayName": "Claude Mesh",
   "description": "Multi-model code review, alt-Claude execution, session helpers",
   "author": {
