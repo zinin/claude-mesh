@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.10.0] - 2026-08-23
 
 ### Added
 - `/claude-mesh:auto-decide-disputed` and the `autodecide` argument for `/claude-mesh:mesh-review`
