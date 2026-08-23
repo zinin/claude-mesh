@@ -280,29 +280,33 @@ identically (the same reasoning `verify-delegation.sh` applies to `BROKEN` and `
 and the rest of that family rewrite what they are handed and exit non-zero the first time —
 committing again over the repaired files is their documented workflow, not a gamble. Treated as
 terminal, every repository with a formatting hook stops this run on its first decision, in the mode
-meant
-to need no supervision. So, when the commit failed **and** the hook left changes in this decision's
-own files — it repaired them — run the same commit command once more. **Once.**
+meant to need no supervision. So, when the commit failed **and** the hook left changes in this
+decision's own files — it repaired them — run the same commit command once more. **Once.**
 
 Check one thing before that second attempt, and only that one: that the hook changed nothing
-outside this decision's files. That is a comparison of CONTENT, taken before the commit attempt and
-again after it:
+outside this decision's files. Take this snapshot before the commit attempt and again after it, and
+retry only when the two are byte-identical:
 
 ```bash
-git status --porcelain                                                 # a path that was not there?
-git diff HEAD          -- . ':(exclude)<each of this decision's files>' # outside, in the tree?
-git diff --cached HEAD -- . ':(exclude)<each of this decision's files>' # outside, in the index?
+# <OUTSIDE> = `. ':(exclude)<file>'`, one exclude per file this decision touched
+{ git status --porcelain --untracked-files=all
+  git diff          HEAD -- <OUTSIDE>
+  git diff --cached HEAD -- <OUTSIDE>
+  git ls-files --others --exclude-standard -z -- <OUTSIDE> | xargs -0 -r sha1sum
+}
 ```
 
-Retry only when the first gained no path and both diffs are byte-identical between the two
-snapshots, and treat none of the three as optional. The index side is not a duplicate of the tree
-side: a hook that re-stages an outside path can change what is staged there while leaving the
-working tree alone, and the working-tree diff is then identical across both
-snapshots. Reading the after-status raw would refuse the retry
-in every tree that is not pristine: the user's own dirty or staged files are in it by design,
-settle-the-tree having explicitly let them stay. And status cannot answer the second question at
-all — a path already listed ` M` is still ` M` after a formatter rewrites it, so the two snapshots
-match while the hook has in fact reached outside.
+Every line covers something the others cannot see, so none of them is optional. Status reports
+which paths exist and in what state, never what is inside them. The working-tree diff misses a hook
+that re-stages an outside path without touching the tree; the index diff misses the reverse. And
+both diffs ignore untracked files altogether while status prints `?? path` for one whether a hook
+rewrote it or not — so an unrelated scratch file a formatter reaches is invisible until something
+hashes it.
+
+And it stays a comparison throughout, never a reading of the second snapshot on its own: the user's
+dirty, staged and untracked files are all in there by design, settle-the-tree having let them stay,
+so only the difference between before and after counts. Read the after-snapshot raw and the retry
+is refused in every tree that is not pristine.
 
 **Do not re-run the content check of steps 1 and 3.** A formatter rewriting a file wholesale
 produces exactly the «changes this decision did not make» that it stops on, so re-entering it
@@ -317,11 +321,13 @@ because `git log --grep=auto-decide-disputed` is the whole of its accountability
 
 **Hand the run back before you stop — but not the failed edit.** Stopping is not vanishing: the
 decisions already committed still have to reach the record, exactly as «стоп» hands control back in
-Step 3. The failing issue's files are the one thing that does NOT go with it: both hosts' sweep-up
-guards (Step 6.5, Step 14) treat leftover disputed-phase edits as work to commit, so handing them
-over unqualified files a failure as a decision, under a generic message, while the summary calls
-that same issue deferred. Name those files to the host as out of scope, leave them where they are,
-and say so. In
+Step 3. What does NOT go with it is **every path the failed attempt left changed** — this
+decision's own files, and anything a hook touched on its way to failing. Both hosts' sweep-up
+guards (Step 6.5, Step 14) treat leftover disputed-phase edits as work to commit, so handing any of
+those over files a failure as a decision, under a generic message, while the summary calls that
+same issue deferred; and a hook's collateral rewrite of a design or plan document is not the
+decision's file, so naming only the decision's files leaves it to be swept in. Name the whole set
+to the host as out of scope, leave those paths where they are, and say so. In
 `/claude-mesh:mesh-review` go on to Step 6.6 and print its summary for what was decided, with the
 failed issue and the rest of the queue listed as deferred. In `/claude-mesh:mesh-design-review` go
 on to Steps 13–14: the iteration file and its commit are what the NEXT iteration reads, and

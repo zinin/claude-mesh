@@ -616,10 +616,11 @@ tree" rule at the start of its run.
 **Skip it only if the tree is in fact clean of disputed-phase edits.** Two paths leave edits behind
 that no commit of the command's covers: «стоп» arriving before its first decision, so settle-the-
 tree never ran; and the user cutting in mid-run to choose a variant themselves. If `git status`
-shows such edits, run this step normally instead of skipping it — **excluding the files of an issue
-whose decision commit failed.** The command's terminal rule leaves that edit uncommitted on purpose,
-for the user to look at; sweeping it in here would record a failure as a decision, under a message
-that names neither.
+shows such edits, run this step normally instead of skipping it — **excluding every path a failed
+decision commit left changed.** The command names that set when it hands back: its own files plus
+anything a hook touched on the way to failing. Those are uncommitted on purpose, for the user to
+look at; sweeping any of them in here would record a failure as a decision, under a message that
+names neither.
 
 ### Step 6.6: Final Summary
 
