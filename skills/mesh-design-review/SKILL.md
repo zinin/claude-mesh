@@ -822,15 +822,11 @@ merged review file, and its message stays `docs: review iter N — decisions + l
 **If the command was invoked only after this step already ran** — «стоп» ended Step 12, Steps 13–14
 committed those issues as `Отложено (стоп)`, and the user then handed the deferred queue to
 `/claude-mesh:auto-decide-disputed` (its state S4) — this step does not run again and does not cover
-those decisions. The command closes the record itself: it appends a
-`## Дополнение — autodecide (после «стоп»)` block to the iteration file this step committed, with
-one entry per decision in Step 13's per-issue format, corrects the `Статистика` counts in place,
-**supersedes each issue's original `### [TYPE-N]` record in place** (`**Статус:**` →
-`Решено автоматически (autodecide) — см. Дополнение`, `**Ответ:**` → the accepted variant) and
-**replaces** that issue's `deferred` entry in `answers` with its `new-autodecide` one, and commits
-that file with `docs: review iter N — autodecide addendum (<TOPIC>)`. Without the last two, the
-file carries two contradictory records for one issue — and this file is what
-`agents/review-discussion.md` reads as what was decided — while Step 15 counts it twice.
+those decisions. **The command closes the record itself** — it appends a `## Дополнение` block to
+the iteration file this step committed, supersedes the superseded records, fixes `Статистика` and
+commits that file on its own. The procedure is written once, in
+`commands/auto-decide-disputed.md` §S4; do not restate it here. What belongs to this step is only
+the fact above: in that situation Step 14 does not run again.
 
 ### Step 15: Next Steps
 

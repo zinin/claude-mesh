@@ -15,8 +15,9 @@ All notable changes to claude-mesh will be documented here.
   (unanswered objection, or a deciding fact that is not in this repository), and then applies its
   own recommendation. Each decision is committed on its own, so `git revert <hash>` undoes exactly
   one; `git log --grep=auto-decide-disputed` lists the whole run, and the summary lists every
-  `под вопросом` decision with what was missing. The protocol lives in one file — the command —
-  and both review flows hand over to it rather than carrying a copy.
+  `под вопросом` decision with what was missing. The decision protocol lives in one file — the
+  command — and both review flows carry only the hand-off, their own Iron-Rule carve-outs and
+  their own reporting, rather than a copy of it.
 
 ## [0.9.0] - 2026-08-09
 
