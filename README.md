@@ -8,14 +8,22 @@ daemon), and session helpers.
 
 (Slash commands are namespaced under `claude-mesh:` — that is how Claude Code surfaces plugin commands.)
 
-- **`/claude-mesh:mesh-review`** — orchestrate code review across multiple models in parallel
-- **`/claude-mesh:mesh-design-review`** — iterative design-doc review with discussion of issues
+- **`/claude-mesh:mesh-review`** — orchestrate code review across multiple models in parallel; add
+  `autodecide` to have the disputed issues decided for you — same full analysis, an explicit
+  self-check, one commit per decision
+- **`/claude-mesh:mesh-design-review`** — iterative design-doc review with discussion of issues;
+  takes the same `autodecide` argument
 - **`ext-claude-code-reviewer` / `ext-claude-executor` agents** — Anthropic-API-compatible
   models on alt providers (one agent, any provider, any model)
 - **`codex-*`, `gemini-*` agents** — wrappers for OpenAI Codex CLI and Gemini CLI
 - **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
   `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
   `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`
+- **`/claude-mesh:auto-decide-disputed`** — invoke mid-review to hand the remaining disputed issues
+  to the agent itself: it writes the same structured analysis, rebuts its own recommendation in a
+  `Проверка решения` section, marks each decision `уверенно` / `под вопросом`, and commits them one
+  by one — `git log --grep=auto-decide-disputed` lists the run, `git revert` undoes any single
+  decision. Same protocol as the `autodecide` argument of both review commands
 - **Sandbox-aware review sessions** — the two `*-review-fresh-session` commands generate a prompt
   for a fresh session that reviews rather than implements, and never name a model: the session
   runs `skills/shared/preflight-env.sh` where it actually lives and picks reviewers from what
