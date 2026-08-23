@@ -12,6 +12,12 @@ Launch multiple external code review agents in parallel, collect and deduplicate
 - `default` — run the `defaults.code_review` preset instead of asking (Step 0).
 - `BASE_BRANCH=<branch>` — the base the diff is taken against. Optional, and combinable with
   `default`. Bind it and carry it to every reviewer per the **Base branch** rule in Step 5a.
+- `autodecide` — decide every disputed issue automatically instead of waiting for an answer: the
+  same full analysis, plus an explicit self-check, then your own recommendation applied. Optional,
+  orthogonal to `default` and `BASE_BRANCH=`, order-independent — `/claude-mesh:mesh-review default
+  autodecide` is a fully unattended run, `/claude-mesh:mesh-review autodecide` picks reviewers
+  interactively and only the disputed phase runs unattended. The protocol lives in
+  `/claude-mesh:auto-decide-disputed`; Step 6.4 hands over to it.
 
 Without `BASE_BRANCH` each review skill auto-detects the base itself — `git symbolic-ref
 refs/remotes/origin/HEAD`, falling back to `master`. Passing it matters exactly where that guess
@@ -335,8 +341,8 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 4. **Every disputed issue gets a structured analysis** (Суть → Анализ → Варианты → Рекомендация). Bullet-only one-liners are forbidden.
 5. **Always evaluate the variants you propose.** Each variant gets pros/cons; you explicitly recommend ONE with reasoning. Never list variants neutrally.
 6. **If only one variant is genuinely adequate, do not ask the user.** Announce the decision, briefly say why the others fail, apply, move on.
-7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. In `default` (non-interactive) mode never wait — record the issue as deferred per Step 6.4.b and continue. Never batch.
-8. **When a choice remains, the analysis IS the question — never AskUserQuestion.** The structured write-up (variants with pros/cons + recommendation) is the turn-final message; the turn ends with no trailing tool call and the user answers in free text (in `default` mode nobody can answer — defer per Step 6.4.b). A trailing AskUserQuestion duplicates your write-up in its own modal UI and makes the harness drop the analysis — the user then sees only a bare modal. This is the regression this rule prevents.
+7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. In `default` (non-interactive) mode never wait — record the issue as deferred per Step 6.4.b and continue. In `autodecide` mode neither wait nor defer: follow `/claude-mesh:auto-decide-disputed`, which applies your own recommendation after an explicit self-check. Never batch.
+8. **When a choice remains, the analysis IS the question — never AskUserQuestion.** The structured write-up (variants with pros/cons + recommendation) is the turn-final message; the turn ends with no trailing tool call and the user answers in free text (in `default` mode nobody can answer — defer per Step 6.4.b; in `autodecide` mode the analysis is not a question at all — see Step 6.4). A trailing AskUserQuestion duplicates your write-up in its own modal UI and makes the harness drop the analysis — the user then sees only a bare modal. This is the regression this rule prevents.
 
 ### Step 6.0: Verify delegation (mechanical guard)
 
@@ -486,6 +492,14 @@ If no files were modified, skip this commit.
 
 If `D == 0`, finish (jump to Step 6.5 with a brief summary).
 
+**Autodecide mode.** If the `autodecide` argument was passed (see Arguments), do NOT run the
+interactive loop below: invoke `/claude-mesh:auto-decide-disputed` through the Skill tool now and
+follow it for the whole disputed queue. It replaces 6.4.b's waiting branch and the `default`-mode
+deferral; 6.4.a's analysis format still applies unchanged, and the command points back to it. The
+same command may also be invoked by the USER mid-discussion — from that point on the effect is
+identical. The intro line for this mode is printed by the command, not here. Do not paste any part
+of its protocol here.
+
 Display intro (interactive mode):
 ```
 Спорных вопросов: D. Обсуждаем по одному — для каждого приведу суть, анализ, варианты и обоснованную рекомендацию.
@@ -552,6 +566,9 @@ In `default` mode display instead:
   - **On the user's next message — check for stop FIRST.** If the answer contains "стоп" / "stop" / "достаточно": record the current issue as undecided (apply nothing), defer it and the remaining disputed issues, exit the loop. Otherwise apply the Edit(s) for the chosen variant, then move to the next disputed issue's analysis.
   - **If the turn is resumed by a background event** (e.g. a Step 5a watcher or task notification) rather than a user reply: handle the event, then end the turn again with a one-line reminder of the pending choice. A non-user event is never the user's answer.
   - **In `default` (non-interactive) mode there is nobody to ask.** Do NOT wait. Record the issue as *deferred* with your recommended variant noted, do NOT apply it, and continue to the next. The full analysis above stays in the run output as the decision record. Deferred disputed issues are surfaced in the Step 6.6 summary; the user re-runs interactively to decide them.
+  **Unless `autodecide` is active** — then this bullet does not apply at all: decide the issue per
+  `/claude-mesh:auto-decide-disputed` instead of deferring it. `default` and `autodecide` are
+  orthogonal, and when both are set, autodecide wins here.
 
 **6.4.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice; in `default` mode defer instead of waiting) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
 
@@ -565,6 +582,11 @@ git commit -m "review: apply decisions from external review discussion"
 
 Do NOT push. If no code changes resulted from Step 6.4 (e.g. all disputed → "Не исправлять"), skip this commit.
 
+**In `autodecide` mode this step is skipped:** every decision was already committed on its own, one
+commit per decision, so there is nothing left to stage. If some issues were decided interactively
+before the mode was switched on, their edits were committed by the command's own "settle the tree"
+rule before its first decision.
+
 ### Step 6.6: Final Summary
 
 Track outcomes as a running tally while executing Step 6.4 (auto-applied after analysis / decided by the user / deferred on «стоп» / deferred in `default` mode) — the counts below come from that tally, not from reconstructing the transcript afterwards.
@@ -575,6 +597,8 @@ Display a short summary:
   Авто-исправлено:           A   (закоммичено: <hash if any>)
   Авто-применено по анализу: B1
   Обсуждено с пользователем: B2  (закоммичено: <hash if any>)
+  Решено автоматически:      C   (autodecide, по коммиту на решение)
+    из них под вопросом:     C?
   Отклонено как ложные:      X
   Отложено по «стоп»:        S1
   Отложено (default-режим):  S2
@@ -583,6 +607,16 @@ Display a short summary:
 For every deferred issue (S1 + S2) add one line so the interactive re-run has an anchor:
 ```
   - <Issue title> (`file:line`) — рекомендация: Вариант X
+```
+
+For every `под вопросом` decision (C?) add one line, so the user knows exactly what to re-check:
+```
+  - <Issue title> (`file:line`) — Вариант X, <hash> — не хватило: <what was missing>
+```
+
+When C > 0, close the summary with:
+```
+Все авто-решения: git log --grep=auto-decide-disputed --oneline
 ```
 
 ### Red Flags — STOP if you catch yourself doing this
@@ -597,3 +631,4 @@ For every deferred issue (S1 + S2) add one line so the interactive re-run has an
 | Shrinking the analysis so a tool call can follow in the same turn | Stop. The analysis is the final message of the turn, as long as the issue needs. Don't trim it to precede a tool. |
 | Applying an auto-fix in the middle of disputed discussion | Stop. Auto-fixes must all happen in Step 6.2 and be committed in Step 6.3 before Step 6.4 begins. |
 | Skipping the auto-fix commit ("I'll commit everything at the end") | Stop. The intermediate commit (Step 6.3) is the user's safe checkpoint. Mandatory when auto-fixes were applied. |
+| In `autodecide` mode, ending the turn to wait for the user's answer | Stop. That mode exists precisely to not wait: write the analysis, add `Проверка решения`, decide, commit, continue. |
