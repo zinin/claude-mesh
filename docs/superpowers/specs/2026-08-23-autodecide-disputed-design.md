@@ -221,10 +221,14 @@ protocol → `Проверка решения` and the confidence test → commi
 6. Step 6.6 and the Red Flags table — counters, the "под вопросом" section, and a row for
    "waiting for the user's answer while in autodecide mode".
 
-**`skills/mesh-design-review/SKILL.md`** — the same six in their local form, plus the iteration-file format:
-`Input Parameters` (`AUTODECIDE`), Iron Rules 7-8, the block in Step 12 and the edit to 12.b,
-Step 13 (status value, `**Уверенность:**`, two statistics lines), Step 14 (commits only
-iter+merged in this mode), Step 15 (counters in the "what next" question).
+**`skills/mesh-design-review/SKILL.md`** — five of those six in their local form (edit 4 has no
+counterpart: this skill has no non-interactive disputed phase, so there is no `default`-mode
+deferral bullet to carve out), plus the `answers` bookkeeping and the iteration-file format:
+`Input Parameters` (`AUTODECIDE`), Iron Rules 7-8, the block in Step 12 and the edit to 12.b —
+which also records each auto-decision in `answers` with status `new-autodecide` and its confidence,
+since that is what Steps 13 and 15 count — Step 13 (status value, `**Уверенность:**`, two
+statistics lines), Step 14 (commits only iter+merged in this mode), Step 15 (counters in the
+"what next" question).
 
 **`README.md`** — the Features entry for `/claude-mesh:mesh-review` mentions the mode; the new
 command joins the session-helpers list. **`CHANGELOG.md`** — a feature entry.
