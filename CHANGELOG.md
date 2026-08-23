@@ -2,6 +2,22 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Added
+- `/claude-mesh:auto-decide-disputed` and the `autodecide` argument for `/claude-mesh:mesh-review`
+  and `/claude-mesh:mesh-design-review` — a fourth exit for a disputed review issue. Until now an
+  issue with several reasonable variants could only end the turn and wait for a free-text answer,
+  or (in `default` mode) be deferred to a re-run. The new mode keeps the analysis exactly as it
+  was — суть, анализ, варианты с плюсами и минусами, рекомендация — adds a mandatory
+  `Проверка решения` section in which the agent argues against the variant it just chose and
+  answers that objection, flags the decision `уверенно` or `под вопросом` by an explicit test
+  (unanswered objection, or a deciding fact that is not in this repository), and then applies its
+  own recommendation. Each decision is committed on its own, so `git revert <hash>` undoes exactly
+  one; `git log --grep=auto-decide-disputed` lists the whole run, and the summary lists every
+  `под вопросом` decision with what was missing. The protocol lives in one file — the command —
+  and both review flows hand over to it rather than carrying a copy.
+
 ## [0.9.0] - 2026-08-09
 
 ### Added
