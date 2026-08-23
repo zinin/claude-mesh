@@ -34,7 +34,9 @@ Optional (caller can specify):
 - **CODEX_MODEL** — Codex model. Default: resolved from `config.yaml` (`codex.model`) by the codex executor itself; final fallback "gpt-5.5". Set only when the user explicitly overrides.
 - **CODEX_REASONING_LEVEL** — reasoning level (`none|minimal|low|medium|high|xhigh|ultra`, known set as of 2026-07; unknown values pass through to codex). Default: resolved from `config.yaml` (`codex.reasoning_level`) by the executor; final fallback "xhigh". Set only when the user explicitly overrides.
 - **DEFAULT** — if `default` argument is passed, skip the Step 5 selection UI and use the `defaults.design_review` preset from `config.yaml` (`codex` / `gemini` in `builtin` → their executor; `claude` in `builtin` → one built-in `general-purpose` reviewer per entry of `claude_models`, no executor agent involved, or a single one in the fallback case; each `models` id → `claude-mesh:ext-claude-executor MODEL=<id>`). See Step 5.
-- **AUTODECIDE** — **bind this at Step 5.1**, next to `DEFAULT`, and echo `AUTODECIDE=true|false`.
+- **AUTODECIDE** — **bind this at the top of Step 5**, before that step's `default` branch, and
+  echo `AUTODECIDE=true|false`. Not inside Step 5.1: that sub-step executes only when `default`
+  was passed, so a binding placed there never runs on an interactive `autodecide` review.
   Its only consumer is Step 12, a whole review cycle and a background watch loop away; an unbound
   name raises no error in a prompt — the reader improvises, and a run started with `autodecide`
   silently waits for the user after all. If the `autodecide` argument is passed, the disputed
@@ -219,6 +221,8 @@ This composed prompt is self-contained and gets passed to each executor agent in
 ### Step 5: Select Review Agents (first iteration only)
 
 Reviewer selection is **config-driven** — there are no hardcoded provider/model lists. Read the available executors and models from `config.yaml` via the loader, then either honor the `defaults.design_review` preset (`default` argument) or run the paginated selection UI. **Selection is made on the FIRST iteration only and reused for every subsequent iteration in the loop** — remember the resulting agent set (built-ins + Claude models + ext-claude model ids).
+
+**Bind `AUTODECIDE` here, before anything else in this step** — unconditionally, whether or not `default` was passed: it is `true` when `autodecide` appears among the arguments, `false` otherwise. Echo it (`AUTODECIDE=true|false`) so it is on screen. Step 5.1 is the wrong home for it — that sub-step runs in `default` mode only, while `autodecide` is orthogonal to `default` and just as valid on an interactive run. Its only consumer is Step 12, a whole review cycle and a background watch loop away; an unbound name raises no error in a prompt — the reader improvises, and a run started with `autodecide` quietly waits for the user after all. Like the agent set, it is bound on the first iteration and holds for iterations 2..N. Same reason `/claude-mesh:mesh-review` binds it in its Step 0.
 
 #### Step 5.0: Read available reviewers from config
 
@@ -644,7 +648,7 @@ If no files were modified in Step 10, skip this commit.
 
 If `disputed` is empty, proceed to Step 13.
 
-**Autodecide mode.** If `AUTODECIDE` is true (Step 5.1) **or the user has already invoked**
+**Autodecide mode.** If `AUTODECIDE` is true (Step 5) **or the user has already invoked**
 `/claude-mesh:auto-decide-disputed` in this session — its state S3 arms the mode with no argument
 passed — do NOT run the interactive loop below: invoke `/claude-mesh:auto-decide-disputed` through
 the Skill tool now and follow it for the whole disputed queue, then come back for the "After the
