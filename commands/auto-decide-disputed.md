@@ -206,14 +206,24 @@ is what the user re-checks by.
 
 1. Apply the Edit(s).
 2. Verify they landed.
-3. Read what this decision's own files actually carry — content, not names:
-   `git diff HEAD -- <the files this decision touched>`. The question is whether one of them holds
-   a change this decision did not make (an edit that was already in the tree, or one the user made
-   while you worked), and `git diff --cached --name-only` cannot answer it: it prints paths and
-   never content. **Stop the run** (the failure rule below) if that diff shows a hunk you did not
-   write; say which file and let the user sort it out. Everything OUTSIDE this decision's files —
-   dirty, staged, or both — is not this case at all: step 4 excludes it by construction, and
-   settle-the-tree has already had its one-line say about it.
+3. Read what this decision's own files actually carry — content, not names, and **both sides**:
+   ```bash
+   git diff HEAD          -- <the files this decision touched>   # working tree vs HEAD
+   git diff --cached HEAD -- <the files this decision touched>   # index vs HEAD
+   ```
+   The question is whether one of them holds a change this decision did not make, and it can hide
+   on either side. The working-tree diff catches an edit that was already there, or one the user
+   made while you worked. The index diff catches the worse case: a hunk the user staged inside a
+   file you are about to commit. Step 4 records the working-tree content **and replaces that path's
+   index entry**, so a staged-only hunk is at once invisible to the first diff and destroyed by the
+   commit — index `USER_STAGED`, worktree `MY_EDIT`, `git diff HEAD` showing nothing but your own
+   change, and the index holding `MY_EDIT` afterwards with the user's work gone. `git diff --cached
+   --name-only` answers neither question: it prints paths and never content.
+
+   **Stop the run** (the failure rule below) if either diff shows a hunk you did not write; say
+   which file and which side it was on, and let the user sort it out. Everything OUTSIDE this
+   decision's files — dirty, staged, or both — is not this case at all: step 4 excludes it by
+   construction, and settle-the-tree has already had its one-line say about it.
 4. Commit exactly those files, by pathspec, **message first**:
    ```bash
    git commit -F - -- <the files this decision touched> <<'EOF'
@@ -269,14 +279,24 @@ to need no supervision. So, when the commit failed **and** the hook left changes
 own files — it repaired them — run the same commit command once more. **Once.**
 
 Check one thing before that second attempt, and only that one: that the hook changed nothing
-outside this decision's files. That is a comparison, not a reading — take `git status --porcelain`
-before the commit attempt and again after it, and retry when the difference between the two is
-confined to this decision's files. The after-status on its own is not the test: the user's own
-dirty or staged files are in it by design, settle-the-tree having explicitly let them stay, so
-reading it raw would refuse the retry in every tree that is not pristine. **Do not re-run step
-3's content check.** A formatter rewriting a file wholesale produces exactly the «changes this
-decision did not make» that step 3 stops on, so re-entering it would abort the run this exception
-exists to save. The repaired content goes into the decision's commit, which is right: it is the
+outside this decision's files. That is a comparison of CONTENT, taken before the commit attempt and
+again after it:
+
+```bash
+git status --porcelain                                         # did a path appear that was not there?
+git diff HEAD -- . ':(exclude)<each of this decision's files>'  # did anything outside change?
+```
+
+Retry only when the first gained no path and the second is byte-identical between the two
+snapshots, and treat neither half as optional. Reading the after-status raw would refuse the retry
+in every tree that is not pristine: the user's own dirty or staged files are in it by design,
+settle-the-tree having explicitly let them stay. And status cannot answer the second question at
+all — a path already listed ` M` is still ` M` after a formatter rewrites it, so the two snapshots
+match while the hook has in fact reached outside.
+
+**Do not re-run step 3's content check.** A formatter rewriting a file wholesale produces exactly
+the «changes this decision did not make» that step 3 stops on, so re-entering it would abort the
+run this exception exists to save. The repaired content goes into the decision's commit, which is right: it is the
 project's own formatting policy applied to your own edit. If the second commit fails too, or the
 hook reached a file this decision did not touch, the paragraph above applies as written.
 
