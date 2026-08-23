@@ -505,7 +505,7 @@ Display intro (interactive mode):
 Спорных вопросов: D. Обсуждаем по одному — для каждого приведу суть, анализ, варианты и обоснованную рекомендацию.
 ```
 
-In `default` mode display instead:
+In `default` mode display instead (not when `autodecide` is also active — then the command prints its own line):
 ```
 Спорных вопросов: D. Режим default: для каждого приведу анализ с рекомендацией; вопросы с несколькими равноценными вариантами будут отложены (см. итог).
 ```
@@ -566,11 +566,11 @@ In `default` mode display instead:
   - **On the user's next message — check for stop FIRST.** If the answer contains "стоп" / "stop" / "достаточно": record the current issue as undecided (apply nothing), defer it and the remaining disputed issues, exit the loop. Otherwise apply the Edit(s) for the chosen variant, then move to the next disputed issue's analysis.
   - **If the turn is resumed by a background event** (e.g. a Step 5a watcher or task notification) rather than a user reply: handle the event, then end the turn again with a one-line reminder of the pending choice. A non-user event is never the user's answer.
   - **In `default` (non-interactive) mode there is nobody to ask.** Do NOT wait. Record the issue as *deferred* with your recommended variant noted, do NOT apply it, and continue to the next. The full analysis above stays in the run output as the decision record. Deferred disputed issues are surfaced in the Step 6.6 summary; the user re-runs interactively to decide them.
-  **Unless `autodecide` is active** — then this bullet does not apply at all: decide the issue per
-  `/claude-mesh:auto-decide-disputed` instead of deferring it. `default` and `autodecide` are
-  orthogonal, and when both are set, autodecide wins here.
+    **Unless `autodecide` is active** — then this `default`-mode bullet does not apply at all:
+    decide the issue per `/claude-mesh:auto-decide-disputed` instead of deferring it. `default` and
+    `autodecide` are orthogonal, and when both are set, autodecide wins here.
 
-**6.4.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice; in `default` mode defer instead of waiting) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
+**6.4.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice; in `default` mode defer instead of waiting; in `autodecide` mode neither — the command decides and applies) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
 
 ### Step 6.5: Commit Decisions
 
@@ -589,7 +589,7 @@ rule before its first decision.
 
 ### Step 6.6: Final Summary
 
-Track outcomes as a running tally while executing Step 6.4 (auto-applied after analysis / decided by the user / deferred on «стоп» / deferred in `default` mode) — the counts below come from that tally, not from reconstructing the transcript afterwards.
+Track outcomes as a running tally while executing Step 6.4 (auto-applied after analysis / decided by the user / decided in `autodecide` / deferred on «стоп» / deferred in `default` mode) — the counts below come from that tally, not from reconstructing the transcript afterwards.
 
 Display a short summary:
 ```
