@@ -220,16 +220,22 @@ is what the user re-checks by.
    <the message below>
    EOF
    ```
-   Three things there are load-bearing, and each has already been got wrong once. **No flag may
+   Four things there are load-bearing, and most have already been got wrong once. **No flag may
    follow `--`**, because everything after it is a pathspec: `git commit -- <files> -m "…"` dies
    with `error: pathspec '-m' did not match any file(s)`. The `-F -` form above sidesteps the
    ordering by taking the message on stdin; `git commit -m "<subject>" -m "<body>" -- <files>`
-   works too, flags first. **No `git add`** — the pathspec form
+   works too, flags first. **No `git add` for a file that already exists** — the pathspec form
    commits those files' working-tree content directly, which is also why step 3 reads the working
-   tree and not the index. And **nothing else moves**: work the user had staged before the run
-   stays staged and uncommitted, neither swept into this commit nor cleared out of their index, so
-   it is not something to stop over. Per-file staging never was the isolation here — `git add
-   <file>` takes the whole file anyway; the pathspec is.
+   tree and not the index, and `git add <existing file>` is exactly what would take a foreign hunk
+   along with your edit. **A file this decision CREATED is the exception and must be staged**: a
+   pathspec matches only paths git already knows, so `git commit -F - -- new-file` dies with
+   `error: pathspec 'new-file' did not match any file(s) known to git` and stops the run over a
+   decision that was perfectly fine. `git add` the new paths first — there is nothing foreign
+   inside a file that did not exist a moment ago — then commit with the full pathspec. A deletion
+   needs no staging: that path is already tracked. And **nothing else moves**: work the user had
+   staged before the run stays staged and uncommitted, neither swept into this commit nor cleared
+   out of their index, so it is not something to stop over. Blanket per-file staging never was the
+   isolation here — `git add <file>` takes the whole file anyway; the pathspec is.
 
    In `/claude-mesh:mesh-review` the message is:
    ```
@@ -262,8 +268,12 @@ meant
 to need no supervision. So, when the commit failed **and** the hook left changes in this decision's
 own files — it repaired them — run the same commit command once more. **Once.**
 
-Check one thing before that second attempt, and only that one: that the hook stayed inside this
-decision's files (`git status --porcelain` names nothing new outside them). **Do not re-run step
+Check one thing before that second attempt, and only that one: that the hook changed nothing
+outside this decision's files. That is a comparison, not a reading — take `git status --porcelain`
+before the commit attempt and again after it, and retry when the difference between the two is
+confined to this decision's files. The after-status on its own is not the test: the user's own
+dirty or staged files are in it by design, settle-the-tree having explicitly let them stay, so
+reading it raw would refuse the retry in every tree that is not pristine. **Do not re-run step
 3's content check.** A formatter rewriting a file wholesale produces exactly the «changes this
 decision did not make» that step 3 stops on, so re-entering it would abort the run this exception
 exists to save. The repaired content goes into the decision's commit, which is right: it is the
@@ -274,8 +284,13 @@ Continuing instead would leave an edit on disk that no commit covers while the t
 issue as decided — the one divergence between history and summary that this mode cannot afford,
 because `git log --grep=auto-decide-disputed` is the whole of its accountability.
 
-**Hand the run back before you stop.** Stopping is not vanishing: the decisions already committed
-still have to reach the record, exactly as «стоп» hands control back in Step 3. In
+**Hand the run back before you stop — but not the failed edit.** Stopping is not vanishing: the
+decisions already committed still have to reach the record, exactly as «стоп» hands control back in
+Step 3. The failing issue's files are the one thing that does NOT go with it: both hosts' sweep-up
+guards (Step 6.5, Step 14) treat leftover disputed-phase edits as work to commit, so handing them
+over unqualified files a failure as a decision, under a generic message, while the summary calls
+that same issue deferred. Name those files to the host as out of scope, leave them where they are,
+and say so. In
 `/claude-mesh:mesh-review` go on to Step 6.6 and print its summary for what was decided, with the
 failed issue and the rest of the queue listed as deferred. In `/claude-mesh:mesh-design-review` go
 on to Steps 13–14: the iteration file and its commit are what the NEXT iteration reads, and
@@ -335,7 +350,7 @@ decision was «не исправлять» — 2.e produces no edit and no commi
 | «На всякий случай всё-таки спрошу пользователя» | Stop. The invocation was the consent — see Override Authority. |
 | «Ревью в сессии нет — запущу его сам» | Stop. That is state S5: say there is nothing to decide. This command decides; it does not review. |
 | Inventing an edit for an issue whose answer is «не исправлять», so there is something to commit | Stop. That is a full outcome: no edit, no commit, recorded in the summary. |
-| `git add -A` because several files changed | Stop. The commit names its files as a pathspec and stages nothing (2.d step 4) — other work is sitting in that tree and in that index. |
+| `git add -A` because several files changed | Stop. The commit names its files as a pathspec and stages nothing except a path this decision created (2.d step 4) — other work is sitting in that tree and in that index. |
 | A commit failed, so trying again — and again | Stop. Exactly one retry, and only for a hook that repaired this decision's own files (2.d). Every other failure is terminal on the first one. |
 | Rewriting an analysis that is already on screen (state S1) | Stop. Append `Проверка решения` to it and decide. Rewriting burns context and changes nothing. |
 | Invoking this command yourself because the issue in front of you is hard | Stop. The consent is the user's invocation or the `autodecide` argument — nothing else. Write the analysis and end the turn on it. |

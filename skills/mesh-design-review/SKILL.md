@@ -854,7 +854,9 @@ change nothing in git carries. So look at `git status` before staging: if DESIGN
 holds uncommitted edits from Step 12, commit those on their own FIRST, under the message
 settle-the-tree already uses for exactly this content — `docs: review iter N — decisions (<TOPIC>)`
 — and only then stage the iteration and merged files for the `log` commit. Two commits, and the
-human/machine boundary stays visible in the history. `/claude-mesh:mesh-review` Step 6.5 carries the
+human/machine boundary stays visible in the history. **Exclude the files of an issue whose decision
+commit failed:** the command's terminal rule leaves that edit uncommitted on purpose, and sweeping
+it in here would record a failure as a decision. `/claude-mesh:mesh-review` Step 6.5 carries the
 same guard in its own form.
 
 **If the command was invoked only after this step already ran** — «стоп» ended Step 12, Steps 13–14
