@@ -317,14 +317,10 @@ same command may also be invoked by the USER mid-discussion — from that point 
 identical. Do not paste any part of its protocol here.
 ```
 
-and add a third intro variant after the `default`-mode one:
-
-````markdown
-In `autodecide` mode display instead:
-```
-Спорных вопросов: D. Режим autodecide: каждый разберу подробно, проверю свою же рекомендацию и приму решение сам. Вмешаться можно в любой момент; «стоп» останавливает.
-```
-````
+Do **not** add an autodecide variant of the intro line here. The command prints its own
+announcement (`Спорных вопросов: D. Режим autodecide: …`) as its first output, and a second
+near-identical line from this file would print right above it. Add one sentence to the block
+above instead: `The intro line for this mode is printed by the command, not here.`
 
 - [ ] **Step 4: Stop the deferral from firing in autodecide.** In `6.4.b`, in the bullet beginning `**In \`default\` (non-interactive) mode there is nobody to ask.**`, append at the end of the bullet:
 
@@ -441,14 +437,9 @@ command points back to it. The same command may also be invoked by the USER mid-
 that point on the effect is identical. Do not paste any part of its protocol here.
 ```
 
-and add the intro variant after the existing one:
-
-````markdown
-In `autodecide` mode display instead:
-```
-Спорных вопросов: D. Режим autodecide: каждый разберу подробно, проверю свою же рекомендацию и приму решение сам. Вмешаться можно в любой момент; «стоп» останавливает.
-```
-````
+Do **not** add an autodecide variant of the intro line here either — same reason: the command
+prints its own announcement, and two near-identical lines would print back to back. The block
+above carries the sentence `The intro line for this mode is printed by the command, not here.`
 
 - [ ] **Step 4: Record auto-decisions in `answers`.** At the end of `**12.b`**, after the `If the turn is resumed by a background event` bullet, add a third top-level bullet:
 
