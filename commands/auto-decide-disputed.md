@@ -48,10 +48,16 @@ Both paths execute this file, and from the moment it is loaded it governs the di
 | State | Situation | What to do |
 |---|---|---|
 | **S1** | The disputed phase is running and this turn is waiting for the user's answer on the current issue | That issue is FIRST in the queue. Its analysis is already on screen — do **not** rewrite it: append the `Проверка решения` section, decide, apply, commit, then continue with the rest. If the user answered it before invoking this command, their answer stands — start with the next issue |
-| **S2** | Issues are classified but the disputed phase has not started (auto-fixes being applied, or their commit still pending) | Finish the auto-fixes and make the intermediate commit first — Iron Rules 1–2 are not overridden — then start the run |
-| **S3** | Reviewers are still working (watch loop / executors running) | Say in one line that the signal is armed and when it fires. Continue the normal flow unchanged — watch loop, delegation guard, dedupe, classification — and start the run when the disputed phase begins |
+| **S2** | Issues are classified but the disputed phase has not started (auto-fixes being applied, or their commit still pending) | Finish the auto-fixes and make the intermediate commit first — Iron Rules 1–2 are not overridden — then start the run. **Invoking this command is not approval of the auto-fixes**: if the flow is waiting for that confirmation, still ask for it as usual — the consent this invocation carries is about deciding disputed issues, nothing else |
+| **S3** | Anything else before the disputed phase begins — reviewers being selected or dispatched, the watch loop running, the delegation guard, dedupe, classification | Say in one line that the signal is armed and when it fires. Continue the normal flow completely unchanged, and start the run when the disputed phase begins |
 | **S4** | The disputed phase is over, or there were no disputed issues | Issues deferred earlier in this session — by «стоп» or by `default` mode — **are** the queue: decide them now. Their analyses are usually already in this session — reuse them exactly as S1 does: do not rewrite an analysis that is on screen, append `Проверка решения` to it. If there are none, say there is nothing left to decide and stop. Do not invent issues. In `/claude-mesh:mesh-design-review` the run also has to close the iteration record — see the paragraph below the table |
 | **S5** | There is no review cycle in this session at all | Say there is nothing to decide. **Do NOT start a review** — this command decides, it does not review. Point at `/claude-mesh:mesh-review autodecide` or `/claude-mesh:mesh-design-review autodecide` |
+
+**More than one row can match — take the lowest-numbered one.** S3 is deliberately broad, so that
+every moment before the disputed phase has a row; the specific states win over it by number. Two
+cases where this decides something real: auto-fixes still in flight is S2, not S3, so they are
+finished and committed first; and `D == 0` with auto-fixes still pending is S2, not S4 — commit
+them, and only then say there is nothing left to decide.
 
 **S4 in design review — close the iteration record too.** In `/claude-mesh:mesh-review` the Step 6.6
 summary is screen output, so deciding deferred issues needs nothing beyond the run itself. In
