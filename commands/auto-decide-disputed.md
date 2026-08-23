@@ -139,7 +139,8 @@ keeps the human/machine boundary visible in the history and guarantees a clean t
 dirty for unrelated reasons — or if the user has work sitting staged in the index — say so in one
 line and continue: 2.d commits by pathspec, so neither can reach a decision's commit, and neither is
 yours to clean up. The one thing that construction does **not** cover is an unrelated edit inside a
-file a decision does touch; 2.d step 3 reads exactly that and stops rather than committing it.
+file a decision does touch; 2.d reads exactly that before applying the edit and again after it,
+and stops rather than committing it.
 
 ## Step 2: For each issue — analysis, self-check, decision
 
@@ -204,26 +205,30 @@ is what the user re-checks by.
 
 **2.d — Apply and commit. One commit per decision, order fixed:**
 
-1. Apply the Edit(s).
-2. Verify they landed.
-3. Read what this decision's own files actually carry — content, not names, and **both sides**:
+1. **Read the files you are about to touch — before you touch them**, content on both sides:
    ```bash
-   git diff HEAD          -- <the files this decision touched>   # working tree vs HEAD
-   git diff --cached HEAD -- <the files this decision touched>   # index vs HEAD
+   git diff HEAD          -- <the files this decision will touch>   # working tree vs HEAD
+   git diff --cached HEAD -- <the files this decision will touch>   # index vs HEAD
+   git status --porcelain -- <any path this decision will create>   # untracked: invisible to both
    ```
-   The question is whether one of them holds a change this decision did not make, and it can hide
-   on either side. The working-tree diff catches an edit that was already there, or one the user
-   made while you worked. The index diff catches the worse case: a hunk the user staged inside a
-   file you are about to commit. Step 4 records the working-tree content **and replaces that path's
-   index entry**, so a staged-only hunk is at once invisible to the first diff and destroyed by the
-   commit — index `USER_STAGED`, worktree `MY_EDIT`, `git diff HEAD` showing nothing but your own
-   change, and the index holding `MY_EDIT` afterwards with the user's work gone. `git diff --cached
-   --name-only` answers neither question: it prints paths and never content.
+   If any of them is non-empty, those files already carry work that is not yours. **Stop the run**
+   (the failure rule below): say which file and which side, and leave it for the user.
 
-   **Stop the run** (the failure rule below) if either diff shows a hunk you did not write; say
-   which file and which side it was on, and let the user sort it out. Everything OUTSIDE this
-   decision's files — dirty, staged, or both — is not this case at all: step 4 excludes it by
-   construction, and settle-the-tree has already had its one-line say about it.
+   **Running this first is the whole of it, and the order is the finding.** Applying the edit
+   destroys the evidence the check looks for: with HEAD `A`, the user's unstaged `B` sitting in the
+   file, and your change writing `C` over those very lines, both diffs afterwards read `A → C` —
+   indistinguishable from a clean edit, with `B` gone from the tree and never in the index for any
+   later check to find. The index side is here for the mirror-image case: step 4 records the
+   working tree **and replaces that path's index entry**, so a hunk the user staged is invisible to
+   the working-tree diff and overwritten by the commit (index `USER_STAGED`, worktree `MY_EDIT`,
+   `git diff HEAD` showing only your own change, index holding `MY_EDIT` afterwards). And
+   `git diff --cached --name-only` answers neither question: it prints paths, never content.
+2. Apply the Edit(s).
+3. Verify they landed, then read those same two diffs again: they must now show your change and
+   nothing besides. Anything more arrived while you were working — **stop the run** exactly as in
+   step 1. Everything OUTSIDE this decision's files — dirty, staged, or both — is not this case at
+   all: step 4 excludes it by construction, and settle-the-tree has already had its one-line say
+   about it.
 4. Commit exactly those files, by pathspec, **message first**:
    ```bash
    git commit -F - -- <the files this decision touched> <<'EOF'
@@ -235,8 +240,9 @@ is what the user re-checks by.
    with `error: pathspec '-m' did not match any file(s)`. The `-F -` form above sidesteps the
    ordering by taking the message on stdin; `git commit -m "<subject>" -m "<body>" -- <files>`
    works too, flags first. **No `git add` for a file that already exists** — the pathspec form
-   commits those files' working-tree content directly, which is also why step 3 reads the working
-   tree and not the index, and `git add <existing file>` is exactly what would take a foreign hunk
+   commits those files' working-tree content directly — which is why steps 1 and 3 read the
+   working tree as well as the index — and `git add <existing file>` is exactly what would take a
+   foreign hunk
    along with your edit. **A file this decision CREATED is the exception and must be staged**: a
    pathspec matches only paths git already knows, so `git commit -F - -- new-file` dies with
    `error: pathspec 'new-file' did not match any file(s) known to git` and stops the run over a
@@ -283,19 +289,22 @@ outside this decision's files. That is a comparison of CONTENT, taken before the
 again after it:
 
 ```bash
-git status --porcelain                                         # did a path appear that was not there?
-git diff HEAD -- . ':(exclude)<each of this decision's files>'  # did anything outside change?
+git status --porcelain                                                 # a path that was not there?
+git diff HEAD          -- . ':(exclude)<each of this decision's files>' # outside, in the tree?
+git diff --cached HEAD -- . ':(exclude)<each of this decision's files>' # outside, in the index?
 ```
 
-Retry only when the first gained no path and the second is byte-identical between the two
-snapshots, and treat neither half as optional. Reading the after-status raw would refuse the retry
+Retry only when the first gained no path and both diffs are byte-identical between the two
+snapshots, and treat none of the three as optional. The index side is not a duplicate of the tree
+side: a hook that re-stages an outside path can change what is staged there while leaving the
+working tree alone, and the working-tree diff is then identical across both snapshots. Reading the after-status raw would refuse the retry
 in every tree that is not pristine: the user's own dirty or staged files are in it by design,
 settle-the-tree having explicitly let them stay. And status cannot answer the second question at
 all — a path already listed ` M` is still ` M` after a formatter rewrites it, so the two snapshots
 match while the hook has in fact reached outside.
 
-**Do not re-run step 3's content check.** A formatter rewriting a file wholesale produces exactly
-the «changes this decision did not make» that step 3 stops on, so re-entering it would abort the
+**Do not re-run the content check of steps 1 and 3.** A formatter rewriting a file wholesale produces exactly
+the «changes this decision did not make» that it stops on, so re-entering it would abort the
 run this exception exists to save. The repaired content goes into the decision's commit, which is right: it is the
 project's own formatting policy applied to your own edit. If the second commit fails too, or the
 hook reached a file this decision did not touch, the paragraph above applies as written.
