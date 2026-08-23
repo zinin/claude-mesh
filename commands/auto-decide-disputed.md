@@ -181,6 +181,18 @@ is what the user re-checks by.
    ```
 5. Only then start the next issue. Do **not** push.
 
+**If any of those four steps fails, the run stops there.** Do not record the decision, do not mark
+the issue decided, do not move to the next one. Say which step failed and why, name the issue you
+were on and the ones still queued, and leave the edit where it is for the user to look at. Do not
+retry and do not roll the edit back: the causes that fail a local commit — a pre-commit hook, an
+unset `user.email`, a locked index, no write permission — are deterministic, so a second attempt
+fails identically (the same reasoning `verify-delegation.sh` applies to `BROKEN` and `KILLED`), and
+an automatic `git checkout` over your own edit can take work that is not yours with it.
+
+Continuing instead would leave an edit on disk that no commit covers while the tally counts the
+issue as decided — the one divergence between history and summary that this mode cannot afford,
+because `git log --grep=auto-decide-disputed` is the whole of its accountability.
+
 The trailing `Решено автоматически:` line is what makes the whole run findable afterwards with
 `git log --grep=auto-decide-disputed`. Keep it verbatim.
 
