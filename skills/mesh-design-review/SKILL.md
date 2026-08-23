@@ -824,8 +824,13 @@ committed those issues as `Отложено (стоп)`, and the user then hande
 `/claude-mesh:auto-decide-disputed` (its state S4) — this step does not run again and does not cover
 those decisions. The command closes the record itself: it appends a
 `## Дополнение — autodecide (после «стоп»)` block to the iteration file this step committed, with
-one entry per decision in Step 13's per-issue format, corrects the `Статистика` counts in place, and
-commits that file with `docs: review iter N — autodecide addendum (<TOPIC>)`.
+one entry per decision in Step 13's per-issue format, corrects the `Статистика` counts in place,
+**supersedes each issue's original `### [TYPE-N]` record in place** (`**Статус:**` →
+`Решено автоматически (autodecide) — см. Дополнение`, `**Ответ:**` → the accepted variant) and
+**replaces** that issue's `deferred` entry in `answers` with its `new-autodecide` one, and commits
+that file with `docs: review iter N — autodecide addendum (<TOPIC>)`. Without the last two, the
+file carries two contradictory records for one issue — and this file is what
+`agents/review-discussion.md` reads as what was decided — while Step 15 counts it twice.
 
 ### Step 15: Next Steps
 

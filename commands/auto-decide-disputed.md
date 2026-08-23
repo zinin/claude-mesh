@@ -67,6 +67,19 @@ one entry per decision in Step 13's per-issue format (`**Статус:** Реш�
 `Решено автоматически: /claude-mesh:auto-decide-disputed` line as every decision commit, so the
 addendum is not invisible to `git log --grep=auto-decide-disputed`.
 
+**Appending is not enough — supersede the original record too.** The issue's existing
+`### [TYPE-N]` section still says `Отложено (стоп)`, and `agents/review-discussion.md` builds the
+next iteration's answer base out of *every* `### [TYPE-N]` section it finds, with no rule for
+duplicates: left alone, the file states two contradictory answers for one issue and the next
+iteration can quote the stale one. So, in the same edit and before the commit:
+
+- in the ORIGINAL section, set `**Статус:** Решено автоматически (autodecide) — см. Дополнение` and
+  `**Ответ:**` to the variant you accepted. Editing a committed record in place is already what
+  this paragraph does to `Статистика`; the «отложено → решено» history survives in git;
+- in `answers`, **replace** that issue's `deferred` entry with its `new-autodecide` entry rather
+  than adding a second one. Step 15 counts `deferred` and `autodecided` independently, so an issue
+  left in both is counted twice.
+
 Announce the queue before the first issue:
 
 ```
