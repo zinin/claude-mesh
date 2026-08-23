@@ -92,6 +92,21 @@ Announce the queue before the first issue:
 Спорных вопросов: D. Режим autodecide: каждый разберу подробно, проверю свою же рекомендацию и приму решение сам. Вмешаться можно в любой момент; «стоп» останавливает.
 ```
 
+**Before the first issue — settle the tree.** Do this now, as part of the announcement, not later:
+«стоп» is allowed during the very first analysis, and the sweep-up steps that used to catch these
+edits (Step 6.5 / Step 14) stand down in this mode, so a rule that waits for the first decision can
+be skipped entirely by an early exit. If it carries any uncommitted edits produced by the
+disputed phase so far — issues the user answered and issues you auto-applied after analysis alike —
+commit those first, on their own: in `/claude-mesh:mesh-review` with
+the flow's existing message `review: apply decisions from external review discussion`; in design
+review with `docs: review iter N — decisions (<TOPIC>)` — decisions only, because the iteration log
+is not written yet and Step 14 commits it separately under its own `decisions + log` message. That
+keeps the human/machine boundary visible in the history and guarantees a clean tree. If the tree is
+dirty for unrelated reasons, say so in one line and continue: those files are never staged, so they
+cannot reach a decision's commit. What per-file staging does **not** protect against is an unrelated
+edit inside a file a decision does touch, or something staged before the run — 2.d step 3 checks for
+both and stops rather than committing them.
+
 ## Step 2: For each issue — analysis, self-check, decision
 
 Sequential, one issue at a time, each driven to its commit before the next one starts. Batching
@@ -195,18 +210,6 @@ because `git log --grep=auto-decide-disputed` is the whole of its accountability
 
 The trailing `Решено автоматически:` line is what makes the whole run findable afterwards with
 `git log --grep=auto-decide-disputed`. Keep it verbatim.
-
-**Before the first decision — settle the tree.** If it carries any uncommitted edits produced by the
-disputed phase so far — issues the user answered and issues you auto-applied after analysis alike —
-commit those first, on their own: in `/claude-mesh:mesh-review` with
-the flow's existing message `review: apply decisions from external review discussion`; in design
-review with `docs: review iter N — decisions (<TOPIC>)` — decisions only, because the iteration log
-is not written yet and Step 14 commits it separately under its own `decisions + log` message. That
-keeps the human/machine boundary visible in the history and guarantees a clean tree. If the tree is
-dirty for unrelated reasons, say so in one line and continue: those files are never staged, so they
-cannot reach a decision's commit. What per-file staging does **not** protect against is an unrelated
-edit inside a file a decision does touch, or something staged before the run — 2.d step 3 checks for
-both and stops rather than committing them.
 
 **2.e — «Не исправлять» / «Оставить как есть» is a full outcome.** No edit, no commit. Record it in
 the summary like any other decision. Never invent an edit so that there is something to commit.

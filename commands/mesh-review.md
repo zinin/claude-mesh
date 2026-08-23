@@ -606,7 +606,7 @@ Do NOT push. If no code changes resulted from Step 6.4 (e.g. all disputed → "�
 **In `autodecide` mode this step is skipped:** every decision was already committed on its own, one
 commit per decision, so there is nothing left to stage. Edits produced by the disputed phase before
 the mode started — whichever way they were decided — are committed by the command's own "settle the
-tree" rule before its first decision.
+tree" rule at the start of its run.
 
 **Skip it only if the tree is in fact clean of disputed-phase edits.** Two paths leave edits behind
 that no commit of the command's covers: «стоп» arriving before its first decision, so settle-the-
