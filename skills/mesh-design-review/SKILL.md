@@ -749,7 +749,10 @@ After the loop, also add all `auto_fixes`, `repeated`, `dismissed` entries to `a
 
 Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with the format below. Its
 `**Уверенность:**` and `**Коммит:**` lines belong only to issues whose `**Статус:**` is
-`Решено автоматически (autodecide)` — omit both lines entirely for every other status:
+`Решено автоматически (autodecide)` — omit both lines entirely for every other status.
+Every single letter in its `Статистика` list is a count, `X` («Отклонено») included: the `X` of
+`Вариант X` elsewhere on the page is a different placeholder in a different position, and the two
+never share a slot:
 
 ```markdown
 # Review Iteration N — YYYY-MM-DD HH:MM
