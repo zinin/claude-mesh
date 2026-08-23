@@ -15,7 +15,7 @@
 - Prose in these files is **English**; user-facing output strings stay **Russian**, matching every existing string in both flows (`Спорных вопросов: D…`).
 - Slash commands are always written namespaced: `/claude-mesh:<name>`. A bare `/mesh-review` does not resolve (CC 2.1.156).
 - **Do not touch** any `.sh` file, `config.example.yaml`, `config-loader.sh`, `skills/shared/tests/`, or the two `*-fresh-session` generators. They are out of scope by design decision.
-- Iron Rules 3–8 are mirrored between `commands/mesh-review.md` and `skills/mesh-design-review/SKILL.md` under an existing sync note. **Any edit to one copy must be made in the other in the same task**, worded to its own file (`/mesh-review` says `default`-mode clauses, the skill says it is always interactive).
+- Iron Rules 3–8 are mirrored between `commands/mesh-review.md` and `skills/mesh-design-review/SKILL.md` under an existing sync note. This plan splits that mirror on purpose — Task 2 owns one copy, Task 3 the other — so **the tree is knowingly out of mirror between those two tasks**; do not "fix" the other file from inside a task that does not own it. Task 3 Step 9 greps both copies and is the gate that closes the mirror. Each copy is worded to its own file (`/mesh-review` carries `default`-mode clauses, the skill is always interactive).
 - The protocol text lives in **one** place — `commands/auto-decide-disputed.md`. Never paste the analysis format, the self-check section or the confidence tests into the other two files; they point at the command instead.
 - Never edit the user's `config.yaml`. Never `git push`. Every task ends with a commit on the current branch (`feat/autodecide-disputed`).
 - No version bump: `.claude-plugin/plugin.json` is raised by a separate `chore(release)` commit, not by a feature.
@@ -242,7 +242,7 @@ own commit. Nothing was deferred, nothing was batched, and no decision is hidden
 - [ ] **Step 2: Verify the structure**
 
 ```bash
-grep -c '^## ' commands/auto-decide-disputed.md          # expect 9
+grep -c '^## ' commands/auto-decide-disputed.md          # expect 10 (9 sections + the `## [Спорное i/D]` line inside the 2.a example)
 grep -n 'Override Authority' commands/auto-decide-disputed.md
 grep -n 'Проверка решения' commands/auto-decide-disputed.md
 grep -n 'под вопросом' commands/auto-decide-disputed.md
