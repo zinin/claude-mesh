@@ -29,7 +29,9 @@ What is **not** overridden, and still holds exactly as written:
 - Iron Rule 1–2 — auto-fixes are applied and committed before the disputed phase begins;
 - Iron Rule 3 — one issue at a time, never a batch;
 - Iron Rule 4 — the full structured analysis (Суть → Анализ → Варианты → Рекомендация);
-- Iron Rule 5 — every variant gets Плюсы/Минусы, and one is recommended with reasoning.
+- Iron Rule 5 — every variant gets Плюсы/Минусы, and one is recommended with reasoning;
+- Iron Rule 6 — a single adequate variant is decided, not asked about; the self-check in 2.b
+  applies to it too.
 
 ## Two entry points, one protocol
 
@@ -54,8 +56,7 @@ Both paths execute this file, and from the moment it is loaded it governs the di
 Announce the queue before the first issue:
 
 ```
-Режим autodecide: спорных к разбору — D. Каждый разберу подробно, проверю свою же рекомендацию
-и приму решение сам. Вмешаться можно в любой момент; «стоп» останавливает.
+Спорных вопросов: D. Режим autodecide: каждый разберу подробно, проверю свою же рекомендацию и приму решение сам. Вмешаться можно в любой момент; «стоп» останавливает.
 ```
 
 ## Step 2: For each issue — analysis, self-check, decision
@@ -118,7 +119,7 @@ is what the user re-checks by.
 1. Apply the Edit(s).
 2. Verify they landed.
 3. `git add` **only** the files this decision touched — never `git add -A`, never a directory.
-4. Commit. In `/mesh-review`:
+4. Commit. In `/claude-mesh:mesh-review`:
    ```
    review: auto-decide <short issue name> — вариант <X>
 
@@ -137,11 +138,13 @@ The trailing `Решено автоматически:` line is what makes the w
 `git log --grep=auto-decide-disputed`. Keep it verbatim.
 
 **Before the first decision — settle the tree.** If it carries uncommitted edits from issues the
-USER decided interactively, commit those first, on their own, with the flow's existing message
-(`review: apply decisions from external review discussion`; in design review
-`docs: review iter N — decisions (<TOPIC>)`). That keeps the human/machine boundary visible in the
-history and guarantees a clean tree. If the tree is dirty for unrelated reasons, say so in one line
-and continue — staging is per-file, so nothing foreign is swept in.
+USER decided interactively, commit those first, on their own: in `/claude-mesh:mesh-review` with
+the flow's existing message `review: apply decisions from external review discussion`; in design
+review with `docs: review iter N — decisions (<TOPIC>)` — decisions only, because the iteration log
+is not written yet and Step 14 commits it separately under its own `decisions + log` message. That
+keeps the human/machine boundary visible in the history and guarantees a clean tree. If the tree is
+dirty for unrelated reasons, say so in one line and continue — staging is per-file, so nothing
+foreign is swept in.
 
 **2.e — «Не исправлять» / «Оставить как есть» is a full outcome.** No edit, no commit. Record it in
 the summary like any other decision. Never invent an edit so that there is something to commit.
@@ -159,7 +162,8 @@ the summary like any other decision. Never invent an edit so that there is somet
 
 ## Step 4: What reaches the summary
 
-Feed the running flow's own summary — Step 6.6 in `/mesh-review`, Steps 13/15/16 in design review:
+Feed the running flow's own summary — Step 6.6 in `/claude-mesh:mesh-review`, Steps 13/15/16 in
+design review:
 
 - how many issues were decided here (`Решено автоматически`), and how many of those are
   `под вопросом`;
