@@ -231,8 +231,12 @@ Feed the running flow's own summary — Step 6.6 in `/claude-mesh:mesh-review`, 
 design review:
 
 - how many issues were decided here (`Решено автоматически`), and how many of those are
-  `под вопросом`;
-- one line per `под вопросом` decision: issue, chosen variant, commit hash, what was missing;
+  `под вопросом` — Step 6.6's counters, `Статистика` in Step 13 and the counts in Step 15;
+- one line per `под вопросом` decision: issue, chosen variant, commit hash (`—` when the decision
+  was the no-change variant), what was missing. In `/claude-mesh:mesh-review` that goes in Step
+  6.6; in design review, in Step 16's `Под вопросом — перепроверьте` section, with the same fact
+  recorded per issue as `**Уверенность:**` by Step 13. Step 15 is a fixed question — do not put
+  per-issue lines there;
 - the line `Все авто-решения: git log --grep=auto-decide-disputed --oneline`.
 
 <!-- SYNC: the `answers` shape below is ONE contract living in two places — this block and

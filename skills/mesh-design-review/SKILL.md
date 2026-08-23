@@ -867,8 +867,11 @@ Options:
 
 ### Step 16: Present Final Summary
 
-When loop exits, display the block below. Its closing `**Все авто-решения:**` line belongs only to
-a run that had auto-decisions (`autodecided > 0`) — drop that line otherwise:
+When loop exits, display the block below. Its `**Под вопросом — перепроверьте:**` section belongs
+only to a run with `autodecided_unsure > 0`, and its closing `**Все авто-решения:**` line only to
+one with `autodecided > 0` — drop each otherwise. The recheck section is where the confidence flag
+does its work: one line per such decision, so the user knows what to look at without opening the
+iteration file:
 
 ```
 ## Review Complete
@@ -885,6 +888,9 @@ a run that had auto-decisions (`autodecided > 0`) — drop that line otherwise:
 
 **Documents updated:**
 - [list of modified design/plan files]
+
+**Под вопросом — перепроверьте:**
+- [TYPE-N] <Issue title> — Вариант X, <short SHA или «—»> — не хватило: <what was missing>
 
 **Все авто-решения:** git log --grep=auto-decide-disputed --oneline
 ```
