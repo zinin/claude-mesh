@@ -44,7 +44,7 @@ Optional (caller can specify):
 
 These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so you catch yourself before drifting.
 
-> Sync note: rules 3–8 are mirrored in `commands/mesh-review.md` (Iron Rules / Step 6.4). When editing shared rule text, mirror the edit there (step numbers differ; mesh-review additionally has `default`-mode clauses — this skill is always interactive).
+> Sync note: rules 3–8 are mirrored in `commands/mesh-review.md` (Iron Rules / Step 6.4). When editing shared rule text, mirror the edit there (step numbers differ; `/mesh-review` additionally has `default`-mode clauses, and this skill reaches the same non-waiting behaviour through the `autodecide` argument).
 
 1. **Phase order is fixed:** classify ALL issues first → apply auto-fixes → commit → discuss disputed one-by-one. Never interleave.
 2. **Auto-fixes are committed BEFORE disputed discussion starts.** The user gets a clean checkpoint with all the safe edits.
@@ -647,7 +647,7 @@ command points back to it. The same command may also be invoked by the USER mid-
 that point on the effect is identical. The intro line for this mode is printed by the command, not
 here. Do not paste any part of its protocol here.
 
-Display intro:
+Display intro (interactive mode):
 ```
 Спорных вопросов: D. Обсуждаем по одному — для каждого приведу суть, анализ, варианты и обоснованную рекомендацию.
 ```
@@ -768,7 +768,7 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 - Обсуждено с пользователем: B2
 - Решено автоматически (autodecide): C
 - из них под вопросом: C?
-- Отклонено: C
+- Отклонено: X
 - Повторов (автоответ): Z
 - Отложено (стоп): S
 - Пользователь сказал "стоп": Да/Нет
