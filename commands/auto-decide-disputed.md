@@ -152,7 +152,15 @@ is what the user re-checks by.
 1. Apply the Edit(s).
 2. Verify they landed.
 3. `git add` **only** the files this decision touched — never `git add -A`, never a directory.
-4. Commit. In `/claude-mesh:mesh-review`:
+   Then look at what is actually staged: `git diff --cached --name-only`. Per-file staging is not
+   isolation — `git add <file>` takes the whole file, including edits inside it that this decision
+   did not make. **Stop the run** (Step 2.d's failure rule) if the staged set holds a file this
+   decision did not touch, or if a file it did touch carries changes it did not make; say which
+   file and let the user sort it out. A tree that is merely dirty *elsewhere* is not this case —
+   warn in one line and carry on.
+4. Commit **with an explicit pathspec** — `git commit -- <the files this decision touched>` — so
+   that anything staged before the run began cannot ride along in a decision's commit. In
+   `/claude-mesh:mesh-review`:
    ```
    review: auto-decide <short issue name> — вариант <X>
 
@@ -177,8 +185,10 @@ the flow's existing message `review: apply decisions from external review discus
 review with `docs: review iter N — decisions (<TOPIC>)` — decisions only, because the iteration log
 is not written yet and Step 14 commits it separately under its own `decisions + log` message. That
 keeps the human/machine boundary visible in the history and guarantees a clean tree. If the tree is
-dirty for unrelated reasons, say so in one line and continue — staging is per-file, so nothing
-foreign is swept in.
+dirty for unrelated reasons, say so in one line and continue: those files are never staged, so they
+cannot reach a decision's commit. What per-file staging does **not** protect against is an unrelated
+edit inside a file a decision does touch, or something staged before the run — 2.d step 3 checks for
+both and stops rather than committing them.
 
 **2.e — «Не исправлять» / «Оставить как есть» is a full outcome.** No edit, no commit. Record it in
 the summary like any other decision. Never invent an edit so that there is something to commit.
