@@ -297,17 +297,19 @@ git diff --cached HEAD -- . ':(exclude)<each of this decision's files>' # outsid
 Retry only when the first gained no path and both diffs are byte-identical between the two
 snapshots, and treat none of the three as optional. The index side is not a duplicate of the tree
 side: a hook that re-stages an outside path can change what is staged there while leaving the
-working tree alone, and the working-tree diff is then identical across both snapshots. Reading the after-status raw would refuse the retry
+working tree alone, and the working-tree diff is then identical across both
+snapshots. Reading the after-status raw would refuse the retry
 in every tree that is not pristine: the user's own dirty or staged files are in it by design,
 settle-the-tree having explicitly let them stay. And status cannot answer the second question at
 all — a path already listed ` M` is still ` M` after a formatter rewrites it, so the two snapshots
 match while the hook has in fact reached outside.
 
-**Do not re-run the content check of steps 1 and 3.** A formatter rewriting a file wholesale produces exactly
-the «changes this decision did not make» that it stops on, so re-entering it would abort the
-run this exception exists to save. The repaired content goes into the decision's commit, which is right: it is the
-project's own formatting policy applied to your own edit. If the second commit fails too, or the
-hook reached a file this decision did not touch, the paragraph above applies as written.
+**Do not re-run the content check of steps 1 and 3.** A formatter rewriting a file wholesale
+produces exactly the «changes this decision did not make» that it stops on, so re-entering it
+would abort the run this exception exists to save. The repaired content goes into the decision's
+commit, which is right: it is the project's own formatting policy applied to your own edit. If the
+second commit fails too, or the hook reached a file this decision did not touch, the paragraph
+above applies as written.
 
 Continuing instead would leave an edit on disk that no commit covers while the tally counts the
 issue as decided — the one divergence between history and summary that this mode cannot afford,
