@@ -196,13 +196,24 @@ is what the user re-checks by.
    ```
 5. Only then start the next issue. Do **not** push.
 
-**If any of those four steps fails, the run stops there.** Do not record the decision, do not mark
-the issue decided, do not move to the next one. Say which step failed and why, name the issue you
-were on and the ones still queued, and leave the edit where it is for the user to look at. Do not
-retry and do not roll the edit back: the causes that fail a local commit — a pre-commit hook, an
-unset `user.email`, a locked index, no write permission — are deterministic, so a second attempt
-fails identically (the same reasoning `verify-delegation.sh` applies to `BROKEN` and `KILLED`), and
-an automatic `git checkout` over your own edit can take work that is not yours with it.
+**If any of those four steps fails, the run stops there** — with the one exception below. Do not
+record the decision, do not mark the issue decided, do not move to the next one. Say which step
+failed and why, name the issue you were on and the ones still queued, and leave the edit where it
+is for the user to look at. Never roll the edit back: an automatic `git checkout` over your own
+edit can take work that is not yours with it. And do not retry — an unset `user.email`, a locked
+index, no write permission, a hook that rejects the commit on policy all fail a second attempt
+identically (the same reasoning `verify-delegation.sh` applies to `BROKEN` and `KILLED`).
+
+**The exception: a hook that repaired the files and failed the commit once.** `black`, `prettier`
+and the rest of that family rewrite what they are handed and exit non-zero the first time —
+re-staging and committing again is their documented workflow, not a gamble. Treated as terminal,
+every repository with a formatting hook stops this run on its first decision, in the one mode meant
+to need no supervision. So, when the commit failed **and** the failure left the working tree
+modified in files this decision touched — the hook repaired them — re-stage exactly those files,
+re-run step 3's staged-set check on the result, and commit once more. **Once.** If that second
+commit fails too, or the hook touched a file this decision did not, the paragraph above applies as
+written. The repaired content goes into the decision's commit, which is right: it is the project's
+own formatting policy applied to your own edit.
 
 Continuing instead would leave an edit on disk that no commit covers while the tally counts the
 issue as decided — the one divergence between history and summary that this mode cannot afford,
@@ -259,6 +270,7 @@ decision was «не исправлять» — 2.e produces no edit and no commi
 | «Ревью в сессии нет — запущу его сам» | Stop. That is state S5: say there is nothing to decide. This command decides; it does not review. |
 | Inventing an edit for an issue whose answer is «не исправлять», so there is something to commit | Stop. That is a full outcome: no edit, no commit, recorded in the summary. |
 | `git add -A` because several files changed | Stop. Per-file staging only — other work may be sitting in the tree. |
+| A commit failed, so trying again — and again | Stop. Exactly one retry, and only for a hook that repaired this decision's own files (2.d). Every other failure is terminal on the first one. |
 | Rewriting an analysis that is already on screen (state S1) | Stop. Append `Проверка решения` to it and decide. Rewriting burns context and changes nothing. |
 
 ## Bottom Line
