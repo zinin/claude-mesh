@@ -44,7 +44,7 @@ Optional (caller can specify):
 
 These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so you catch yourself before drifting.
 
-> Sync note: rules 3–8 are mirrored in `commands/mesh-review.md` (Iron Rules / Step 6.4). When editing shared rule text, mirror the edit there (step numbers differ; `/mesh-review` additionally has `default`-mode clauses, and this skill has no `default` mode — its only non-waiting path is the `autodecide` argument).
+> Sync note: rules 3–8 are mirrored in `commands/mesh-review.md` (Iron Rules / Step 6.4). When editing shared rule text, mirror the edit there (step numbers differ; `/mesh-review` additionally has `default`-mode deferral clauses in the disputed phase, which this skill has none of — its `default` argument only selects reviewers, and its only non-waiting path in the disputed phase is the `autodecide` argument).
 
 1. **Phase order is fixed:** classify ALL issues first → apply auto-fixes → commit → discuss disputed one-by-one. Never interleave.
 2. **Auto-fixes are committed BEFORE disputed discussion starts.** The user gets a clean checkpoint with all the safe edits.
@@ -711,11 +711,12 @@ Display intro (interactive mode):
 - **In `autodecide` mode neither branch above applies to the waiting case.** The decision is made by
   `/claude-mesh:auto-decide-disputed` and recorded in `answers` as
   `{issue, status: "new-autodecide", answer: "Вариант X (autodecide)", action: "<what changed>",
-  confidence: "уверенно" | "под вопросом (<what was missing>)"}` — Step 13 renders it and Step 15
-  counts it. The stop check still applies: «стоп» during the run ends it, and the remainder is
-  recorded `deferred` as usual.
+  confidence: "уверенно" | "под вопросом (<what was missing>)", commit: "<short SHA>" | "—"}` —
+  Step 13 renders it and Step 15 counts it. `commit` is `«—»` exactly when the decision was
+  «не исправлять», which produces no edit and no commit. The stop check still applies: «стоп»
+  during the run ends it, and the remainder is recorded `deferred` as usual.
 
-**12.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
+**12.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice; in `autodecide` mode neither — the command decides and applies) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
 
 After the loop, also add all `auto_fixes`, `repeated`, `dismissed` entries to `answers` with their statuses (`new-auto`, `repeat`, `new-dismissed` respectively), and every deferred disputed issue with status `deferred` (`answer: "отложено (стоп)"`, `action: "-"`, note your recommended variant if the analysis was already presented), so Step 13 can render the iter file without losing deferred issues.
 
@@ -727,7 +728,9 @@ After the loop, also add all `auto_fixes`, `repeated`, `dismissed` entries to `a
 <!-- SYNC: the date rule is mirrored by commands/design-review-fresh-session.md Step 2
      and commands/code-review-fresh-session.md Step 3 — change all three together. -->
 
-Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
+Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with the format below. Its
+`**Уверенность:**` and `**Коммит:**` lines belong only to issues whose `**Статус:**` is
+`Решено автоматически (autodecide)` — omit both lines entirely for every other status:
 
 ```markdown
 # Review Iteration N — YYYY-MM-DD HH:MM
@@ -748,8 +751,8 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 **Источник:** [which agent(s) raised this issue]
 **Статус:** Автоисправлено | Обсуждено с пользователем | Решено автоматически (autodecide) | Отклонено | Повтор (iter-M, TYPE-K) | Отложено (стоп)
 **Ответ:** Auto-fix description / User's answer / Dismissal reason / Previous answer / Auto-decision (Вариант X (autodecide))
-**Уверенность:** уверенно | под вопросом (<чего не хватило>)   ← only for status "Решено автоматически (autodecide)"
-**Коммит:** <short SHA>   ← only for status "Решено автоматически (autodecide)"
+**Уверенность:** уверенно | под вопросом (<чего не хватило>)
+**Коммит:** <short SHA>, или «—» для решения «не исправлять»
 **Действие:** What was changed in documents
 
 ---
@@ -797,6 +800,14 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 by `/claude-mesh:auto-decide-disputed`. This step then stages only the iteration file and the
 merged review file, and its message stays `docs: review iter N — decisions + log (<TOPIC>)`.
 
+**If the command was invoked only after this step already ran** — «стоп» ended Step 12, Steps 13–14
+committed those issues as `Отложено (стоп)`, and the user then handed the deferred queue to
+`/claude-mesh:auto-decide-disputed` (its state S4) — this step does not run again and does not cover
+those decisions. The command closes the record itself: it appends a
+`## Дополнение — autodecide (после «стоп»)` block to the iteration file this step committed, with
+one entry per decision in Step 13's per-issue format, corrects the `Статистика` counts in place, and
+commits that file with `docs: review iter N — autodecide addendum (<TOPIC>)`.
+
 ### Step 15: Next Steps
 
 Count from answers:
@@ -835,13 +846,14 @@ Options:
 
 ### Step 16: Present Final Summary
 
-When loop exits, display:
+When loop exits, display the block below. Its closing `**Все авто-решения:**` line belongs only to
+a run that had auto-decisions (`autodecided > 0`) — drop that line otherwise:
 
 ```
 ## Review Complete
 
 **Iterations:** N
-**Total issues processed:** X
+**Total issues processed:** T
 **Review agents used:** [list of agents]
 **Final status:** [No new issues / User stopped]
 
@@ -853,7 +865,7 @@ When loop exits, display:
 **Documents updated:**
 - [list of modified design/plan files]
 
-**Все авто-решения:** git log --grep=auto-decide-disputed --oneline   ← only when the iteration had auto-decisions
+**Все авто-решения:** git log --grep=auto-decide-disputed --oneline
 ```
 
 ## Error Handling

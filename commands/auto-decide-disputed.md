@@ -50,8 +50,20 @@ Both paths execute this file, and from the moment it is loaded it governs the di
 | **S1** | The disputed phase is running and this turn is waiting for the user's answer on the current issue | That issue is FIRST in the queue. Its analysis is already on screen — do **not** rewrite it: append the `Проверка решения` section, decide, apply, commit, then continue with the rest. If the user answered it before invoking this command, their answer stands — start with the next issue |
 | **S2** | Issues are classified but the disputed phase has not started (auto-fixes being applied, or their commit still pending) | Finish the auto-fixes and make the intermediate commit first — Iron Rules 1–2 are not overridden — then start the run |
 | **S3** | Reviewers are still working (watch loop / executors running) | Say in one line that the signal is armed and when it fires. Continue the normal flow unchanged — watch loop, delegation guard, dedupe, classification — and start the run when the disputed phase begins |
-| **S4** | The disputed phase is over, or there were no disputed issues | Issues deferred earlier in this session — by «стоп» or by `default` mode — **are** the queue: decide them now. If there are none, say there is nothing left to decide and stop. Do not invent issues |
+| **S4** | The disputed phase is over, or there were no disputed issues | Issues deferred earlier in this session — by «стоп» or by `default` mode — **are** the queue: decide them now. If there are none, say there is nothing left to decide and stop. Do not invent issues. In `/claude-mesh:mesh-design-review` the run also has to close the iteration record — see the paragraph below the table |
 | **S5** | There is no review cycle in this session at all | Say there is nothing to decide. **Do NOT start a review** — this command decides, it does not review. Point at `/claude-mesh:mesh-review autodecide` or `/claude-mesh:mesh-design-review autodecide` |
+
+**S4 in design review — close the iteration record too.** In `/claude-mesh:mesh-review` the Step 6.6
+summary is screen output, so deciding deferred issues needs nothing beyond the run itself. In
+`/claude-mesh:mesh-design-review` those issues were already written into the current iteration file
+as `Отложено (стоп)` and committed by Step 14 — a committed record that now contradicts the
+decisions you have just made, and the one the next iteration reads as what was decided. So after the
+run, append a `## Дополнение — autodecide (после «стоп»)` block to that same iteration file, with
+one entry per decision in Step 13's per-issue format (`**Статус:** Решено автоматически
+(autodecide)`, `**Ответ:**`, `**Уверенность:**`, `**Коммит:**`, `**Действие:**`); correct the
+`Статистика` counts in place (`Отложено (стоп)` down, `Решено автоматически (autodecide)` and
+`из них под вопросом` up); and commit that file alone with
+`docs: review iter N — autodecide addendum (<TOPIC>)`.
 
 Announce the queue before the first issue:
 
@@ -137,8 +149,9 @@ is what the user re-checks by.
 The trailing `Решено автоматически:` line is what makes the whole run findable afterwards with
 `git log --grep=auto-decide-disputed`. Keep it verbatim.
 
-**Before the first decision — settle the tree.** If it carries uncommitted edits from issues the
-USER decided interactively, commit those first, on their own: in `/claude-mesh:mesh-review` with
+**Before the first decision — settle the tree.** If it carries any uncommitted edits produced by the
+disputed phase so far — issues the user answered and issues you auto-applied after analysis alike —
+commit those first, on their own: in `/claude-mesh:mesh-review` with
 the flow's existing message `review: apply decisions from external review discussion`; in design
 review with `docs: review iter N — decisions (<TOPIC>)` — decisions only, because the iteration log
 is not written yet and Step 14 commits it separately under its own `decisions + log` message. That
@@ -172,8 +185,9 @@ design review:
 
 In design review, each decision also enters `answers` as
 `{issue, status: "new-autodecide", answer: "Вариант X (autodecide)", action: "<what changed>",
-confidence: "уверенно" | "под вопросом (<what was missing>)"}` so that Step 13 renders it in the
-iteration file and Step 15 counts it.
+confidence: "уверенно" | "под вопросом (<what was missing>)", commit: "<short SHA>" | "—"}` so that
+Step 13 renders it in the iteration file and Step 15 counts it. `commit` is `«—»` exactly when the
+decision was «не исправлять» — 2.e produces no edit and no commit.
 
 ## Red Flags — STOP if you catch yourself doing this
 

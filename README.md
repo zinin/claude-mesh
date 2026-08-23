@@ -17,8 +17,7 @@ daemon), and session helpers.
 - **`codex-*`, `gemini-*` agents** — wrappers for OpenAI Codex CLI and Gemini CLI
 - **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
   `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
-  `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`,
-  `/claude-mesh:auto-decide-disputed`
+  `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`
 - **`/claude-mesh:auto-decide-disputed`** — invoke mid-review to hand the remaining disputed issues
   to the agent itself: it writes the same structured analysis, rebuts its own recommendation in a
   `Проверка решения` section, marks each decision `уверенно` / `под вопросом`, and commits them one
