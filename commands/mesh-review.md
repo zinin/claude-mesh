@@ -26,9 +26,17 @@ other than the default branch, `merge-base` then finds nothing and the codex / g
 back to `HEAD~1` — a single commit reviewed while the caller believes the whole branch was
 covered, with nothing on screen saying otherwise.
 
-## Step 0: Check for `default` argument
+## Step 0: Check the arguments
 
-If invoked as `/claude-mesh:mesh-review default` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
+**Bind `AUTODECIDE` here**, before anything else: it is `true` when `autodecide` appears among the
+arguments, `false` otherwise. Echo it (`AUTODECIDE=true|false`) so it is on screen. Its only
+consumer is Step 6.4, twenty minutes and a background watch loop away; an unbound name raises no
+error in a prompt — the reader simply improvises, and a run started with `autodecide` quietly
+defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bound below and
+`BASE_BRANCH` is carried in Step 5a.
+
+**If `default` is among the arguments** — in any order, alone or combined with `BASE_BRANCH=` and
+`autodecide` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
 - Skip Steps 1-3 entirely.
 - Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
 - Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly; rc=1 ⇒ surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it).
@@ -492,15 +500,28 @@ If no files were modified, skip this commit.
 
 If `D == 0`, finish (jump to Step 6.5 with a brief summary).
 
-**Autodecide mode.** If the `autodecide` argument was passed (see Arguments), do NOT run the
-interactive loop below: invoke `/claude-mesh:auto-decide-disputed` through the Skill tool now and
-follow it for the whole disputed queue. It replaces 6.4.b's waiting branch and the `default`-mode
-deferral; 6.4.a's analysis format still applies unchanged, and the command points back to it. The
-same command may also be invoked by the USER mid-discussion — from that point on the effect is
-identical. The intro line for this mode is printed by the command, not here. Do not paste any part
-of its protocol here.
+**Autodecide mode.** If `AUTODECIDE` is true (Step 0) **or the user has already invoked**
+`/claude-mesh:auto-decide-disputed` in this session — its state S3 arms the mode without any
+argument being passed — do NOT run the interactive loop below: invoke
+`/claude-mesh:auto-decide-disputed` through the Skill tool now and follow it for the whole disputed
+queue.
 
-Display intro (interactive mode):
+It replaces **the whole of 6.4.b — both branches**: the single-adequate-variant branch as much as
+the waiting one, plus the `default`-mode deferral. Every remaining disputed issue goes through the
+command's Step 2, so every one of them gets `Проверка решения`, a confidence flag and its own
+commit. In this mode 6.4.b's first branch produces nothing and the `Авто-применено по анализу: B1`
+counter stays at zero — an issue counted as `B1` here is an edit nobody committed, because Step 6.5
+is skipped below. 6.4.a's analysis format still applies unchanged, and the command points back to
+it. The intro line for this mode is printed by the command, not here. Do not paste any part of its
+protocol here.
+
+**If the command does not resolve** — an older plugin copy in this environment — say so in one line
+and fall back to the interactive loop below (or, with `default`, to its deferral bullet). Never
+improvise the protocol from memory: Iron Rules 7–8 stand until the command that overrides them is
+actually loaded.
+
+Display intro (interactive mode; not when `autodecide` is active — then the command prints its own
+line):
 ```
 Спорных вопросов: D. Обсуждаем по одному — для каждого приведу суть, анализ, варианты и обоснованную рекомендацию.
 ```
@@ -583,9 +604,14 @@ git commit -m "review: apply decisions from external review discussion"
 Do NOT push. If no code changes resulted from Step 6.4 (e.g. all disputed → "Не исправлять"), skip this commit.
 
 **In `autodecide` mode this step is skipped:** every decision was already committed on its own, one
-commit per decision, so there is nothing left to stage. If some issues were decided interactively
-before the mode was switched on, their edits were committed by the command's own "settle the tree"
-rule before its first decision.
+commit per decision, so there is nothing left to stage. Edits produced by the disputed phase before
+the mode started — whichever way they were decided — are committed by the command's own "settle the
+tree" rule before its first decision.
+
+**Skip it only if the tree is in fact clean of disputed-phase edits.** Two paths leave edits behind
+that no commit of the command's covers: «стоп» arriving before its first decision, so settle-the-
+tree never ran; and the user cutting in mid-run to choose a variant themselves. If `git status`
+shows such edits, run this step normally instead of skipping it.
 
 ### Step 6.6: Final Summary
 
@@ -597,7 +623,7 @@ Display a short summary:
   Авто-исправлено:           A   (закоммичено: <hash if any>)
   Авто-применено по анализу: B1
   Обсуждено с пользователем: B2  (закоммичено: <hash if any>)
-  Решено автоматически:      C   (autodecide, по коммиту на решение)
+  Решено автоматически:      C   (autodecide, по коммиту на решение; «не исправлять» — без коммита)
     из них под вопросом:     C?
   Отклонено как ложные:      X
   Отложено по «стоп»:        S1
@@ -614,7 +640,12 @@ For every `под вопросом` decision (C?) add one line, so the user know
   - <Issue title> (`file:line`) — Вариант X, <hash> — не хватило: <what was missing>
 ```
 
-When C > 0, close the summary with:
+`<hash>` is `—` when that decision was «не исправлять»: 2.e of the command makes it a full outcome
+with no edit and no commit, and it can still be flagged `под вопросом` by test (b). Never invent a
+hash, and never drop the line for want of one — the design-review side spells the same rule as
+`commit: "—"`.
+
+When at least one auto-decision produced a commit, close the summary with:
 ```
 Все авто-решения: git log --grep=auto-decide-disputed --oneline
 ```
@@ -628,7 +659,7 @@ When C > 0, close the summary with:
 | Asking the user a question while other disputed issues are still unprocessed in the same message | Stop. Resolve current → apply → THEN start next. |
 | Asking the user to pick when only one option actually works | Stop. Announce the decision and apply it. Asking is noise. |
 | About to call AskUserQuestion for a disputed choice | Stop. The analysis + variants + recommendation are the turn's FINAL message; end the turn there and take the answer as free text. A modal would swallow the analysis (that is the regression). |
-| Shrinking the analysis so a tool call can follow in the same turn | Stop. The analysis is the final message of the turn, as long as the issue needs. Don't trim it to precede a tool. |
+| Shrinking the analysis so a tool call can follow in the same turn (interactive and `default` modes) | Stop. The analysis is the final message of the turn, as long as the issue needs. Don't trim it to precede a tool. In `autodecide` this row does not apply — there the analysis is *meant* to be followed by the edit and the commit in the same turn, at full length; see the row below. |
 | Applying an auto-fix in the middle of disputed discussion | Stop. Auto-fixes must all happen in Step 6.2 and be committed in Step 6.3 before Step 6.4 begins. |
 | Skipping the auto-fix commit ("I'll commit everything at the end") | Stop. The intermediate commit (Step 6.3) is the user's safe checkpoint. Mandatory when auto-fixes were applied. |
 | In `autodecide` mode, ending the turn to wait for the user's answer | Stop. That mode exists precisely to not wait: write the analysis, add `Проверка решения`, decide, commit, continue. |

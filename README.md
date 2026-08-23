@@ -11,7 +11,8 @@ daemon), and session helpers.
 - **`/claude-mesh:mesh-review`** — orchestrate code review across multiple models in parallel; add
   `autodecide` to have the disputed issues decided for you — same full analysis, an explicit
   self-check, one commit per decision
-- **`/claude-mesh:mesh-design-review`** — iterative design-doc review with discussion of issues
+- **`/claude-mesh:mesh-design-review`** — iterative design-doc review with discussion of issues;
+  takes the same `autodecide` argument
 - **`ext-claude-code-reviewer` / `ext-claude-executor` agents** — Anthropic-API-compatible
   models on alt providers (one agent, any provider, any model)
 - **`codex-*`, `gemini-*` agents** — wrappers for OpenAI Codex CLI and Gemini CLI

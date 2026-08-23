@@ -50,7 +50,7 @@ Both paths execute this file, and from the moment it is loaded it governs the di
 | **S1** | The disputed phase is running and this turn is waiting for the user's answer on the current issue | That issue is FIRST in the queue. Its analysis is already on screen — do **not** rewrite it: append the `Проверка решения` section, decide, apply, commit, then continue with the rest. If the user answered it before invoking this command, their answer stands — start with the next issue |
 | **S2** | Issues are classified but the disputed phase has not started (auto-fixes being applied, or their commit still pending) | Finish the auto-fixes and make the intermediate commit first — Iron Rules 1–2 are not overridden — then start the run |
 | **S3** | Reviewers are still working (watch loop / executors running) | Say in one line that the signal is armed and when it fires. Continue the normal flow unchanged — watch loop, delegation guard, dedupe, classification — and start the run when the disputed phase begins |
-| **S4** | The disputed phase is over, or there were no disputed issues | Issues deferred earlier in this session — by «стоп» or by `default` mode — **are** the queue: decide them now. If there are none, say there is nothing left to decide and stop. Do not invent issues. In `/claude-mesh:mesh-design-review` the run also has to close the iteration record — see the paragraph below the table |
+| **S4** | The disputed phase is over, or there were no disputed issues | Issues deferred earlier in this session — by «стоп» or by `default` mode — **are** the queue: decide them now. Their analyses are usually already in this session — reuse them exactly as S1 does: do not rewrite an analysis that is on screen, append `Проверка решения` to it. If there are none, say there is nothing left to decide and stop. Do not invent issues. In `/claude-mesh:mesh-design-review` the run also has to close the iteration record — see the paragraph below the table |
 | **S5** | There is no review cycle in this session at all | Say there is nothing to decide. **Do NOT start a review** — this command decides, it does not review. Point at `/claude-mesh:mesh-review autodecide` or `/claude-mesh:mesh-design-review autodecide` |
 
 **S4 in design review — close the iteration record too.** In `/claude-mesh:mesh-review` the Step 6.6
@@ -63,7 +63,9 @@ one entry per decision in Step 13's per-issue format (`**Статус:** Реш�
 (autodecide)`, `**Ответ:**`, `**Уверенность:**`, `**Коммит:**`, `**Действие:**`); correct the
 `Статистика` counts in place (`Отложено (стоп)` down, `Решено автоматически (autodecide)` and
 `из них под вопросом` up); and commit that file alone with
-`docs: review iter N — autodecide addendum (<TOPIC>)`.
+`docs: review iter N — autodecide addendum (<TOPIC>)` — carrying the same trailing
+`Решено автоматически: /claude-mesh:auto-decide-disputed` line as every decision commit, so the
+addendum is not invisible to `git log --grep=auto-decide-disputed`.
 
 Announce the queue before the first issue:
 
@@ -81,11 +83,15 @@ analyses is forbidden here exactly as it is interactively.
 depth:
 
 ```
-## [Спорное i/D] <Issue Title>        (design review also carries the [TYPE-N] id)
-**Файл:** …  **Уровень:** …  **Нашли:** …
+## [Спорное i/D] <Issue Title>
+<header verbatim from the running flow — do NOT mix the two:
+   /claude-mesh:mesh-review  → **Файл:** …  **Уровень:** …  **Нашли:** …
+   design review            → title carries the [TYPE-N] id, and the only field is **Источник:** …>
 ### Суть замечания
 ### Анализ
-### Варианты решения       (each with Что делаем / Плюсы / Минусы; «Не исправлять» where it applies)
+### Варианты решения       (each with Что делаем / Плюсы / Минусы; the no-change variant where it
+                           applies — «Не исправлять» in /claude-mesh:mesh-review, «Оставить как
+                           есть» in design review)
 ### Рекомендация
 ```
 
@@ -117,7 +123,9 @@ the outcome is decoration.
 **2.c — Set the confidence flag by test, not by feel.** `под вопросом` if ANY of these holds:
 
 - (a) the objection got no substantive answer — «маловероятно», «на практике не встретится», with
-  nothing in the code or a prior decision behind it;
+  nothing in the code or a prior decision behind it. Unanswered is not the same as outweighing:
+  an objection you cannot rebut but judge weaker leaves the decision standing and flags it here,
+  while one that actually outweighs reverses the decision under 2.b instead of landing in (a);
 - (b) the decision rests on a fact **outside this repository**: a product priority, a deadline,
   someone's intent, the behaviour of an external system you cannot read from here;
 - (c) «что заставило бы передумать» names something knowable, but not from here («если X реально
@@ -183,6 +191,8 @@ design review:
 - one line per `под вопросом` decision: issue, chosen variant, commit hash, what was missing;
 - the line `Все авто-решения: git log --grep=auto-decide-disputed --oneline`.
 
+<!-- SYNC: the `answers` shape below is ONE contract living in two places — this block and
+     `skills/mesh-design-review/SKILL.md` Step 12.b. Change both or neither. -->
 In design review, each decision also enters `answers` as
 `{issue, status: "new-autodecide", answer: "Вариант X (autodecide)", action: "<what changed>",
 confidence: "уверенно" | "под вопросом (<what was missing>)", commit: "<short SHA>" | "—"}` so that
@@ -205,7 +215,11 @@ decision was «не исправлять» — 2.e produces no edit and no commi
 
 ## Bottom Line
 
-When the run ends, every disputed issue has a full analysis, an explicit counter-argument with an
-answer to it, a decision, a confidence flag, and — unless the decision was «не исправлять» — its
-own commit. Nothing was deferred, nothing was batched, and no decision is hidden:
-`git log --grep=auto-decide-disputed` lists them all.
+When the run completes uninterrupted, every disputed issue has a full analysis, an explicit
+counter-argument with an answer to it, a decision, a confidence flag, and — unless the decision was
+«не исправлять» — its own commit. Nothing was deferred, nothing was batched, and no decision is
+hidden: `git log --grep=auto-decide-disputed` lists every decision that produced a commit, and the
+run's summary lists the «не исправлять» ones, which produce none.
+
+If «стоп» ended the run early (Step 3), that postcondition does not hold: say plainly which issues
+were decided and which are left deferred.

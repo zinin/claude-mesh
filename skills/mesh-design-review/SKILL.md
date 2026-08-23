@@ -34,7 +34,11 @@ Optional (caller can specify):
 - **CODEX_MODEL** — Codex model. Default: resolved from `config.yaml` (`codex.model`) by the codex executor itself; final fallback "gpt-5.5". Set only when the user explicitly overrides.
 - **CODEX_REASONING_LEVEL** — reasoning level (`none|minimal|low|medium|high|xhigh|ultra`, known set as of 2026-07; unknown values pass through to codex). Default: resolved from `config.yaml` (`codex.reasoning_level`) by the executor; final fallback "xhigh". Set only when the user explicitly overrides.
 - **DEFAULT** — if `default` argument is passed, skip the Step 5 selection UI and use the `defaults.design_review` preset from `config.yaml` (`codex` / `gemini` in `builtin` → their executor; `claude` in `builtin` → one built-in `general-purpose` reviewer per entry of `claude_models`, no executor agent involved, or a single one in the fallback case; each `models` id → `claude-mesh:ext-claude-executor MODEL=<id>`). See Step 5.
-- **AUTODECIDE** — if the `autodecide` argument is passed, the disputed phase (Step 12) does not
+- **AUTODECIDE** — **bind this at Step 5.1**, next to `DEFAULT`, and echo `AUTODECIDE=true|false`.
+  Its only consumer is Step 12, a whole review cycle and a background watch loop away; an unbound
+  name raises no error in a prompt — the reader improvises, and a run started with `autodecide`
+  silently waits for the user after all. If the `autodecide` argument is passed, the disputed
+  phase (Step 12) does not
   wait for the user: it hands over to `/claude-mesh:auto-decide-disputed`, which writes the same
   analysis, adds an explicit self-check, and applies its own recommendation, one commit per
   decision. Orthogonal to `default` and combinable with it and with `DESIGN_PATH`/`PLAN_PATH`/
@@ -52,7 +56,7 @@ These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so
 4. **Every disputed issue gets a structured analysis** (Суть → Анализ → Варианты → Рекомендация). Bullet-only one-liners are forbidden. Write enough that someone who hasn't read the review can follow.
 5. **Always evaluate the variants you propose.** Each variant gets pros/cons, and you explicitly recommend ONE with reasoning. Never list variants neutrally.
 6. **If only one variant is genuinely adequate, do not ask the user.** Announce the decision, briefly say why the others fail, apply, move on. Asking when there's no real choice is noise.
-7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. In `autodecide` mode neither wait nor defer: follow `/claude-mesh:auto-decide-disputed`, which applies your own recommendation after an explicit self-check. Never batch.
+7. **One disputed issue at a time.** Present its analysis; if one variant is adequate, apply it in the same message and move on; if a choice remains, the analysis is the FINAL message of the turn (no tool call) and you wait for the user's free-text answer, then apply and start the next. In `autodecide` mode do not wait: follow `/claude-mesh:auto-decide-disputed`, which applies your own recommendation after an explicit self-check. (This skill has no `default`-mode deferral to suppress; «стоп» still stops the run and defers the remainder.) Never batch.
 8. **When a choice remains, the analysis IS the question — never AskUserQuestion.** The structured write-up (variants with pros/cons + recommendation) is the turn-final message; the turn ends with no trailing tool call and the user answers in free text. In `autodecide` mode the analysis is not a question at all — see Step 12. A trailing AskUserQuestion duplicates your write-up in its own modal UI and makes the harness drop the analysis — the user then sees only a bare modal. This is the regression this rule prevents.
 
 ### Red Flags — STOP if you catch yourself doing this
@@ -64,7 +68,7 @@ These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so
 | Asking the user a question while three other disputed issues are still unprocessed | Stop. Resolve current → apply → THEN start next. |
 | Asking the user to pick when only one option actually works | Stop. Announce the decision and apply it. Asking is noise. |
 | About to call AskUserQuestion for a disputed choice | Stop. The analysis + variants + recommendation are the turn's FINAL message; end the turn there and take the answer as free text. A modal would swallow the analysis (that is the regression). |
-| Shrinking the analysis so a tool call can follow in the same turn | Stop. The analysis is the final message of the turn, as long as the issue needs. Don't trim it to precede a tool. |
+| Shrinking the analysis so a tool call can follow in the same turn (interactive mode) | Stop. The analysis is the final message of the turn, as long as the issue needs. Don't trim it to precede a tool. In `autodecide` this row does not apply — there the analysis is *meant* to be followed by the edit and the commit in the same turn, at full length; see the row below. |
 | Applying an auto-fix in the middle of disputed discussion | Stop. Auto-fixes must all happen before disputed phase starts (Step 10), and must be committed (Step 11) before Step 12 begins. |
 | Skipping the auto-fix commit because "I'll commit everything at the end" | Stop. The intermediate commit (Step 11) is the user's safe checkpoint. It is mandatory whenever auto-fixes were applied. |
 | In `autodecide` mode, ending the turn to wait for the user's answer | Stop. That mode exists precisely to not wait: write the analysis, add `Проверка решения`, decide, commit, continue. |
@@ -640,13 +644,24 @@ If no files were modified in Step 10, skip this commit.
 
 If `disputed` is empty, proceed to Step 13.
 
-**Autodecide mode.** If `AUTODECIDE` was passed, do NOT run the interactive loop below: invoke
-`/claude-mesh:auto-decide-disputed` through the Skill tool now and follow it for the whole disputed
-queue, then come back for the "After the loop" paragraph at the end of 12.c before Step 13.
-It replaces 12.b's waiting branch; 12.a's analysis format still applies unchanged, and the
-command points back to it. The same command may also be invoked by the USER mid-discussion — from
-that point on the effect is identical. The intro line for this mode is printed by the command, not
-here. Do not paste any part of its protocol here.
+**Autodecide mode.** If `AUTODECIDE` is true (Step 5.1) **or the user has already invoked**
+`/claude-mesh:auto-decide-disputed` in this session — its state S3 arms the mode with no argument
+passed — do NOT run the interactive loop below: invoke `/claude-mesh:auto-decide-disputed` through
+the Skill tool now and follow it for the whole disputed queue, then come back for the "After the
+loop" paragraph at the end of 12.c before Step 13.
+
+It replaces **the whole of 12.b — both branches**: the single-adequate-variant branch as much as
+the waiting one. Every remaining disputed issue goes through the command's Step 2, so every one of
+them gets `Проверка решения`, a confidence flag, its own commit and status `new-autodecide`. In
+this mode 12.b's first branch produces nothing and no issue is recorded `new-auto-after-analysis`
+— such an entry here would be a document edit that no commit covers, because Step 14 stages only
+the iteration and merged files. 12.a's analysis format still applies unchanged, and the command
+points back to it. The intro line for this mode is printed by the command, not here. Do not paste
+any part of its protocol here.
+
+**If the command does not resolve** — an older plugin copy in this environment — say so in one line
+and fall back to the interactive loop below. Never improvise the protocol from memory: Iron Rules
+7–8 stand until the command that overrides them is actually loaded.
 
 Display intro (interactive mode):
 ```
@@ -708,12 +723,16 @@ Display intro (interactive mode):
   - **On the user's next message — check for stop FIRST.** If the response contains "стоп" / "stop" / "достаточно": set `stop = true`, record the current issue as deferred/undecided (apply nothing), mark all remaining disputed as deferred, and exit the loop. Otherwise apply the Edit(s) for the chosen variant, add to `answers`: `{issue, status: "new", answer: user_choice, action: "<fix>"}`, then move to the next disputed issue.
   - **If the turn is resumed by a background event** (e.g. a Step 6 watcher or task notification) rather than a user reply: handle the event, then end the turn again with a one-line reminder of the pending choice. A non-user event is never the user's answer.
 
-- **In `autodecide` mode neither branch above applies to the waiting case.** The decision is made by
+<!-- SYNC: the `answers` shape below is ONE contract living in two places — this bullet and
+     `commands/auto-decide-disputed.md` Step 4. Change both or neither. -->
+- **In `autodecide` mode neither branch above applies** — not the waiting one and not the
+  single-adequate-variant one. Every remaining disputed issue is decided by
   `/claude-mesh:auto-decide-disputed` and recorded in `answers` as
   `{issue, status: "new-autodecide", answer: "Вариант X (autodecide)", action: "<what changed>",
   confidence: "уверенно" | "под вопросом (<what was missing>)", commit: "<short SHA>" | "—"}` —
-  Step 13 renders it and Step 15 counts it. `commit` is `«—»` exactly when the decision was
-  «не исправлять», which produces no edit and no commit. The stop check still applies: «стоп»
+  Step 13 renders it and Step 15 counts it. `commit` is `«—»` exactly when the decision was the
+  no-change variant («Оставить как есть», spelled «не исправлять» in `/claude-mesh:mesh-review`),
+  which produces no edit and no commit. The stop check still applies: «стоп»
   during the run ends it, and the remainder is recorded `deferred` as usual.
 
 **12.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice; in `autodecide` mode neither — the command decides and applies) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
@@ -752,7 +771,7 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with the for
 **Статус:** Автоисправлено | Обсуждено с пользователем | Решено автоматически (autodecide) | Отклонено | Повтор (iter-M, TYPE-K) | Отложено (стоп)
 **Ответ:** Auto-fix description / User's answer / Dismissal reason / Previous answer / Auto-decision (Вариант X (autodecide))
 **Уверенность:** уверенно | под вопросом (<чего не хватило>)
-**Коммит:** <short SHA>, или «—» для решения «не исправлять»
+**Коммит:** <short SHA>, или «—» для решения «Оставить как есть» («не исправлять»)
 **Действие:** What was changed in documents
 
 ---
@@ -819,6 +838,7 @@ Count from answers:
 - `dismissed` = count where status == "new-dismissed"
 - `repeated` = count where status == "repeat"
 - `deferred` = count where status == "deferred"
+- `total` (`T` in Step 13's `Статистика` and in Step 16) = the sum of the counts above
 
 **ALWAYS ask user what to do next** (iterations are always done in fresh sessions):
 
