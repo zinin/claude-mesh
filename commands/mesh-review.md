@@ -509,10 +509,12 @@ queue.
 It replaces **the whole of 6.4.b — both branches**: the single-adequate-variant branch as much as
 the waiting one, plus the `default`-mode deferral. Every remaining disputed issue goes through the
 command's Step 2, so every one of them gets `Проверка решения`, a confidence flag and its own
-commit. In this mode 6.4.b's first branch produces nothing and the `Авто-применено по анализу: B1`
-counter stays at zero — an issue counted as `B1` here is an edit nobody committed, because Step 6.5
-is skipped below. 6.4.a's analysis format still applies unchanged, and the command points back to
-it. The intro line for this mode is printed by the command, not here. Do not paste any part of its
+commit. In this mode 6.4.b's first branch produces nothing **for the issues the command decides**,
+and none of them is counted `B1` — an issue counted there would be an edit nobody committed,
+because Step 6.5 is skipped below. Issues that branch had already applied BEFORE the hand-off — the
+mode can be entered mid-phase, the command's state S1 — stay counted in `B1`: settle-the-tree
+commits those edits, so the tally and git agree. 6.4.a's analysis format still applies unchanged,
+and the command points back to it. The intro line for this mode is printed by the command, not here. Do not paste any part of its
 protocol here.
 
 **If the command does not resolve** — an older plugin copy in this environment — say so in one line
@@ -604,7 +606,10 @@ git commit -m "review: apply decisions from external review discussion"
 Do NOT push. If no code changes resulted from Step 6.4 (e.g. all disputed → "Не исправлять"), skip this commit.
 
 **In `autodecide` mode this step is skipped:** every decision was already committed on its own, one
-commit per decision, so there is nothing left to stage. Edits produced by the disputed phase before
+commit per decision, so there is nothing left to stage. «In `autodecide` mode» here means
+`AUTODECIDE` is true — the command binds it on the S3 path too, precisely so that this step and
+Step 6.6 do not have to re-derive the mode from whether someone invoked a command earlier in the
+session. Edits produced by the disputed phase before
 the mode started — whichever way they were decided — are committed by the command's own "settle the
 tree" rule at the start of its run.
 

@@ -1,6 +1,6 @@
 ---
 name: auto-decide-disputed
-description: Decide every remaining disputed review issue autonomously — the same structured analysis and recommendation as the interactive discussion, plus an explicit self-check, applied without waiting for an answer. Use inside /claude-mesh:mesh-review or /claude-mesh:mesh-design-review.
+description: Decide every remaining disputed review issue autonomously — the same structured analysis and recommendation as the interactive discussion, plus an explicit self-check, applied without waiting for an answer. Invoked by the USER during /claude-mesh:mesh-review or /claude-mesh:mesh-design-review, or by their `autodecide` argument — never something to reach for on your own initiative.
 ---
 
 # Auto-Decide Disputed Issues
@@ -43,13 +43,27 @@ What is **not** overridden, and still holds exactly as written:
 
 Both paths execute this file, and from the moment it is loaded it governs the disputed phase.
 
+**Before anything else — whose invocation is this?** This file is reachable through the Skill tool,
+so a model can invoke it as readily as a user can type it, and everything below then acts on the
+repository without asking. Proceed only when the invocation traces to one of the two entry points
+above: the user typed the command, or `AUTODECIDE` was bound `true` at `/claude-mesh:mesh-review`
+Step 0 / `/claude-mesh:mesh-design-review` Step 5 and the running flow is handing over at the top of
+its disputed phase. If neither holds — you reached for this command yourself, mid-review, because an
+issue was hard — **that is not consent.** Say so in one line and go back to Iron Rules 7–8: write
+the analysis and end the turn on it.
+
 ## Step 1: Identify your state
+
+**If the running flow just handed over** — Step 6.4 / Step 12 invoked this command because
+`autodecide` was passed — none of the rows below applies: the disputed phase has begun, nothing is
+pending, and there is nothing to arm. Start at issue 1 of the queue and go to Step 2. The table is
+for the other entry point, the user invoking the command somewhere in the middle of a session.
 
 | State | Situation | What to do |
 |---|---|---|
 | **S1** | The disputed phase is running and this turn is waiting for the user's answer on the current issue | That issue is FIRST in the queue. Its analysis is already on screen — do **not** rewrite it: append the `Проверка решения` section, decide, apply, commit, then continue with the rest. If the user answered it before invoking this command, their answer stands — start with the next issue |
 | **S2** | Issues are classified but the disputed phase has not started (auto-fixes being applied, or their commit still pending) | Finish the auto-fixes and make the intermediate commit first — Iron Rules 1–2 are not overridden — then start the run. **Invoking this command is not approval of the auto-fixes**: if the flow is waiting for that confirmation, still ask for it as usual — the consent this invocation carries is about deciding disputed issues, nothing else |
-| **S3** | Anything else before the disputed phase begins — reviewers being selected or dispatched, the watch loop running, the delegation guard, dedupe, classification | Say in one line that the signal is armed and when it fires. Continue the normal flow completely unchanged, and start the run when the disputed phase begins |
+| **S3** | Anything else before the disputed phase begins — reviewers being selected or dispatched, the watch loop running, the delegation guard, dedupe, classification | Bind `AUTODECIDE = true` and echo it (see the paragraph below the table), then say in one line that the signal is armed and when it fires. Continue the normal flow completely unchanged, and start the run when the disputed phase begins |
 | **S4** | The disputed phase is over, or there were no disputed issues | Issues deferred earlier in this session — by «стоп» or by `default` mode — **are** the queue: decide them now. Their analyses are usually already in this session — reuse them exactly as S1 does: do not rewrite an analysis that is on screen, append `Проверка решения` to it. If there are none, say there is nothing left to decide and stop. Do not invent issues. In `/claude-mesh:mesh-design-review` the run also has to close the iteration record — see the paragraph below the table |
 | **S5** | There is no review cycle in this session at all | Say there is nothing to decide. **Do NOT start a review** — this command decides, it does not review. Point at `/claude-mesh:mesh-review autodecide` or `/claude-mesh:mesh-design-review autodecide` |
 
@@ -59,8 +73,21 @@ cases where this decides something real: auto-fixes still in flight is S2, not S
 finished and committed first; and `D == 0` with auto-fixes still pending is S2, not S4 — commit
 them, and only then say there is nothing left to decide.
 
-**S4 in design review — close the iteration record too.** In `/claude-mesh:mesh-review` the Step 6.6
-summary is screen output, so deciding deferred issues needs nothing beyond the run itself. In
+**Bind `AUTODECIDE = true` and echo it before the first issue**, whichever state you came in
+through — and in S3 already at the moment you arm the signal, since there the run itself starts
+later. Both hosts gate the disputed phase on a disjunction (the flag, or this command having been
+invoked), but every step after it tests the flag alone: Step 6.5's skip, Step 6.6's counters, Step
+14's stage set and subject. On a user-invoked run Step 0 / Step 5 echoed `AUTODECIDE=false`, so
+without this those steps read the mode as off and make exactly the sweep-up commit this mode exists
+to replace.
+
+**S4 — the record has to be closed by hand, in either host.** Step 6.6 and Steps 13–15 have already
+run; they do not run again. In `/claude-mesh:mesh-review` that means printing a closing block
+yourself when the S4 run ends — the `Решено автоматически` and `из них под вопросом` counts for what
+you have just decided, one line per `под вопросом` decision, and the
+`Все авто-решения: git log --grep=auto-decide-disputed --oneline` line. Skip it and the last summary
+on screen still lists those issues as deferred, contradicting git, while the confidence flags — what
+2.c makes the user re-check by — are recorded nowhere they will ever see. In
 `/claude-mesh:mesh-design-review` those issues were already written into the current iteration file
 as `Отложено (стоп)` and committed by Step 14 — a committed record that now contradicts the
 decisions you have just made, and the one the next iteration reads as what was decided. So after the
@@ -79,9 +106,14 @@ next iteration's answer base out of *every* `### [TYPE-N]` section it finds, wit
 duplicates: left alone, the file states two contradictory answers for one issue and the next
 iteration can quote the stale one. So, in the same edit and before the commit:
 
-- in the ORIGINAL section, set `**Статус:** Решено автоматически (autodecide) — см. Дополнение` and
-  `**Ответ:**` to the variant you accepted. Editing a committed record in place is already what
-  this paragraph does to `Статистика`; the «отложено → решено» history survives in git;
+- in the ORIGINAL section, bring every field into the shape Step 13 gives an autodecided issue —
+  `**Статус:** Решено автоматически (autodecide) — см. Дополнение`, `**Ответ:**` the variant you
+  accepted, plus `**Уверенность:**`, `**Коммит:**` and `**Действие:**`. Not the status and answer
+  alone: a deferred entry's `**Действие:** -` left in place reads to the next iteration as
+  «answered, nothing was changed» while git holds a commit that changed the document, and the
+  missing `**Коммит:**` makes the decision's SHA unrecoverable from the record. Editing a committed
+  record in place is already what this paragraph does to `Статистика`; the «отложено → решено»
+  history survives in git;
 - in `answers`, **replace** that issue's `deferred` entry with its `new-autodecide` entry rather
   than adding a second one. Step 15 counts `deferred` and `autodecided` independently, so an issue
   left in both is counted twice.
@@ -104,10 +136,10 @@ is not written yet and Step 14 commits it separately, under the `docs: review it
 (<TOPIC>)` subject this mode gives it. Step 14 reuses the `decisions` subject above when a user's
 mid-run choice leaves an edit behind, so human-decided edits have one shape here, not two. That
 keeps the human/machine boundary visible in the history and guarantees a clean tree. If the tree is
-dirty for unrelated reasons, say so in one line and continue: those files are never staged, so they
-cannot reach a decision's commit. What per-file staging does **not** protect against is an unrelated
-edit inside a file a decision does touch, or something staged before the run — 2.d step 3 checks for
-both and stops rather than committing them.
+dirty for unrelated reasons — or if the user has work sitting staged in the index — say so in one
+line and continue: 2.d commits by pathspec, so neither can reach a decision's commit, and neither is
+yours to clean up. The one thing that construction does **not** cover is an unrelated edit inside a
+file a decision does touch; 2.d step 3 reads exactly that and stops rather than committing it.
 
 ## Step 2: For each issue — analysis, self-check, decision
 
@@ -174,16 +206,32 @@ is what the user re-checks by.
 
 1. Apply the Edit(s).
 2. Verify they landed.
-3. `git add` **only** the files this decision touched — never `git add -A`, never a directory.
-   Then look at what is actually staged: `git diff --cached --name-only`. Per-file staging is not
-   isolation — `git add <file>` takes the whole file, including edits inside it that this decision
-   did not make. **Stop the run** (Step 2.d's failure rule) if the staged set holds a file this
-   decision did not touch, or if a file it did touch carries changes it did not make; say which
-   file and let the user sort it out. A tree that is merely dirty *elsewhere* is not this case —
-   warn in one line and carry on.
-4. Commit **with an explicit pathspec** — `git commit -- <the files this decision touched>` — so
-   that anything staged before the run began cannot ride along in a decision's commit. In
-   `/claude-mesh:mesh-review`:
+3. Read what this decision's own files actually carry — content, not names:
+   `git diff HEAD -- <the files this decision touched>`. The question is whether one of them holds
+   a change this decision did not make (an edit that was already in the tree, or one the user made
+   while you worked), and `git diff --cached --name-only` cannot answer it: it prints paths and
+   never content. **Stop the run** (the failure rule below) if that diff shows a hunk you did not
+   write; say which file and let the user sort it out. Everything OUTSIDE this decision's files —
+   dirty, staged, or both — is not this case at all: step 4 excludes it by construction, and
+   settle-the-tree has already had its one-line say about it.
+4. Commit exactly those files, by pathspec, **message first**:
+   ```bash
+   git commit -F - -- <the files this decision touched> <<'EOF'
+   <the message below>
+   EOF
+   ```
+   Three things there are load-bearing, and each has already been got wrong once. **No flag may
+   follow `--`**, because everything after it is a pathspec: `git commit -- <files> -m "…"` dies
+   with `error: pathspec '-m' did not match any file(s)`. The `-F -` form above sidesteps the
+   ordering by taking the message on stdin; `git commit -m "<subject>" -m "<body>" -- <files>`
+   works too, flags first. **No `git add`** — the pathspec form
+   commits those files' working-tree content directly, which is also why step 3 reads the working
+   tree and not the index. And **nothing else moves**: work the user had staged before the run
+   stays staged and uncommitted, neither swept into this commit nor cleared out of their index, so
+   it is not something to stop over. Per-file staging never was the isolation here — `git add
+   <file>` takes the whole file anyway; the pathspec is.
+
+   In `/claude-mesh:mesh-review` the message is:
    ```
    review: auto-decide <short issue name> — вариант <X>
 
@@ -208,18 +256,32 @@ identically (the same reasoning `verify-delegation.sh` applies to `BROKEN` and `
 
 **The exception: a hook that repaired the files and failed the commit once.** `black`, `prettier`
 and the rest of that family rewrite what they are handed and exit non-zero the first time —
-re-staging and committing again is their documented workflow, not a gamble. Treated as terminal,
-every repository with a formatting hook stops this run on its first decision, in the one mode meant
-to need no supervision. So, when the commit failed **and** the failure left the working tree
-modified in files this decision touched — the hook repaired them — re-stage exactly those files,
-re-run step 3's staged-set check on the result, and commit once more. **Once.** If that second
-commit fails too, or the hook touched a file this decision did not, the paragraph above applies as
-written. The repaired content goes into the decision's commit, which is right: it is the project's
-own formatting policy applied to your own edit.
+committing again over the repaired files is their documented workflow, not a gamble. Treated as
+terminal, every repository with a formatting hook stops this run on its first decision, in the mode
+meant
+to need no supervision. So, when the commit failed **and** the hook left changes in this decision's
+own files — it repaired them — run the same commit command once more. **Once.**
+
+Check one thing before that second attempt, and only that one: that the hook stayed inside this
+decision's files (`git status --porcelain` names nothing new outside them). **Do not re-run step
+3's content check.** A formatter rewriting a file wholesale produces exactly the «changes this
+decision did not make» that step 3 stops on, so re-entering it would abort the run this exception
+exists to save. The repaired content goes into the decision's commit, which is right: it is the
+project's own formatting policy applied to your own edit. If the second commit fails too, or the
+hook reached a file this decision did not touch, the paragraph above applies as written.
 
 Continuing instead would leave an edit on disk that no commit covers while the tally counts the
 issue as decided — the one divergence between history and summary that this mode cannot afford,
 because `git log --grep=auto-decide-disputed` is the whole of its accountability.
+
+**Hand the run back before you stop.** Stopping is not vanishing: the decisions already committed
+still have to reach the record, exactly as «стоп» hands control back in Step 3. In
+`/claude-mesh:mesh-review` go on to Step 6.6 and print its summary for what was decided, with the
+failed issue and the rest of the queue listed as deferred. In `/claude-mesh:mesh-design-review` go
+on to Steps 13–14: the iteration file and its commit are what the NEXT iteration reads, and
+`agents/review-discussion.md` builds its answer base out of iteration files, not out of `git log` —
+skip them and issues already committed into the design document come back as new, with nothing on
+record saying they were ever decided.
 
 The trailing `Решено автоматически:` line is what makes the whole run findable afterwards with
 `git log --grep=auto-decide-disputed`. Keep it verbatim.
@@ -241,14 +303,16 @@ the summary like any other decision. Never invent an edit so that there is somet
 ## Step 4: What reaches the summary
 
 Feed the running flow's own summary — Step 6.6 in `/claude-mesh:mesh-review`, Steps 13/15/16 in
-design review:
+design review. In state S4 those steps have already run and do not run again; print the same facts
+yourself instead, as §S4 says:
 
 - how many issues were decided here (`Решено автоматически`), and how many of those are
   `под вопросом` — Step 6.6's counters, `Статистика` in Step 13 and the counts in Step 15;
 - one line per `под вопросом` decision: issue, chosen variant, commit hash (`—` when the decision
   was the no-change variant), what was missing. In `/claude-mesh:mesh-review` that goes in Step
-  6.6; in design review, in Step 16's `Под вопросом — перепроверьте` section, with the same fact
-  recorded per issue as `**Уверенность:**` by Step 13. Step 15 is a fixed question — do not put
+  6.6 — or, in state S4, in the closing block you print yourself; in design review, in Step 16's
+  `Под вопросом — перепроверьте` section, with the same fact recorded per issue as
+  `**Уверенность:**` by Step 13. Step 15 is a fixed question — do not put
   per-issue lines there;
 - the line `Все авто-решения: git log --grep=auto-decide-disputed --oneline`.
 
@@ -271,9 +335,10 @@ decision was «не исправлять» — 2.e produces no edit and no commi
 | «На всякий случай всё-таки спрошу пользователя» | Stop. The invocation was the consent — see Override Authority. |
 | «Ревью в сессии нет — запущу его сам» | Stop. That is state S5: say there is nothing to decide. This command decides; it does not review. |
 | Inventing an edit for an issue whose answer is «не исправлять», so there is something to commit | Stop. That is a full outcome: no edit, no commit, recorded in the summary. |
-| `git add -A` because several files changed | Stop. Per-file staging only — other work may be sitting in the tree. |
+| `git add -A` because several files changed | Stop. The commit names its files as a pathspec and stages nothing (2.d step 4) — other work is sitting in that tree and in that index. |
 | A commit failed, so trying again — and again | Stop. Exactly one retry, and only for a hook that repaired this decision's own files (2.d). Every other failure is terminal on the first one. |
 | Rewriting an analysis that is already on screen (state S1) | Stop. Append `Проверка решения` to it and decide. Rewriting burns context and changes nothing. |
+| Invoking this command yourself because the issue in front of you is hard | Stop. The consent is the user's invocation or the `autodecide` argument — nothing else. Write the analysis and end the turn on it. |
 
 ## Bottom Line
 

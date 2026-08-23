@@ -222,7 +222,7 @@ This composed prompt is self-contained and gets passed to each executor agent in
 
 Reviewer selection is **config-driven** — there are no hardcoded provider/model lists. Read the available executors and models from `config.yaml` via the loader, then either honor the `defaults.design_review` preset (`default` argument) or run the paginated selection UI. **Selection is made on the FIRST iteration only and reused for every subsequent iteration in the loop** — remember the resulting agent set (built-ins + Claude models + ext-claude model ids).
 
-**Bind `AUTODECIDE` here, before anything else in this step** — unconditionally, whether or not `default` was passed: it is `true` when `autodecide` appears among the arguments, `false` otherwise. Echo it (`AUTODECIDE=true|false`) so it is on screen. Step 5.1 is the wrong home for it — that sub-step runs in `default` mode only, while `autodecide` is orthogonal to `default` and just as valid on an interactive run. Its only consumer is Step 12, a whole review cycle and a background watch loop away; an unbound name raises no error in a prompt — the reader improvises, and a run started with `autodecide` quietly waits for the user after all. Like the agent set, it is bound on the first iteration and holds for iterations 2..N. Same reason `/claude-mesh:mesh-review` binds it in its Step 0.
+**Bind `AUTODECIDE` here, before anything else in this step** — unconditionally, whether or not `default` was passed: it is `true` when `autodecide` appears among the arguments, `false` otherwise. Echo it (`AUTODECIDE=true|false`) so it is on screen. Step 5.1 is the wrong home for it — that sub-step runs in `default` mode only, while `autodecide` is orthogonal to `default` and just as valid on an interactive run. Its only consumer is Step 12, a whole review cycle and a background watch loop away; an unbound name raises no error in a prompt — the reader improvises, and a run started with `autodecide` quietly waits for the user after all. Like the agent set, it is bound on the first iteration and holds for any further iteration run in THIS session — it does not survive into a fresh one, since `/claude-mesh:design-review-fresh-session` builds the next invocation out of DESIGN_PATH/PLAN_PATH/TOPIC and carries no `autodecide`, so a next iteration that should also run unattended needs the word typed into that generated prompt by hand. Same reason `/claude-mesh:mesh-review` binds it in its Step 0.
 
 #### Step 5.0: Read available reviewers from config
 
@@ -577,6 +577,11 @@ For each issue from PARSED_ISSUES, classify into exactly one bucket:
 **REPEAT** — review-discussion already flagged it as duplicate of a prior iteration:
 - Bucket: `repeated`
 - Carry over `prev_answer`, `prev_action`, `source_iter`
+- **Except when `prev_answer` carries `под вопросом`** — an autodecided call the previous iteration
+  flagged for re-checking. Bucket it as `disputed` instead and let Step 12 decide it on the merits,
+  with the previous answer and what was missing as context. A reviewer raising it again is the
+  strongest evidence available that the shaky call was wrong; auto-answering it would close that
+  flag's safety net after exactly one iteration, silently.
 
 **AUTO** — issue is valid AND only one reasonable approach exists. Test: "If I asked five competent engineers familiar with this codebase, would they all do the same thing?" If yes → AUTO. Typical AUTO cases:
 - Missing error handling, missed edge case
@@ -657,10 +662,13 @@ loop" paragraph at the end of 12.c before Step 13.
 It replaces **the whole of 12.b — both branches**: the single-adequate-variant branch as much as
 the waiting one. Every remaining disputed issue goes through the command's Step 2, so every one of
 them gets `Проверка решения`, a confidence flag, its own commit and status `new-autodecide`. In
-this mode 12.b's first branch produces nothing and no issue is recorded `new-auto-after-analysis`
-— such an entry here would be a document edit that no commit covers, because Step 14 stages only
-the iteration and merged files. 12.a's analysis format still applies unchanged, and the command
-points back to it. The intro line for this mode is printed by the command, not here. Do not paste
+this mode 12.b's first branch produces nothing **for the issues this command decides**, and none of
+them is recorded `new-auto-after-analysis` — such an entry would be a document edit that no commit
+covers, because Step 14 stages only the iteration and merged files. Issues that branch had already
+applied BEFORE the hand-off — the mode can be entered mid-phase, state S1 — keep their
+`new-auto-after-analysis` entries: settle-the-tree commits those edits, so record and git agree, and
+dropping them would make Step 13 omit an issue the next iteration then re-raises as new. 12.a's
+analysis format still applies unchanged, and the command points back to it. The intro line for this mode is printed by the command, not here. Do not paste
 any part of its protocol here.
 
 **If the command does not resolve** — an older plugin copy in this environment — say so in one line
@@ -736,8 +744,12 @@ Display intro (interactive mode):
   confidence: "уверенно" | "под вопросом (<what was missing>)", commit: "<short SHA>" | "—"}` —
   Step 13 renders it and Step 15 counts it. `commit` is `«—»` exactly when the decision was the
   no-change variant («Оставить как есть», spelled «не исправлять» in `/claude-mesh:mesh-review`),
-  which produces no edit and no commit. The stop check still applies: «стоп»
-  during the run ends it, and the remainder is recorded `deferred` as usual.
+  which produces no edit and no commit. The stop check still applies, and running it is this
+  bullet's job: «стоп» during the run sets `stop = true` — Step 9's flag, whose only other
+  assignment lives in the waiting branch this mode replaces — ends the run, and records the
+  remainder as `deferred`. Miss that assignment and the committed iteration file reads
+  `Отложено (стоп): 6` beside `Пользователь сказал "стоп": Нет`, while Step 16 prints
+  `Final status: No new issues` for a run the user cut short.
 
 **12.c — Process ONE disputed issue at a time.** Present analysis → (auto-apply if one variant is adequate, otherwise end the turn and wait for the free-text choice; in `autodecide` mode neither — the command decides and applies) → apply → THEN move to the next. Never batch multiple disputed issues into a single message.
 
@@ -753,10 +765,16 @@ After the loop, also add all `auto_fixes`, `repeated`, `dismissed` entries to `a
 
 Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with the format below. Its
 `**Уверенность:**` and `**Коммит:**` lines belong only to issues whose `**Статус:**` is
-`Решено автоматически (autodecide)` — omit both lines entirely for every other status.
+`Решено автоматически (autodecide)` — omit both lines entirely for every other status. A
+`под вопросом` decision repeats its flag inside `**Ответ:**` as well, and that duplication is the
+point: `agents/review-discussion.md` builds the next iteration's answer base out of `**Ответ:**` and
+reads no other field, so this is the only place the flag survives into the session meant to re-check
+it — where Step 9 then buckets the repeat as `disputed` instead of auto-answering it.
 Every single letter in its `Статистика` list is a count, `X` («Отклонено») included: the `X` of
 `Вариант X` elsewhere on the page is a different placeholder in a different position, and the two
-never share a slot:
+never share a slot. Counts, however, are not all buckets: `из них под вопросом: C?` sits INSIDE
+`Решено автоматически: C`, not beside it, and `Всего замечаний: T` is the sum of the buckets only —
+see Step 15:
 
 ```markdown
 # Review Iteration N — YYYY-MM-DD HH:MM
@@ -776,7 +794,7 @@ never share a slot:
 
 **Источник:** [which agent(s) raised this issue]
 **Статус:** Автоисправлено | Обсуждено с пользователем | Решено автоматически (autodecide) | Отклонено | Повтор (iter-M, TYPE-K) | Отложено (стоп)
-**Ответ:** Auto-fix description / User's answer / Dismissal reason / Previous answer / Auto-decision (Вариант X (autodecide))
+**Ответ:** Auto-fix description / User's answer / Dismissal reason / Previous answer / Auto-decision (`Вариант X (autodecide)`, or `Вариант X (autodecide, под вопросом: <чего не хватило>)`)
 **Уверенность:** уверенно | под вопросом (<чего не хватило>)
 **Коммит:** <short SHA>, или «—» для решения «Оставить как есть» («не исправлять»)
 **Действие:** What was changed in documents
@@ -855,11 +873,11 @@ Count from answers:
 - `auto_after_analysis` = count where status == "new-auto-after-analysis"
 - `discussed` = count where status == "new"
 - `autodecided` = count where status == "new-autodecide"
-- `autodecided_unsure` = of those, count whose `confidence` starts with "под вопросом"
+- `autodecided_unsure` = of those, count whose `confidence` starts with "под вопросом" — a SUBSET of `autodecided`, not a bucket beside it
 - `dismissed` = count where status == "new-dismissed"
 - `repeated` = count where status == "repeat"
 - `deferred` = count where status == "deferred"
-- `total` (`T` in Step 13's `Статистика` and in Step 16) = the sum of the counts above
+- `total` (`T` in Step 13's `Статистика` and in Step 16) = the sum of the BUCKETS above — `auto_fixed + auto_after_analysis + discussed + autodecided + dismissed + repeated + deferred`. `autodecided_unsure` is not one of them; adding it counts every `под вопросом` decision twice and makes `T` exceed the number of `### [TYPE-N]` sections Step 13 writes, contradicting review-discussion's own `SUMMARY total` and the Step 9 classification table
 
 **ALWAYS ask user what to do next** (iterations are always done in fresh sessions):
 
