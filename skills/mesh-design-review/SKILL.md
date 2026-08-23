@@ -820,7 +820,9 @@ never share a slot:
 
 **In `autodecide` mode the document edits are already committed** — one commit per decision, made
 by `/claude-mesh:auto-decide-disputed`. This step then stages only the iteration file and the
-merged review file, and its message stays `docs: review iter N — decisions + log (<TOPIC>)`.
+merged review file, and its message becomes `docs: review iter N — log (<TOPIC>)`: naming
+decisions in a commit that carries none would misdescribe the history, and the decisions are in
+their own commits beside it, findable with `git log --grep=auto-decide-disputed`.
 
 **If the command was invoked only after this step already ran** — «стоп» ended Step 12, Steps 13–14
 committed those issues as `Отложено (стоп)`, and the user then handed the deferred queue to
