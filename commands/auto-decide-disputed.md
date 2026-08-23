@@ -100,7 +100,9 @@ disputed phase so far — issues the user answered and issues you auto-applied a
 commit those first, on their own: in `/claude-mesh:mesh-review` with
 the flow's existing message `review: apply decisions from external review discussion`; in design
 review with `docs: review iter N — decisions (<TOPIC>)` — decisions only, because the iteration log
-is not written yet and Step 14 commits it separately under its own `decisions + log` message. That
+is not written yet and Step 14 commits it separately, under the `docs: review iter N — log
+(<TOPIC>)` subject this mode gives it. Step 14 reuses the `decisions` subject above when a user's
+mid-run choice leaves an edit behind, so human-decided edits have one shape here, not two. That
 keeps the human/machine boundary visible in the history and guarantees a clean tree. If the tree is
 dirty for unrelated reasons, say so in one line and continue: those files are never staged, so they
 cannot reach a decision's commit. What per-file staging does **not** protect against is an unrelated

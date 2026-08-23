@@ -828,6 +828,17 @@ merged review file, and its message becomes `docs: review iter N — log (<TOPIC
 decisions in a commit that carries none would misdescribe the history, and the decisions are in
 their own commits beside it, findable with `git log --grep=auto-decide-disputed`.
 
+**Stage only those two if the tree is in fact clean of disputed-phase edits.** A user who cuts into
+the run to pick a variant themselves — `/claude-mesh:auto-decide-disputed` Step 3 allows it
+explicitly — has that choice applied by the ordinary handler, which makes no decision commit of its
+own; Step 13 then records the issue as `Обсуждено с пользователем` with a `**Действие:**` naming a
+change nothing in git carries. So look at `git status` before staging: if DESIGN_PATH or PLAN_PATH
+holds uncommitted edits from Step 12, commit those on their own FIRST, under the message
+settle-the-tree already uses for exactly this content — `docs: review iter N — decisions (<TOPIC>)`
+— and only then stage the iteration and merged files for the `log` commit. Two commits, and the
+human/machine boundary stays visible in the history. `/claude-mesh:mesh-review` Step 6.5 carries the
+same guard in its own form.
+
 **If the command was invoked only after this step already ran** — «стоп» ended Step 12, Steps 13–14
 committed those issues as `Отложено (стоп)`, and the user then handed the deferred queue to
 `/claude-mesh:auto-decide-disputed` (its state S4) — this step does not run again and does not cover
