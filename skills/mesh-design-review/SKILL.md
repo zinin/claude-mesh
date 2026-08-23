@@ -44,7 +44,7 @@ Optional (caller can specify):
 
 These rules are NON-NEGOTIABLE. Steps 9–12 implement them; this list exists so you catch yourself before drifting.
 
-> Sync note: rules 3–8 are mirrored in `commands/mesh-review.md` (Iron Rules / Step 6.4). When editing shared rule text, mirror the edit there (step numbers differ; `/mesh-review` additionally has `default`-mode clauses, and this skill reaches the same non-waiting behaviour through the `autodecide` argument).
+> Sync note: rules 3–8 are mirrored in `commands/mesh-review.md` (Iron Rules / Step 6.4). When editing shared rule text, mirror the edit there (step numbers differ; `/mesh-review` additionally has `default`-mode clauses, and this skill has no `default` mode — its only non-waiting path is the `autodecide` argument).
 
 1. **Phase order is fixed:** classify ALL issues first → apply auto-fixes → commit → discuss disputed one-by-one. Never interleave.
 2. **Auto-fixes are committed BEFORE disputed discussion starts.** The user gets a clean checkpoint with all the safe edits.
@@ -642,7 +642,8 @@ If `disputed` is empty, proceed to Step 13.
 
 **Autodecide mode.** If `AUTODECIDE` was passed, do NOT run the interactive loop below: invoke
 `/claude-mesh:auto-decide-disputed` through the Skill tool now and follow it for the whole disputed
-queue. It replaces 12.b's waiting branch; 12.a's analysis format still applies unchanged, and the
+queue, then come back for the "After the loop" paragraph at the end of 12.c before Step 13.
+It replaces 12.b's waiting branch; 12.a's analysis format still applies unchanged, and the
 command points back to it. The same command may also be invoked by the USER mid-discussion — from
 that point on the effect is identical. The intro line for this mode is printed by the command, not
 here. Do not paste any part of its protocol here.
@@ -746,8 +747,9 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 
 **Источник:** [which agent(s) raised this issue]
 **Статус:** Автоисправлено | Обсуждено с пользователем | Решено автоматически (autodecide) | Отклонено | Повтор (iter-M, TYPE-K) | Отложено (стоп)
-**Ответ:** Auto-fix description / User's answer / Dismissal reason / Previous answer
+**Ответ:** Auto-fix description / User's answer / Dismissal reason / Previous answer / Auto-decision (Вариант X (autodecide))
 **Уверенность:** уверенно | под вопросом (<чего не хватило>)   ← only for status "Решено автоматически (autodecide)"
+**Коммит:** <short SHA>   ← only for status "Решено автоматически (autodecide)"
 **Действие:** What was changed in documents
 
 ---
@@ -762,7 +764,7 @@ Create `docs/superpowers/specs/YYYY-MM-DD-<topic>-review-iter-N.md` with format:
 
 ## Статистика
 
-- Всего замечаний: X
+- Всего замечаний: T
 - Автоисправлено (без обсуждения): A
 - Авто-применено после анализа: B1
 - Обсуждено с пользователем: B2
@@ -850,6 +852,8 @@ When loop exits, display:
 
 **Documents updated:**
 - [list of modified design/plan files]
+
+**Все авто-решения:** git log --grep=auto-decide-disputed --oneline   ← only when the iteration had auto-decisions
 ```
 
 ## Error Handling
