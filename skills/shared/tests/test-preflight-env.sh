@@ -226,6 +226,33 @@ assert_eq   "Go-yq -> config OK"                       OK   "$(field config "$OU
 assert_no_match "…and nothing claims a flavour mismatch" "flavor mismatch" "$OUT"
 assert_no_match "…and nobody is sent to install a different yq" "pipx install yq" "$OUT"
 
+# A yq that is present, is used, and still cannot do the job. The loader dies rc=1 exactly as a
+# rejected config does, so only the routing by cause keeps a healthy config.yaml from being
+# blamed — and this scenario is what keeps the probe's signature match in step with the
+# loader's own wording.
+mkyq_nojson "$WORK/nojsonyq"
+run_probe valid-claude-models.yaml PATH="$WORK/nojsonyq:$WORK/curlfast:$WORK/noyq"
+assert_eq   "unusable yq exits 0"                          0        "$RC"
+assert_eq   "unusable yq -> config UNKNOWN, not INVALID"   UNKNOWN  "$(field config "$OUT")"
+assert_match "…and the detail names the tool"              "cannot produce JSON" "$OUT"
+assert_match "…and the hint names both flavours"           "Go-yq v4+"      "$OUT"
+assert_match "…and says the config was never read"         "was never read" "$OUT"
+
+# The other toolchain die, and the one a version gate would have missed: a yq that DOES emit
+# JSON but resolves YAML 1.1. The fixture is the only one whose scalars diverge between the two
+# schemas — with any other config the loader is right to accept this binary.
+if have_pyyaml; then
+    mkyq_yaml11 "$WORK/y11yq"
+    run_probe valid-claude-models-level-off.yaml PATH="$WORK/y11yq:$WORK/curlfast:$WORK/noyq"
+    assert_eq   "YAML-1.1 yq exits 0"                      0        "$RC"
+    assert_eq   "YAML-1.1 yq -> config UNKNOWN"            UNKNOWN  "$(field config "$OUT")"
+    assert_match "…named as a resolver, not as a bad config" "mis-resolves" "$OUT"
+    assert_no_match "…and the user is not told to quote a correct value" \
+        "must be a string (got boolean)" "$OUT"
+else
+    echo "  SKIP: python3 has no PyYAML — the YAML-1.1 preflight scenario cannot run"
+fi
+
 # The OTHER way to reach UNKNOWN, and the one that looked like a rejected config until it was
 # guarded: with an unwritable TMPDIR the probe cannot create the file that catches the loader's
 # stderr, `cmd 2>""` fails on the redirect alone, and the row read `INVALID` with an EMPTY
@@ -639,12 +666,12 @@ assert_match "…because it is the operator's, not ours" "do NOT overwrite" "$OU
 assert_no_match "…never offering to overwrite a real config" "cp config.example.yaml" "$OUT"
 
 # UNKNOWN is the worst of the three to get wrong: the loader never ran, so the config may well
-# be perfect and the only thing missing is yq. Naming the tool matters — Go-yq is a different
-# program that config-loader.sh rejects on sight.
+# be perfect and the only thing missing is yq. Naming what to install matters here too: both
+# flavors are accepted, so the advice has to name both.
 run_probe valid-claude-models.yaml PREFLIGHT_YQ_BIN="$WORK/no-such-yq"
 assert_eq   "unevaluated config -> nothing selectable either" "SUMMARY available: —" "$(grep '^SUMMARY available:' <<<"$OUT")"
 assert_match "…claude says exactly that, and not that a file is missing" "claude (config state could not be evaluated" "$OUT"
-assert_match "…the hint names the tool the rows above reported" "pipx install yq" "$OUT"
+assert_match "…the hint names the tool the rows above reported" "install a yq that emits JSON" "$OUT"
 assert_match "…and says the config itself was never read"       "was never read"  "$OUT"
 assert_no_match "…never offering to overwrite an unread config" "cp config.example.yaml" "$OUT"
 
@@ -659,7 +686,7 @@ assert_eq   "unevaluated config (no temp file) -> nothing selectable" "SUMMARY a
 assert_match "…claude blocked with the same could-not-evaluate reason" "claude (config state could not be evaluated" "$OUT"
 assert_match "…and the hint points at TMPDIR"                   "hint: make TMPDIR" "$OUT"
 assert_no_match "…not at a toolchain that is already installed" "install the loader toolchain" "$OUT"
-assert_no_match "…and never at yq"                              "pipx install yq" "$OUT"
+assert_no_match "…and never at yq"                              "install a yq that emits JSON" "$OUT"
 assert_match "…while still saying the config was never read"    "was never read"  "$OUT"
 assert_no_match "…and never offering to overwrite it"           "cp config.example.yaml" "$OUT"
 

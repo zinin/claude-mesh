@@ -30,6 +30,16 @@ assert_stderr_contains() {
     fi
 }
 
+assert_stderr_lacks() {
+    local desc="$1" needle="$2" stderr_file="$3"
+    if grep -q -- "$needle" "$stderr_file"; then
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc (stderr should NOT contain: $needle)"
+        echo "    stderr was:"; sed 's/^/      /' "$stderr_file"
+    else
+        PASS=$((PASS+1)); echo "  PASS: $desc"
+    fi
+}
+
 echo "=== Test 1: missing config file ==="
 # iter-2 CONCERN-11: load_or_die exits with rc=2 (distinct from rc=1) when
 # config.yaml is missing — so /do-plan (and any future consumer that wants to
@@ -1222,6 +1232,72 @@ if REAL_GO="$(find_real_go_yq)"; then
 else
     echo "  SKIP: no real Go-yq found — the mikefarah path was exercised only against a double"
 fi
+
+# === Test 53: a yq that cannot emit JSON is named as the toolchain ===
+# Until this split existed, every transcode failure read "check yaml syntax" and sent the
+# operator to edit a file nothing had opened. The negative assertion is the point of the test.
+echo "=== Test 53: a yq that cannot produce JSON does not get the config blamed for it ==="
+TDIR=$(mktemp -d); NJDIR=$(mktemp -d); ERR=$(mktemp)
+mkyq_nojson "$NJDIR"
+cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+PATH="$NJDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 when yq cannot emit JSON" "1" "$RC"
+assert_stderr_contains "names the toolchain" "yq cannot produce JSON" "$ERR"
+assert_stderr_lacks "and does NOT accuse a healthy config.yaml" "check yaml syntax" "$ERR"
+rm -rf "$TDIR" "$NJDIR" "$ERR"
+
+# === Test 54: a YAML-1.1 resolver is caught where it matters, and only where it matters ===
+# Today such a yq surfaces as `codex.reasoning_level: must be a string (got boolean) — quote
+# it`, telling the user to fix a value that is already correct. Half (a) is that message being
+# replaced by an accurate one. Half (b) is the gate staying per-document: on a config that
+# yields no booleans the same binary emitted exactly what a YAML-1.2-core resolver would, and
+# the snapshot is all anything downstream reads. Both halves must hold, or a later refactor
+# will quietly turn the gate into a blanket probe on every load.
+echo "=== Test 54: a YAML-1.1 yq is refused when it can change the config, accepted when it cannot ==="
+if ! have_pyyaml; then
+    echo "  SKIP: python3 has no PyYAML — the YAML-1.1 double cannot be built"
+else
+    Y11DIR=$(mktemp -d); mkyq_yaml11 "$Y11DIR"
+    TDIR=$(mktemp -d); ERR=$(mktemp)
+    cp "$FIXTURES/valid-claude-models-level-off.yaml" "$TDIR/config.yaml"
+    PATH="$Y11DIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "validate exits 1 under a YAML-1.1 yq" "1" "$RC"
+    assert_stderr_contains "names the resolver" "yq mis-resolves YAML scalars" "$ERR"
+    assert_stderr_lacks "and does not tell the user to quote a correct value" \
+        "must be a string (got boolean)" "$ERR"
+    rm -rf "$TDIR" "$ERR"
+    TDIR=$(mktemp -d); ERR=$(mktemp)
+    cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+    PATH="$Y11DIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "…and the same yq is accepted on a config that yields no booleans" "0" "$RC"
+    rm -rf "$TDIR" "$ERR" "$Y11DIR"
+fi
+
+# === Test 55: a healthy yq plus broken yaml still blames the yaml; empty configs are unchanged ===
+# The other half of Test 53's split, and the degenerate case where `jq .` cannot tell the
+# flavors apart because both emit the same thing: the verdict must stay the config-level one.
+echo "=== Test 55: malformed yaml blames the yaml; empty/comment-only configs unchanged under both flavors ==="
+TDIR=$(mktemp -d); ERR=$(mktemp); GODIR=$(mktemp -d)
+mkyq_go "$GODIR"
+printf 'providers:\n  - id: zai\n    label: "[unclosed\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on malformed yaml" "1" "$RC"
+assert_stderr_contains "blames the yaml" "check yaml syntax" "$ERR"
+assert_stderr_lacks "and does not accuse the yq" "yq cannot produce JSON" "$ERR"
+for FLAVOR in python-yq go-yq; do
+    case "$FLAVOR" in python-yq) PFX="" ;; go-yq) PFX="$GODIR:" ;; esac
+    : > "$TDIR/config.yaml"
+    PATH="$PFX$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "empty config exits 1 ($FLAVOR)" "1" "$RC"
+    assert_stderr_contains "…and says providers is empty ($FLAVOR)" \
+        "providers: section is empty or missing" "$ERR"
+    printf '# only a comment\n' > "$TDIR/config.yaml"
+    PATH="$PFX$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "comment-only config exits 1 ($FLAVOR)" "1" "$RC"
+    assert_stderr_contains "…and says providers is empty ($FLAVOR)" \
+        "providers: section is empty or missing" "$ERR"
+done
+rm -rf "$TDIR" "$ERR" "$GODIR"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="

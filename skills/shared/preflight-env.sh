@@ -228,19 +228,21 @@ else
         2) CONFIG_STATUS="MISSING"; CONFIG_MISSING_CAUSE="noconfig"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; cp config.example.yaml into the data dir"; MODELS="" ;;
         *) # rc=1 means "the loader refused", which is not the same as "the config is bad":
            # require_yq and require_gnu_coreutils die with this very code BEFORE config.yaml is
-           # opened. The presence check above cannot catch those two — a Go-yq binary (what
-           # `apt install yq` and `brew install yq` actually deliver) is present under the name
-           # the loader looks for, and passes it. Calling that INVALID sends the operator to
-           # edit a file the loader never read, so it is routed to the toolchain cause and its
-           # "install Python-yq" hint instead. Matching on the loader's own wording is the cost;
-           # the Go-yq scenario in test-preflight-env.sh is what keeps the two in step.
+           # opened. The presence check above cannot catch those two — a `yq` that is present under
+           # the name the loader looks for can still be one the loader cannot use — it emits
+           # no JSON, or it resolves YAML 1.1 — and the presence check above passes it.
+           # Calling that INVALID sends the operator to edit a file the loader never read, so
+           # it is routed to the toolchain cause and its "install a yq that emits JSON" hint
+           # instead. Matching on the loader's own wording is the cost; the Go-yq scenario in
+           # test-preflight-env.sh is what keeps the two in step.
            CONFIG_DETAIL="$(head -1 "$LERR")"; MODELS=""
            case "$CONFIG_DETAIL" in
-               *"yq not found"*|*"yq flavor mismatch"*)
+               *"yq not found"*|*"yq cannot produce JSON"*|*"yq mis-resolves"*)
                    CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="toolchain"
                    # The presence gate passed, so TOOLCHAIN_MISSING is empty and the hint would
                    # degrade to "see README Dependencies". The loader just named the tool — carry
-                   # that through, so the advice stays "pipx install yq, NOT the Go one".
+                   # that through, so the advice stays "install a yq that emits JSON" instead of the
+                   # generic toolchain fallback.
                    TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:-yq}" ;;
                *"GNU coreutils"*)
                    CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="toolchain"
@@ -648,7 +650,7 @@ UNAVAIL=""
 # it, tokens and all. config.yaml is user-owned and agents never edit it (commands/mesh-review.md,
 # Step 1), so a table the generated prompts tell a session to print verbatim must not carry an
 # instruction to clobber it. It is also the distinction Task 1's config row exists to draw:
-# "pipx install yq" and "edit a healthy config" are different days' work.
+# "install a usable yq" and "edit a healthy config" are different days' work.
 BLOCKER=""
 BLOCKER_HINT=""
 DATA_DIR="<plugin-data-dir>"
@@ -686,11 +688,11 @@ case "$CONFIG_STATUS" in
         U_FIX=""
         case "$CONFIG_UNKNOWN_CAUSE" in
             toolchain)
-                # Naming the tool matters more than usual here — Go-yq is a DIFFERENT program
-                # that config-loader.sh rejects on sight (config-loader.sh:71), so "install yq"
-                # alone sends a fair number of people to the wrong binary.
+                # Naming what to install matters more than usual here: both flavors are
+                # accepted, so the advice has to name both rather than send half the readers
+                # to the wrong binary.
                 T_FIX=""
-                case "$TOOLCHAIN_MISSING" in *yq*) T_FIX="pipx install yq (Python-yq — NOT brew/Go-yq)" ;; esac
+                case "$TOOLCHAIN_MISSING" in *yq*) T_FIX="install a yq that emits JSON — 'pipx install yq' (Python-yq) or 'apt install yq' / 'brew install yq' (Go-yq v4+)" ;; esac
                 case "$TOOLCHAIN_MISSING" in *jq*) T_FIX="${T_FIX:+$T_FIX; }apt install jq (or brew install jq)" ;; esac
                 U_FIX="install the loader toolchain — ${T_FIX:-see README Dependencies}" ;;
             tmpfile)
