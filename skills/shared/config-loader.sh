@@ -61,7 +61,8 @@ require_yq() {
     # Presence only. WHICH yq this is has stopped mattering: the transcode below tries both
     # known JSON invocations and keeps the one whose output jq can parse, so a flavor check
     # here would only be able to reject binaries that work.
-    # The substring "yq not found" is matched by preflight-env.sh:239 — do not reword it.
+    # The substring "yq not found" is matched by preflight-env.sh's CONFIG_DETAIL
+    # toolchain-cause check — do not reword it.
     command -v yq >/dev/null 2>&1 || die "yq not found. claude-mesh accepts either flavor: \
 Python-yq (kislyuk/yq — 'pipx install yq') or Go-yq v4+ (mikefarah/yq — 'apt install yq', \
 'brew install yq'). Install either one."
@@ -100,7 +101,8 @@ require_gnu_coreutils() {
 # guessed. The order is not arbitrary: the python-yq form goes first so the historically
 # recommended flavor pays nothing for the fallback.
 # `jq .` and NOT `jq -e .`: on an empty snapshot -e returns rc=4 while plain jq returns 0, and
-# an empty or comment-only config.yaml legitimately transcodes to zero bytes (see :148).
+# an empty or comment-only config.yaml legitimately transcodes to zero bytes — see
+# validate_providers, where an empty snapshot is handled explicitly.
 yq_to_json() {                       # $1 = source YAML, $2 = destination JSON
     yq '.'         "$1" > "$2" 2>/dev/null && jq . "$2" >/dev/null 2>&1 && return 0
     yq -o=json '.' "$1" > "$2" 2>/dev/null && jq . "$2" >/dev/null 2>&1 && return 0
