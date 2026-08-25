@@ -1,0 +1,22 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+claude:
+  models:
+    - opus
+    - fable
+
+# `off` is the STRING "off" under both supported flavors (YAML 1.2 core) and the BOOLEAN false
+# under a YAML-1.1 resolver. That divergence is the only thing that can trigger the loader's
+# scalar probe, and no other fixture in this directory carries off/on/yes/no as a value.
+codex:
+  model: gpt-5.5
+  reasoning_level: off

@@ -58,19 +58,13 @@ IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, claude.models, 
 MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'   # engine models: adds "/" for provider-qualified ids
 
 require_yq() {
-    if ! command -v yq >/dev/null 2>&1; then
-        die "yq not found. claude-mesh requires Python-yq (kislyuk/yq). Install: 'pipx install yq' or 'pip install --user yq'. Do NOT install via 'brew install yq' or recent 'snap install yq' — those provide Go-yq with an incompatible DSL."
-    fi
-    # Detect flavor: Python-yq (kislyuk/yq, jq-wrapper) prints e.g. "yq 3.x.y" and is a Python script;
-    # Go-yq (mikefarah/yq) prints "yq (https://github.com/mikefarah/yq/) version v4.x.y".
-    # The plan's expressions (raw jq with escaped quotes) are Python-yq syntax — Go-yq will silently misparse them.
-    local yq_ver
-    yq_ver=$(yq --version 2>&1 | head -1)
-    case "$yq_ver" in
-        *mikefarah*|*"version v"*)
-            die "yq flavor mismatch: detected Go-yq (mikefarah/yq) but claude-mesh requires Python-yq (kislyuk/yq). Install via: 'pipx install yq'. Remove or shadow the Go-yq binary in PATH. Got: $yq_ver"
-            ;;
-    esac
+    # Presence only. WHICH yq this is has stopped mattering: the transcode below tries both
+    # known JSON invocations and keeps the one whose output jq can parse, so a flavor check
+    # here would only be able to reject binaries that work.
+    # The substring "yq not found" is matched by preflight-env.sh:239 — do not reword it.
+    command -v yq >/dev/null 2>&1 || die "yq not found. claude-mesh accepts either flavor: \
+Python-yq (kislyuk/yq — 'pipx install yq') or Go-yq v4+ (mikefarah/yq — 'apt install yq', \
+'brew install yq'). Install either one."
 }
 
 require_gnu_coreutils() {
@@ -100,6 +94,19 @@ require_gnu_coreutils() {
     esac
 }
 
+# Python-yq (kislyuk/yq) is a jq wrapper: its DEFAULT output is already JSON. Go-yq (mikefarah)
+# v4 prints YAML unless told -o=json. We do not ask which one is installed — the only property
+# the snapshot needs is "this invocation returned JSON", and that is checked rather than
+# guessed. The order is not arbitrary: the python-yq form goes first so the historically
+# recommended flavor pays nothing for the fallback.
+# `jq .` and NOT `jq -e .`: on an empty snapshot -e returns rc=4 while plain jq returns 0, and
+# an empty or comment-only config.yaml legitimately transcodes to zero bytes (see :148).
+yq_to_json() {                       # $1 = source YAML, $2 = destination JSON
+    yq '.'         "$1" > "$2" 2>/dev/null && jq . "$2" >/dev/null 2>&1 && return 0
+    yq -o=json '.' "$1" > "$2" 2>/dev/null && jq . "$2" >/dev/null 2>&1 && return 0
+    return 1
+}
+
 load_or_die() {
     # iter-2 CONCERN-11: "config not found" gets a DISTINCT exit code (2) so
     # user-invoked commands like /do-plan can tolerate the genuinely-tolerable
@@ -123,14 +130,9 @@ load_or_die() {
     # wrapper — yq's jq-style expressions transfer to jq one-for-one.
     CONFIG_JSON=$(mktemp -t claude-mesh-cfg-XXXXXX.json) || die "mktemp failed for config snapshot"
     chmod 600 "$CONFIG_JSON"
-    # NOTE (Task 5): the plan text shows `yq -o=json '.'`, but `-o`/`--output` is GO-yq
-    # (mikefarah) syntax. claude-mesh targets PYTHON-yq (kislyuk/yq) — see require_yq above —
-    # whose DEFAULT behavior already transcodes YAML→JSON (the `-y` flag is what switches it
-    # to YAML output). With Python-yq, `-o=json` is forwarded verbatim to jq, which rejects it
-    # ("jq: Unknown option -o=json", exit 2), so the snapshot would ALWAYS fail. The correct,
-    # flavor-consistent invocation is therefore the bare `yq '.'`. This still satisfies the
-    # JSON-snapshot invariant (one yq → $CONFIG_JSON, then all reads via jq on the snapshot).
-    if ! yq '.' "$CONFIG_FILE" > "$CONFIG_JSON" 2>/dev/null; then
+    # ONE yq -> $CONFIG_JSON, then every read via jq on the snapshot. Which of the two JSON
+    # invocations does the transcoding is decided by yq_to_json, not by this call site.
+    if ! yq_to_json "$CONFIG_FILE" "$CONFIG_JSON"; then
         rm -f "$CONFIG_JSON"
         die "config snapshot: yaml→json conversion failed for $CONFIG_FILE (check yaml syntax)"
     fi

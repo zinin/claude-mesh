@@ -5,6 +5,9 @@ TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOADER="$TESTS_DIR/../config-loader.sh"
 FIXTURES="$TESTS_DIR/fixtures"
 
+# shellcheck source=lib-yq-doubles.sh
+. "$TESTS_DIR/lib-yq-doubles.sh"
+
 FAIL=0
 PASS=0
 
@@ -1167,6 +1170,58 @@ if [ "$GOT" = "background,4" ]; then PASS=$((PASS+1)); echo "  PASS: example cod
 GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
 if [ "$GOT" = "null,4" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review keeps run_mode=null + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review run_mode/models count (expected 'null,4', got '$GOT')"; fi
 rm -rf "$TDIR"
+
+# === Test 52: Go-yq transcodes, and its scalars match Python-yq's ===
+# The failure this whole change exists for: `apt install yq` / `brew install yq` deliver Go-yq,
+# whose bare `yq '.'` prints YAML rather than JSON. The loader must find the -o=json form on its
+# own. The `off` assertion is Test 45's, re-run through the other flavor: it is the property
+# validate_codex and validate_defaults depend on, and the reason accepting Go-yq is safe.
+echo "=== Test 52: the loader works under Go-yq, with Test-45 scalar semantics ==="
+TDIR=$(mktemp -d); GODIR=$(mktemp -d); ERR=$(mktemp)
+mkyq_go "$GODIR"
+sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero under Go-yq" "0" "$RC"
+assert_stderr_contains "warns about the unknown level, as it does under Python-yq" 'unknown value "off"' "$ERR"
+VAL=$(PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+if [ "$VAL" = "gpt-5.5|off" ]; then
+    PASS=$((PASS+1)); echo "  PASS: get-codex passes 'off' through as a string under Go-yq"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' under Go-yq (expected 'gpt-5.5|off')"
+fi
+# The same document through both flavors must produce the same snapshot, not merely a valid one.
+A=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime 2>/dev/null)
+B=$(PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime 2>/dev/null)
+if [ "$A" = "$B" ]; then
+    PASS=$((PASS+1)); echo "  PASS: both flavors yield an identical runtime block"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: flavors disagree — python-yq '$A' vs Go-yq '$B'"
+fi
+rm -rf "$TDIR" "$GODIR" "$ERR"
+
+# The doubles prove the plumbing, not that a REAL Go-yq behaves. When this machine has one —
+# even shadowed by a python-yq earlier in PATH, which is the usual arrangement — exercise it.
+# When it has none, say so out loud: a silent single-flavor run is exactly what let the Go-yq
+# path rot unnoticed in the first place. Hard-requiring both binaries is not an option — there
+# is no CI here and the suites are run by hand on whatever machine is at hand.
+if REAL_GO="$(find_real_go_yq)"; then
+    TDIR=$(mktemp -d); REALDIR=$(mktemp -d); ERR=$(mktemp)
+    ln -s "$REAL_GO" "$REALDIR/yq"
+    sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
+        "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+    PATH="$REALDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "validate exits zero under the REAL Go-yq on this machine" "0" "$RC"
+    VAL=$(PATH="$REALDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+    if [ "$VAL" = "gpt-5.5|off" ]; then
+        PASS=$((PASS+1)); echo "  PASS: real Go-yq ($("$REAL_GO" --version 2>&1|head -1)) keeps 'off' a string"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: real Go-yq printed '$VAL' (expected 'gpt-5.5|off')"
+    fi
+    rm -rf "$TDIR" "$REALDIR" "$ERR"
+else
+    echo "  SKIP: no real Go-yq found — the mikefarah path was exercised only against a double"
+fi
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
