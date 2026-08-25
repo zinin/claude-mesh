@@ -109,10 +109,10 @@ yq_to_json() {                       # $1 = source YAML, $2 = destination JSON
 
 YQ_SCALARS_1_2='"string","string","boolean","number"'
 # The one property that accepting a second flavor can break: off/on/yes/no must stay STRINGS
-# (YAML 1.2 core). A YAML-1.1 resolver turns them into booleans, and validate_codex (:288),
-# validate_defaults (:522) and Test 45 then read that as a type error or a failed membership
-# test — the user is told to quote a value that was already correct. Checked against the binary
-# that is actually installed, not inferred from a version number.
+# (YAML 1.2 core). A YAML-1.1 resolver turns them into booleans, and validate_codex's type die,
+# validate_defaults' membership check, and Test 45 then read that as a type error or a failed
+# membership test — the user is told to quote a value that was already correct. Checked against
+# the binary that is actually installed, not inferred from a version number.
 # SETS YQ_PROBE_TYPES; does NOT print. A `die` inside a $(...) substitution would exit only the
 # SUBSHELL and the caller would read the empty result as "this yq cannot emit JSON" — a tmpfile
 # failure reported as a toolchain verdict. An empty YQ_PROBE_TYPES must mean one thing only.
@@ -160,7 +160,8 @@ load_or_die() {
         # back in: a flavor whose DEFAULT output is JSON wins with the first form and skips this
         # entirely. Measured 2026-08-25: config.example.yaml and the installed config.yaml both
         # hold ZERO booleans, so on a real config the probe never runs.
-        # ${bools:-0} guards the same case as $count at :151 — an empty snapshot prints nothing.
+        # ${bools:-0} guards the same case as $count in validate_providers — an empty
+        # snapshot prints nothing.
         local bools
         bools=$(jq '[paths(type=="boolean")] | length' "$CONFIG_JSON" 2>/dev/null)
         if [ "${bools:-0}" -gt 0 ]; then
