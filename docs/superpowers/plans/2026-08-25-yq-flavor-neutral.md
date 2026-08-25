@@ -762,8 +762,8 @@ Insert directly after the `All notable changes to claude-mesh will be documented
 
 - [ ] **Step 7: Check no stale claim survives**
 
-Run: `grep -rn "Go-yq.*REJECT\|incompatible DSL\|flavor mismatch\|Python-yq.*ONLY" README.md skills/ CHANGELOG.md | grep -v CHANGELOG.md:`
-Expected: no output. (Hits inside the new CHANGELOG entry's history text are excluded by the filter; any other hit is a stale claim.)
+Run: `grep -rn "Go-yq.*REJECT\|incompatible DSL\|flavor mismatch\|Python-yq.*ONLY" README.md skills/ext-claude-exec/SKILL.md`
+Expected: no output. The scan is limited to the two documentation files this task owns, and deliberately so: `skills/shared/tests/` legitimately contains those phrases inside assertions (`assert_no_match … "flavor mismatch"`), and the CHANGELOG entry narrates the old behaviour on purpose. Widening the scan turns both into false positives.
 
 - [ ] **Step 8: Commit**
 
@@ -812,7 +812,11 @@ run_pass() {            # run_pass <label> <dir-holding-that-yq>
     echo "########## $label ($dir/yq: $("$dir/yq" --version 2>&1 | head -1)) ##########"
     for suite in test-config-loader.sh test-preflight-env.sh; do
         echo "--- $suite ---"
-        PATH="$dir:$PATH" bash "$ROOT/skills/shared/tests/$suite" | tail -3 || rc=1
+        # PIPESTATUS, not `|| rc=1`: after a pipe the shell reports `tail`'s status, which is 0
+        # almost always, so a failing suite would be recorded as a pass by the very artifact
+        # whose job is to prove it passed.
+        PATH="$dir:$PATH" bash "$ROOT/skills/shared/tests/$suite" | tail -3
+        [ "${PIPESTATUS[0]}" -eq 0 ] || rc=1
     done
     return $rc
 }
