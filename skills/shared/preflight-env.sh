@@ -156,7 +156,19 @@ toolchain_row() {       # $1 = canonical name the loader looks for, $2 = the ove
     if [ "$bin" != "$canon" ] && ! command -v "$canon" >/dev/null 2>&1; then
         gap="${gap:+$gap, }$canon on PATH (where the loader looks)"
     fi
-    [ -n "$gap" ] || return 0
+    if [ -z "$gap" ]; then
+        # Present under both names: say WHICH one. Both yq flavors are accepted now, and which
+        # is installed changes the transcode form and the loader's speed, so a silent success
+        # leaves the reading session guessing. The banner comes from $bin, matching this
+        # function's contract that the override governs what THIS script checks. The row does
+        # NOT name the working invocation: deriving that would duplicate the loader's decision,
+        # and re-deriving a verdict made elsewhere is exactly what this file forbids. So this OK
+        # reports PRESENCE, not capability — a yq that emits no JSON still gets one, and the
+        # config row below carries the real diagnosis. A known cost, and the cheaper half of the
+        # trade.
+        row "$canon" OK "$("$bin" --version 2>&1 | head -1)"
+        return 0
+    fi
     TOOLCHAIN_OK=0
     TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:+$TOOLCHAIN_MISSING, }$canon"
     row "$canon" MISSING "loader cannot run without it (missing: $gap)"

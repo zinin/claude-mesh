@@ -253,6 +253,22 @@ else
     echo "  SKIP: python3 has no PyYAML — the YAML-1.1 preflight scenario cannot run"
 fi
 
+# toolchain_row used to print nothing at all on success, so the table said nothing about which
+# yq was in play. With both flavors accepted that is a real variable — it decides the transcode
+# form and the loader's speed — and "what can actually be used here" is the question this probe
+# exists to answer.
+run_probe valid-claude-models.yaml
+assert_eq   "a usable yq gets its own OK row"  OK  "$(field yq "$OUT")"
+assert_eq   "…and so does jq"                  OK  "$(field jq "$OUT")"
+# Not assert_match on the banner: a real one carries parentheses and slashes, and the row must
+# be proved NON-EMPTY rather than proved to contain the word "yq", which its own name supplies.
+YQ_ROW_DETAIL="$(awk '$1=="yq"{ $1=""; $2=""; sub(/^ +/,""); print; exit }' <<<"$OUT")"
+if [ -n "$YQ_ROW_DETAIL" ]; then
+    PASS=$((PASS+1)); echo "  PASS: the yq row carries a version banner ($YQ_ROW_DETAIL)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: the yq row has no detail column"
+fi
+
 # The OTHER way to reach UNKNOWN, and the one that looked like a rejected config until it was
 # guarded: with an unwritable TMPDIR the probe cannot create the file that catches the loader's
 # stderr, `cmd 2>""` fails on the redirect alone, and the row read `INVALID` with an EMPTY
@@ -771,13 +787,14 @@ while read -r PNAME PSTAT _; do
 done <<<"$(grep '^provider:' <<<"$OUT")"
 assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 
-# Row order is part of the contract — a reader scanning top-down meets the config state, then
-# the reviewers, then the environment, then the summary. This assertion is the one place the
-# whole table is checked at once, so it also catches a block appended in the wrong place.
+# Row order is part of the contract — a reader scanning top-down meets the toolchain, then the
+# config state, then the reviewers, then the environment, then the summary. This assertion is the
+# one place the whole table is checked at once, so it also catches a block appended in the wrong
+# place.
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "plugin yq jq config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines
