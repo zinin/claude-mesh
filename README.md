@@ -125,7 +125,7 @@ value before the harness intervenes — which is exactly the runaway the default
 The plugin requires:
 - `claude` CLI (this plugin runs on top of Claude Code). Mesh agents pin no model — subagents inherit your session model by default. To force a specific tier (e.g. `opus`, `fable`), set `runtime.dispatch_model` in config.yaml; if you name a model your Claude Code build does not support, dispatch fails at runtime — pick a supported alias/id.
   - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once) — whether the models come from the preset or from the interactive selection page — and those reviewers ignore `dispatch_model`. Leave the section out (or leave the list empty) and — whenever `claude` is selected at all (interactively, or via the preset's `builtin`) — you get exactly one claude reviewer on `dispatch_model` — as before for `/mesh-review`, and one more than before for `/mesh-design-review`, where `claude` used to be silently dropped. Without `claude` in play no claude reviewer runs, catalog or no catalog. **Cost scales linearly:** N Claude models = N full reviews of the same diff, on top of codex/gemini and every external model — three Claude models plus codex plus five external models is nine reviewers for one `/mesh-review`. Catalog entries are not checked against your Claude Code build: a name it does not accept fails that reviewer's dispatch — the run continues with the others, and the model is never silently substituted.
-- `yq` — **Python-yq (`kislyuk/yq`) ONLY**. Install via `pipx install yq`. **Go-yq (`mikefarah/yq`) is REJECTED** by `config-loader.sh` at startup (iter-2 SUGGESTION-1: aligns Dependencies row with iter-1 CRITICAL-1 / `require_yq()` flavor-detect). See full note below.
+- `yq` — **either flavor**: Python-yq (`kislyuk/yq`) or Go-yq v4+ (`mikefarah/yq`). `config-loader.sh` does not identify the binary: it runs the transcode, keeps whichever invocation produced JSON, and — when the config contains a value that could have been mis-resolved — checks that `off`/`on`/`yes`/`no` came through as strings before trusting it. A `yq` that can do neither is refused by name, and your `config.yaml` is not blamed for it.
 - `jq` — for JSON parsing in stream-json mode
 - `bc`, `curl` — for `ext-claude-exec` skill
 - `python3` — for `ext-claude-exec` and for prompt templating (`shared/render-template.py`) in ALL review skills (`ext-claude-`, `codex-`, `gemini-code-review`)
@@ -133,10 +133,10 @@ The plugin requires:
 - `gemini` CLI (only if using gemini agents)
 
 Install missing tools:
-- Ubuntu/Debian: `apt install jq bc curl python3 pipx && pipx install yq`
-- macOS: `brew install jq pipx bash coreutils util-linux && pipx install yq`
+- Ubuntu/Debian: `apt install jq bc curl python3`
+- macOS: `brew install jq bash coreutils util-linux findutils`
 
-**Important:** `yq` here means **Python-yq** (`kislyuk/yq`, pip package, jq-wrapper). On macOS `brew install yq` and on recent Ubuntu `snap install yq` provide a different tool — **Go-yq** (`mikefarah/yq`) — with an incompatible DSL. claude-mesh's `config-loader.sh` will detect a Go-yq binary and refuse to run with a clear message. Use `pipx install yq` on both platforms.
+Plus a `yq`, installed however your platform provides one. If your package manager has none, or ships one older than v4, `pipx install yq` works everywhere (that is Python-yq, and it needs `pipx`).
 
 ### macOS additional setup
 
@@ -177,8 +177,9 @@ to a safe location before uninstalling.
 | Problem | Solution |
 |---|---|
 | `claude: command not found` | Install Claude Code CLI first |
-| `yq: command not found` | `pipx install yq` (must be Python-yq; see Dependencies) |
-| `yq flavor mismatch: detected Go-yq` | Remove Go-yq from PATH (e.g. `brew uninstall yq` on macOS) and install Python-yq via `pipx install yq` |
+| `yq: command not found` | Install either flavor — `pipx install yq` (Python-yq) or `apt install yq` / `brew install yq` (Go-yq v4+) |
+| `yq cannot produce JSON` | The `yq` on PATH answers neither `yq .` nor `yq -o=json .` with JSON — it is too old, or not a `yq` at all. Install one of the two flavors above |
+| `yq mis-resolves YAML scalars` | The `yq` on PATH resolves YAML 1.1, turning `off`/`yes` into booleans. Upgrade it, or install one of the two flavors above |
 | `config.yaml not found at ...` | See "Configure" section above |
 | `models[X] references missing provider "Y"` | Add a `providers[]` entry with `id: Y` |
 | `Token expired or invalid for ...` | Update `token:` in the corresponding `providers[]` entry |
