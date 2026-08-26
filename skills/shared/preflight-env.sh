@@ -141,15 +141,16 @@ row plugin OK "${PLUGIN_VERSION:-unknown} @ $PLUGIN_ROOT"
 # first, so a dead toolchain cannot impersonate INVALID and send the operator to "fix" a
 # healthy config.yaml (row names are canonical yq/jq whatever the override points at).
 TOOLCHAIN_OK=1
-# WHICH tool is missing decides the fix the summary hints at the bottom — `pipx install yq`
-# (Python-yq specifically) is not the same advice as `apt install jq`, and by then the rows
-# printed here can no longer be read back.
+# WHICH tool is missing decides the fix the summary hints at the bottom — "install a yq that
+# emits JSON", which offers both flavors and lets the operator pick, is not the same advice as
+# `apt install jq`, and by then the rows printed here can no longer be read back.
 TOOLCHAIN_MISSING=""
 # TWO lookups per tool, not one — the same rule the curl gate below states, for the same reason:
 # PREFLIGHT_YQ_BIN / PREFLIGHT_JQ_BIN govern what THIS script checks, while config-loader.sh
-# resolves bare `yq` / `jq` from PATH (config-loader.sh:61). An override pointing at a working
-# binary while PATH holds none used to satisfy this gate and come back as `config INVALID` —
-# precisely the impersonation the paragraph above says cannot happen.
+# resolves bare `yq` / `jq` from PATH (config-loader.sh's `require_yq`, and the `command -v jq`
+# in `load_or_die`). An override pointing at a working binary while PATH holds none used to
+# satisfy this gate and come back as `config INVALID` — precisely the impersonation the
+# paragraph above says cannot happen.
 toolchain_row() {       # $1 = canonical name the loader looks for, $2 = the override this script uses
     local canon="$1" bin="$2" gap=""
     command -v "$bin" >/dev/null 2>&1 || gap="$bin"

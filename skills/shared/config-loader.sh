@@ -147,8 +147,10 @@ load_or_die() {
     # downstream through jq on the snapshot. This (a) eliminates mid-edit race
     # (the loader sees one consistent version for the duration of one call) and
     # (b) replaces ~30+ yq invocations with one yq + N jq calls (jq is much faster
-    # and ships everywhere). Expressions are identical because Python-yq is a jq
-    # wrapper — yq's jq-style expressions transfer to jq one-for-one.
+    # and ships everywhere). Every downstream read is a jq expression over the
+    # SNAPSHOT, so jq is the only thing those expressions must be valid for —
+    # whichever `yq` transcoded the file stops mattering the moment the JSON
+    # exists. The loader no longer needs its `yq` to be a jq wrapper.
     CONFIG_JSON=$(mktemp -t claude-mesh-cfg-XXXXXX.json) || die "mktemp failed for config snapshot"
     chmod 600 "$CONFIG_JSON"
     # ONE yq -> $CONFIG_JSON, then every read via jq on the snapshot. Which of the two JSON
@@ -587,9 +589,9 @@ validate_defaults() {
             # " $claude_catalog " is "  " — and an empty $cmv makes the glob *"  "*
             # match, silently ACCEPTING an empty entry even with no catalog at all.
             # validate_models has the same guard for the same reason
-            # (`[ -n "$id" ] || die`, :215).
+            # (`[ -n "$id" ] || die`).
             [ -n "$cmv" ] || die "defaults.$preset.claude_models[$c]: empty value"
-            # Charset gate — the SAME check validate_claude runs on the catalog (:381), and
+            # Charset gate — the SAME check validate_claude runs on the catalog, and
             # the reason the membership test below cannot be spanned. Membership is a
             # substring match against the space-joined catalog, so without this a
             # multi-token value whose words happen to be ADJACENT catalog members

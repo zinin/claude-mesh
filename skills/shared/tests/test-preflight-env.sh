@@ -199,15 +199,17 @@ run_probe invalid-defaults-runmode.yaml
 assert_eq   "broken defaults -> config INVALID" INVALID "$(field config "$OUT")"
 
 # A dead toolchain must not impersonate a rejected config — the loader dies rc=1 either way,
-# but the operator's next move differs (pipx install yq vs editing a healthy config).
+# but the operator's next move differs (installing a yq that emits JSON vs editing a healthy
+# config).
 run_probe valid-claude-models.yaml PREFLIGHT_YQ_BIN="$WORK/no-such-yq"
 assert_eq   "missing yq exits 0"              0        "$RC"
 assert_eq   "missing yq -> its own row"       MISSING  "$(field yq "$OUT")"
 assert_eq   "missing yq -> config UNKNOWN, not INVALID" UNKNOWN "$(field config "$OUT")"
 
-# The override the probe checks is not the binary the loader runs: config-loader.sh:61 resolves
-# bare `yq` from PATH. A working override with no `yq` on PATH used to satisfy the presence gate
-# and come back as INVALID — a healthy config accused by a probe that never opened it.
+# The override the probe checks is not the binary the loader runs: config-loader.sh's
+# `require_yq` resolves bare `yq` from PATH. A working override with no `yq` on PATH used to
+# satisfy the presence gate and come back as INVALID — a healthy config accused by a probe that
+# never opened it.
 mkfarm "$WORK/noyq" yq
 run_probe valid-claude-models.yaml PATH="$WORK/curlfast:$WORK/noyq" PREFLIGHT_YQ_BIN="$(command -v yq)"
 assert_eq   "override without a PATH yq exits 0"                0        "$RC"

@@ -648,6 +648,10 @@ TMPD=$(mktemp -d)
 # iter-3 CRITICAL-4: stage a REPLACE_ME→fake-token copy so cmd_export's
 # REPLACE_ME guard (iter-2 CONCERN-10) doesn't trip on the shipped example.
 sed 's/REPLACE_ME/test-token-fake/g' "$PLUGIN_ROOT/config.example.yaml" > "$TMPD/config.yaml"
+# RAW `yq`, no double: this reaches whatever `yq` the machine actually has, which makes this
+# harness a SECOND dependency on that being a Python-yq — independent of lib-yq-doubles.sh and
+# of anything the loader does. `-r` is kislyuk's raw-output flag; where it is not accepted
+# $MODEL_IDS comes back empty and the loop below simply runs zero times.
 MODEL_IDS=$(yq -r '.models[].id' "$TMPD/config.yaml")
 for mid in $MODEL_IDS; do
     OUT=$(mktemp)

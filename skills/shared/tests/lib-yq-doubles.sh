@@ -14,6 +14,20 @@
 
 # Resolved once, at source time. The doubles must NOT call bare `yq`: they are placed ON PATH
 # under exactly that name, so a bare call would recurse into itself.
+#
+# KNOWN BROKEN WHEN THIS MACHINE'S OWN `yq` IS A GO-YQ. This takes whatever PATH offers, and
+# the doubles are then built on top of it. Under mikefarah that substrate is wrong twice over:
+# mkyq_go's `-o=json` branch runs a bare `.`, which yields JSON only from kislyuk and prints
+# YAML there, and mkyq_go's default branch — plus every call in mkyq_nojson — passes `-y`,
+# kislyuk's `--yaml-output` short form and not a mikefarah v4 flag. Both forms therefore fail,
+# the loader correctly reports that this `yq` cannot produce JSON, and scenarios in BOTH suites
+# go red for a reason that is not config-loader.sh's fault. mkyq_yaml11 is unaffected: it
+# drives python3 directly and never touches $YQ_REAL.
+#
+# The durable fix is to make YQ_REAL overridable, so a caller can pin the doubles to a kislyuk
+# binary while PATH points at a Go-yq. Deliberately not taken here: no machine this was
+# developed on had both flavors at once, so the mikefarah arm of such a fix could not be
+# exercised by the change that would have introduced it.
 YQ_REAL="$(command -v yq)"
 
 mkyq_go() {             # mkyq_go <dir> — Go-yq v4: bare '.' prints YAML, -o=json prints JSON
