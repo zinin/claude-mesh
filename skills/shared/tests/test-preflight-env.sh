@@ -223,6 +223,12 @@ mkyq_go "$WORK/goyq"
 run_probe valid-claude-models.yaml PATH="$WORK/goyq:$WORK/curlfast:$WORK/noyq"
 assert_eq   "Go-yq exits 0"                            0    "$RC"
 assert_eq   "Go-yq -> config OK"                       OK   "$(field config "$OUT")"
+# The one place the yq row can be pinned to the tool that PRODUCED it rather than merely
+# proved non-empty: on the happy path the banner belongs to whatever yq the machine has, but
+# here the suite authors it (lib-yq-doubles.sh), so a substring is both stable and strong.
+# Without this, `row "$canon" OK "present"` — no --version call at all — passes every other
+# assertion about the row.
+assert_match "…and the yq row names the flavour it found" "mikefarah" "$OUT"
 assert_no_match "…and nothing claims a flavour mismatch" "flavor mismatch" "$OUT"
 assert_no_match "…and nobody is sent to install a different yq" "pipx install yq" "$OUT"
 
