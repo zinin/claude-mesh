@@ -261,6 +261,28 @@ else
     echo "  SKIP: python3 has no PyYAML — the YAML-1.1 preflight scenario cannot run"
 fi
 
+# The third way the loader can die before it has read anything: it cannot create the snapshot
+# file at all. TMPDIR is the fault there, not config.yaml, and this file already has a `tmpfile`
+# cause for exactly that class — its own mktemp_or_fail guards use it. Without an arm for the
+# loader's wording these dies fall through to the routing's `*)` and the probe answers INVALID,
+# accusing a file the loader never opened: the impersonation the routing exists to prevent.
+# The double fails ONLY the loader's snapshot template, so preflight's own mktemp_or_fail — a
+# bare `mktemp`, no template — still works and the scenario stays about the loader.
+mkdir -p "$WORK/mktempshim"
+MKTEMP_REAL="$(command -v mktemp)"   # resolved BEFORE the shim is on PATH, or the shim recurses
+cat > "$WORK/mktempshim/mktemp" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in claude-mesh-cfg-*) exit 1 ;; esac; done
+exec $MKTEMP_REAL "\$@"
+SH
+chmod +x "$WORK/mktempshim/mktemp"
+run_probe valid-claude-models.yaml PATH="$WORK/mktempshim:$WORK/curlfast:$PATH"
+assert_eq   "a snapshot that cannot be created exits 0"       0        "$RC"
+assert_eq   "…-> config UNKNOWN, not INVALID"                 UNKNOWN  "$(field config "$OUT")"
+assert_match "…and the detail is the loader's own sentence"   "mktemp failed" "$OUT"
+assert_match "…and the hint sends the operator to TMPDIR"     "make TMPDIR writable" "$OUT"
+assert_match "…and says the config was never read"            "was never read" "$OUT"
+
 # toolchain_row used to print nothing at all on success, so the table said nothing about which
 # yq was in play. With both flavors accepted that is a real variable — it decides the transcode
 # form and the loader's speed — and "what can actually be used here" is the question this probe

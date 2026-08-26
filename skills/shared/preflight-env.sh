@@ -260,6 +260,13 @@ else
                *"GNU coreutils"*)
                    CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="toolchain"
                    TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:-GNU coreutils}" ;;
+               *"mktemp failed"*)
+                   # Both of the loader's mktemp deaths land here — the config snapshot's and
+                   # yq_probe's. TMPDIR is at fault and config.yaml was never opened, so the
+                   # `*)` below would answer INVALID and say a healthy file is malformed. This
+                   # is the same cause the guarded mktemps at the top of this block already
+                   # report for the probe's OWN temp files; the loader's are no different.
+                   CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="tmpfile" ;;
                *)  CONFIG_STATUS="INVALID" ;;
            esac ;;
     esac

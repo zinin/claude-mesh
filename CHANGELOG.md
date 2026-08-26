@@ -27,6 +27,11 @@ All notable changes to claude-mesh will be documented here.
 - A `yq` that resolves scalars per YAML 1.1 used to surface as `codex.reasoning_level: must be
   a string (got boolean) — quote it…`, telling the user to fix a value that was already correct.
   It is now named as what it is.
+- A `config.yaml` that could not be snapshotted because `mktemp` failed was reported as an
+  invalid config. TMPDIR being unwritable or full is not a property of the file, and the file
+  was never opened; `preflight-env.sh` now routes those deaths to `config UNKNOWN` with the
+  same `tmpfile` cause it already used for its own temp files, and the hint points at TMPDIR
+  instead of at a healthy config.
 
 ## [0.10.0] - 2026-08-23
 
