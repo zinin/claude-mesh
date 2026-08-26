@@ -13,8 +13,7 @@ All notable changes to claude-mesh will be documented here.
   manager delivers depends on the repositories configured, not on the distribution name.
 
 ### Fixed
-- claude-mesh could not start at all where `yq` is Go-yq — which is what `apt install yq`,
-  `brew install yq` and recent `snap install yq` deliver. `config-loader.sh` refused it on
+- claude-mesh could not start at all where `yq` is Go-yq. `config-loader.sh` refused it on
   sight, and since it died before opening `config.yaml`, `preflight-env.sh` reported
   `config UNKNOWN` and `SUMMARY available: —`: not one reviewer selectable, not even the
   built-in `claude`. The plugin uses `yq` for exactly one operation, a single YAML→JSON
@@ -26,7 +25,7 @@ All notable changes to claude-mesh will be documented here.
   `mikefarah` URL or the literal `version v`, and anything else passed the check and then died
   blaming the config.
 - A `yq` that resolves scalars per YAML 1.1 used to surface as `codex.reasoning_level: must be
-  a string (got boolean) — quote it`, telling the user to fix a value that was already correct.
+  a string (got boolean) — quote it…`, telling the user to fix a value that was already correct.
   It is now named as what it is.
 
 ## [0.10.0] - 2026-08-23

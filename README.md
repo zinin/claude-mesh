@@ -125,7 +125,7 @@ value before the harness intervenes — which is exactly the runaway the default
 The plugin requires:
 - `claude` CLI (this plugin runs on top of Claude Code). Mesh agents pin no model — subagents inherit your session model by default. To force a specific tier (e.g. `opus`, `fable`), set `runtime.dispatch_model` in config.yaml; if you name a model your Claude Code build does not support, dispatch fails at runtime — pick a supported alias/id.
   - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once) — whether the models come from the preset or from the interactive selection page — and those reviewers ignore `dispatch_model`. Leave the section out (or leave the list empty) and — whenever `claude` is selected at all (interactively, or via the preset's `builtin`) — you get exactly one claude reviewer on `dispatch_model` — as before for `/mesh-review`, and one more than before for `/mesh-design-review`, where `claude` used to be silently dropped. Without `claude` in play no claude reviewer runs, catalog or no catalog. **Cost scales linearly:** N Claude models = N full reviews of the same diff, on top of codex/gemini and every external model — three Claude models plus codex plus five external models is nine reviewers for one `/mesh-review`. Catalog entries are not checked against your Claude Code build: a name it does not accept fails that reviewer's dispatch — the run continues with the others, and the model is never silently substituted.
-- `yq` — **either flavor**: Python-yq (`kislyuk/yq`) or Go-yq v4+ (`mikefarah/yq`). `config-loader.sh` does not identify the binary: it runs the transcode, keeps whichever invocation produced JSON, and — when the config contains a value that could have been mis-resolved — checks that `off`/`on`/`yes`/`no` came through as strings before trusting it. A `yq` that can do neither is refused by name, and your `config.yaml` is not blamed for it.
+- `yq` — **either flavor**: Python-yq (`kislyuk/yq`) or Go-yq v4+ (`mikefarah/yq`). `config-loader.sh` does not identify the binary: it runs the transcode, keeps whichever invocation produced JSON, and — when the config contains a value that could have been mis-resolved — checks that `off`/`on`/`yes`/`no` came through as strings before trusting it. A `yq` that fails either check is refused by name, and your `config.yaml` is not blamed for it.
 - `jq` — for JSON parsing in stream-json mode
 - `bc`, `curl` — for `ext-claude-exec` skill
 - `python3` — for `ext-claude-exec` and for prompt templating (`shared/render-template.py`) in ALL review skills (`ext-claude-`, `codex-`, `gemini-code-review`)
@@ -136,7 +136,7 @@ Install missing tools:
 - Ubuntu/Debian: `apt install jq bc curl python3`
 - macOS: `brew install jq bash coreutils util-linux findutils`
 
-Plus a `yq`, installed however your platform provides one. If your package manager has none, or ships one older than v4, `pipx install yq` works everywhere (that is Python-yq, and it needs `pipx`).
+Plus a `yq`, installed however your platform provides one. If your package manager has none, or ships a Go-yq older than v4, `pipx install yq` works everywhere (that is Python-yq, and it needs `pipx`).
 
 ### macOS additional setup
 
