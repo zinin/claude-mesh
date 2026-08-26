@@ -412,7 +412,7 @@ LATEST=$(find "$PLUGIN_DATA/runs/ext-claude" -mindepth 3 -maxdepth 3 -type d 2>/
 |-------|----------|
 | `claude: command not found` | Install Claude CLI |
 | `config.yaml not found` | Copy from plugin's `config.example.yaml` |
-| `yq not found` | `pipx install yq` (Python-yq required; **don't** `brew install yq` — that's Go-yq, incompatible DSL) |
+| `yq not found` | Install either flavor: `pipx install yq` (Python-yq) or `apt install yq` / `brew install yq` (Go-yq v4+) |
 | `models[X] references missing provider` | Add missing provider to `providers:` in config |
 | Token precheck failed (HTTP 401/403) | Update `token:` in `providers[X]` |
 | Ollama daemon unreachable | `ollama serve` / `systemctl start ollama` |

@@ -58,19 +58,14 @@ IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, claude.models, 
 MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'   # engine models: adds "/" for provider-qualified ids
 
 require_yq() {
-    if ! command -v yq >/dev/null 2>&1; then
-        die "yq not found. claude-mesh requires Python-yq (kislyuk/yq). Install: 'pipx install yq' or 'pip install --user yq'. Do NOT install via 'brew install yq' or recent 'snap install yq' — those provide Go-yq with an incompatible DSL."
-    fi
-    # Detect flavor: Python-yq (kislyuk/yq, jq-wrapper) prints e.g. "yq 3.x.y" and is a Python script;
-    # Go-yq (mikefarah/yq) prints "yq (https://github.com/mikefarah/yq/) version v4.x.y".
-    # The plan's expressions (raw jq with escaped quotes) are Python-yq syntax — Go-yq will silently misparse them.
-    local yq_ver
-    yq_ver=$(yq --version 2>&1 | head -1)
-    case "$yq_ver" in
-        *mikefarah*|*"version v"*)
-            die "yq flavor mismatch: detected Go-yq (mikefarah/yq) but claude-mesh requires Python-yq (kislyuk/yq). Install via: 'pipx install yq'. Remove or shadow the Go-yq binary in PATH. Got: $yq_ver"
-            ;;
-    esac
+    # Presence only. WHICH yq this is has stopped mattering: the transcode below tries both
+    # known JSON invocations and keeps the one whose output jq can parse, so a flavor check
+    # here would only be able to reject binaries that work.
+    # The substring "yq not found" is matched by preflight-env.sh's CONFIG_DETAIL
+    # toolchain-cause check — do not reword it.
+    command -v yq >/dev/null 2>&1 || die "yq not found. claude-mesh accepts either flavor: \
+Python-yq (kislyuk/yq — 'pipx install yq') or Go-yq v4+ (mikefarah/yq — 'apt install yq', \
+'brew install yq'). Install either one."
 }
 
 require_gnu_coreutils() {
@@ -100,6 +95,39 @@ require_gnu_coreutils() {
     esac
 }
 
+# Python-yq (kislyuk/yq) is a jq wrapper: its DEFAULT output is already JSON. Go-yq (mikefarah)
+# v4 prints YAML unless told -o=json. We do not ask which one is installed — the only property
+# the snapshot needs is "this invocation returned JSON", and that is checked rather than
+# guessed. The order is not arbitrary: the python-yq form goes first so the historically
+# recommended flavor pays nothing for the fallback.
+# `jq .` and NOT `jq -e .`: on an empty snapshot -e returns rc=4 while plain jq returns 0, and
+# an empty or comment-only config.yaml legitimately transcodes to zero bytes — see
+# validate_providers, where an empty snapshot is handled explicitly.
+yq_to_json() {                       # $1 = source YAML, $2 = destination JSON
+    yq '.'         "$1" > "$2" 2>/dev/null && jq . "$2" >/dev/null 2>&1 && return 0
+    yq -o=json '.' "$1" > "$2" 2>/dev/null && jq . "$2" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+YQ_SCALARS_1_2='"string","string","boolean","number"'
+# The one property that accepting a second flavor can break: off/on/yes/no must stay STRINGS
+# (YAML 1.2 core). A YAML-1.1 resolver turns them into booleans, and validate_codex's type die,
+# validate_defaults' membership check, and Test 45 then read that as a type error or a failed
+# membership test — the user is told to quote a value that was already correct. Checked against
+# the binary that is actually installed, not inferred from a version number.
+# SETS YQ_PROBE_TYPES; does NOT print. A `die` inside a $(...) substitution would exit only the
+# SUBSHELL and the caller would read the empty result as "this yq cannot emit JSON" — a tmpfile
+# failure reported as a toolchain verdict. An empty YQ_PROBE_TYPES must mean one thing only.
+yq_probe() {
+    YQ_PROBE_TYPES=""
+    local d
+    d=$(mktemp -d -t claude-mesh-yqprobe-XXXXXX) || die "mktemp failed for the yq probe"
+    printf 'a: off\nb: yes\nc: true\nd: 3\n' > "$d/probe.yaml"
+    yq_to_json "$d/probe.yaml" "$d/probe.json" \
+        && YQ_PROBE_TYPES=$(jq -r '[.a,.b,.c,.d|type]|@csv' "$d/probe.json" 2>/dev/null)
+    rm -rf "$d"
+}
+
 load_or_die() {
     # iter-2 CONCERN-11: "config not found" gets a DISTINCT exit code (2) so
     # user-invoked commands like /do-plan can tolerate the genuinely-tolerable
@@ -119,26 +147,60 @@ load_or_die() {
     # downstream through jq on the snapshot. This (a) eliminates mid-edit race
     # (the loader sees one consistent version for the duration of one call) and
     # (b) replaces ~30+ yq invocations with one yq + N jq calls (jq is much faster
-    # and ships everywhere). Expressions are identical because Python-yq is a jq
-    # wrapper — yq's jq-style expressions transfer to jq one-for-one.
+    # and ships everywhere). Every downstream read is a jq expression over the
+    # SNAPSHOT, so jq is the only thing those expressions must be valid for —
+    # whichever `yq` transcoded the file stops mattering the moment the JSON
+    # exists. The loader no longer needs its `yq` to be a jq wrapper.
     CONFIG_JSON=$(mktemp -t claude-mesh-cfg-XXXXXX.json) || die "mktemp failed for config snapshot"
     chmod 600 "$CONFIG_JSON"
-    # NOTE (Task 5): the plan text shows `yq -o=json '.'`, but `-o`/`--output` is GO-yq
-    # (mikefarah) syntax. claude-mesh targets PYTHON-yq (kislyuk/yq) — see require_yq above —
-    # whose DEFAULT behavior already transcodes YAML→JSON (the `-y` flag is what switches it
-    # to YAML output). With Python-yq, `-o=json` is forwarded verbatim to jq, which rejects it
-    # ("jq: Unknown option -o=json", exit 2), so the snapshot would ALWAYS fail. The correct,
-    # flavor-consistent invocation is therefore the bare `yq '.'`. This still satisfies the
-    # JSON-snapshot invariant (one yq → $CONFIG_JSON, then all reads via jq on the snapshot).
-    if ! yq '.' "$CONFIG_FILE" > "$CONFIG_JSON" 2>/dev/null; then
-        rm -f "$CONFIG_JSON"
-        die "config snapshot: yaml→json conversion failed for $CONFIG_FILE (check yaml syntax)"
-    fi
-    # Cleanup runs even on `die` because die exits non-zero and the EXIT trap fires.
+    # Cleanup runs even on `die` because die exits non-zero and the EXIT trap fires. Armed HERE,
+    # before anything that can exit, and not after the transcode block: yq_probe dies of its own
+    # `mktemp -d` with the snapshot already written, and that snapshot is config.yaml transcoded —
+    # plaintext provider tokens included. Mode 600 decides WHO can read it; only this trap decides
+    # HOW LONG it exists. The explicit `rm -f`s in the block below are kept: they shorten the
+    # window further by removing the file before the probe runs rather than at exit.
     # NOTE: bash EXIT traps do NOT stack — if a caller later sets its own `trap … EXIT`
     # it REPLACES this one. That is why cmd_export (Task 8) must manage its own
     # $CONFIG_JSON / $ENV_FILE cleanup explicitly rather than relying on this trap.
     trap 'rm -f "$CONFIG_JSON"' EXIT
+    # ONE yq -> $CONFIG_JSON, then every read via jq on the snapshot. Which of the two JSON
+    # invocations does the transcoding is decided by yq_to_json, not by this call site.
+    if yq_to_json "$CONFIG_FILE" "$CONFIG_JSON"; then
+        # A YAML-1.1 resolver differs from YAML-1.2-core by ONE thing that reaches this schema:
+        # it turns off/on/yes/no into booleans. Such a divergence therefore always shows up AS A
+        # BOOLEAN IN THE SNAPSHOT. No booleans means no divergence was possible on this
+        # document, whichever binary produced it — a property of the artifact, not an inference
+        # about who ran. Gating on "which form won" instead would be an identity check smuggled
+        # back in: a flavor whose DEFAULT output is JSON wins with the first form and skips this
+        # entirely. Measured 2026-08-25: config.example.yaml and the installed config.yaml both
+        # hold ZERO booleans, so on a real config the probe never runs.
+        # ${bools:-0} guards the same case as $count in validate_providers — an empty
+        # snapshot prints nothing.
+        local bools
+        bools=$(jq '[paths(type=="boolean")] | length' "$CONFIG_JSON" 2>/dev/null)
+        if [ "${bools:-0}" -gt 0 ]; then
+            yq_probe
+            if [ "$YQ_PROBE_TYPES" != "$YQ_SCALARS_1_2" ]; then
+                rm -f "$CONFIG_JSON"
+                die "yq mis-resolves YAML scalars: off/on/yes/no must stay strings (YAML 1.2 \
+core), but this yq turned them into booleans. claude-mesh needs Python-yq (kislyuk/yq) or \
+Go-yq v4+ (mikefarah/yq). Got: $(yq --version 2>&1 | head -1)"
+            fi
+        fi
+    else
+        rm -f "$CONFIG_JSON"
+        # The transcode failed: is that the yq's fault or the yaml's? The probe runs a document
+        # that is known to be good, so it separates the two. Before this split every failure
+        # here read "check yaml syntax" and sent the operator to edit a healthy file.
+        yq_probe
+        if [ -n "$YQ_PROBE_TYPES" ]; then
+            die "config snapshot: yaml→json conversion failed for $CONFIG_FILE (check yaml syntax)"
+        else
+            die "yq cannot produce JSON: neither 'yq .' nor 'yq -o=json .' returned JSON for a \
+known-good document. claude-mesh accepts Python-yq (kislyuk/yq — 'pipx install yq') or Go-yq \
+v4+ (mikefarah/yq — 'apt install yq', 'brew install yq'). Got: $(yq --version 2>&1 | head -1)"
+        fi
+    fi
 }
 
 validate_providers() {
@@ -285,8 +347,8 @@ validate_codex() {
     # YAML booleans `true`/`false`) used to survive validation and then crash
     # cmd_get_codex with a raw jq type error; unsafe characters would corrupt the
     # `model|level` pipe protocol or shell substitution in the executor skills.
-    # (Note: with kislyuk-yq the YAML-1.1 words `off`/`on`/`yes`/`no` parse as
-    # STRINGS and take the warn-and-pass-through path below, not the type die —
+    # (Note: under every yq flavor this loader accepts — the transcode verifies it — the YAML-1.1 words
+    # `off`/`on`/`yes`/`no` parse as STRINGS and take the warn-and-pass-through path below, not the type die —
     # empirically locked by Test 45.) Same forward-compatible charset family as
     # runtime.dispatch_model — no enum, new models/levels never require a
     # validator change; codex.model additionally allows "/" for
@@ -519,8 +581,9 @@ validate_defaults() {
             # it `jq -r` stringifies a number/boolean/null and the membership test below
             # compares that string, so a catalog of ["5","true"] would accept a preset of
             # [5, true]. Unquoted `[true]`/`[false]` DO parse as booleans and land here;
-            # `[yes]`/`[no]`/`[on]`/`[off]` do NOT — under kislyuk-yq those are the STRINGS
-            # "yes"/"no"/"on"/"off", so the membership check below is what reports them.
+            # `[yes]`/`[no]`/`[on]`/`[off]` do NOT — under every yq flavor this loader accepts
+            # — the transcode verifies it — those are the STRINGS "yes"/"no"/"on"/"off", so
+            # the membership check below is what reports them.
             # Same behaviour the note at validate_codex records, empirically locked by Test 45.
             cmetype=$(jq -r ".defaults.$preset.claude_models[$c] | type" "$CONFIG_JSON")
             [ "$cmetype" = "string" ] \
@@ -531,9 +594,9 @@ validate_defaults() {
             # " $claude_catalog " is "  " — and an empty $cmv makes the glob *"  "*
             # match, silently ACCEPTING an empty entry even with no catalog at all.
             # validate_models has the same guard for the same reason
-            # (`[ -n "$id" ] || die`, :215).
+            # (`[ -n "$id" ] || die`).
             [ -n "$cmv" ] || die "defaults.$preset.claude_models[$c]: empty value"
-            # Charset gate — the SAME check validate_claude runs on the catalog (:381), and
+            # Charset gate — the SAME check validate_claude runs on the catalog, and
             # the reason the membership test below cannot be spanned. Membership is a
             # substring match against the space-joined catalog, so without this a
             # multi-token value whose words happen to be ADJACENT catalog members

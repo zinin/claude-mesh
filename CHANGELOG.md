@@ -2,6 +2,37 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Requirements
+- `yq` may now be **either flavor**: Python-yq (`kislyuk/yq`) or Go-yq v4+ (`mikefarah/yq`).
+  The loader no longer identifies the binary — it runs the transcode, keeps whichever
+  invocation produced JSON, and verifies scalar resolution when the config contains something
+  that could have been mis-resolved. `pipx install yq` stops being the only supported route.
+  README's package-manager→flavor table is deleted rather than inverted: which flavor a package
+  manager delivers depends on the repositories configured, not on the distribution name.
+
+### Fixed
+- claude-mesh could not start at all where `yq` is Go-yq. `config-loader.sh` refused it on
+  sight, and since it died before opening `config.yaml`, `preflight-env.sh` reported
+  `config UNKNOWN` and `SUMMARY available: —`: not one reviewer selectable, not even the
+  built-in `claude`. The plugin uses `yq` for exactly one operation, a single YAML→JSON
+  transcode, so the incompatibility was never the DSL the rejection cited — Go-yq simply needs
+  `-o=json` to print JSON.
+- Every transcode failure used to be reported as a broken `config.yaml`. A `yq` that cannot
+  emit JSON now says so, and only a genuinely malformed file is sent back to the user as one.
+  This also covers the flavors the old string matcher never recognised: it keyed on the
+  `mikefarah` URL or the literal `version v`, and anything else passed the check and then died
+  blaming the config.
+- A `yq` that resolves scalars per YAML 1.1 used to surface as `codex.reasoning_level: must be
+  a string (got boolean) — quote it…`, telling the user to fix a value that was already correct.
+  It is now named as what it is.
+- A `config.yaml` that could not be snapshotted because `mktemp` failed was reported as an
+  invalid config. TMPDIR being unwritable or full is not a property of the file, and the file
+  was never opened; `preflight-env.sh` now routes those deaths to `config UNKNOWN` with the
+  same `tmpfile` cause it already used for its own temp files, and the hint points at TMPDIR
+  instead of at a healthy config.
+
 ## [0.10.0] - 2026-08-23
 
 ### Added

@@ -141,22 +141,35 @@ row plugin OK "${PLUGIN_VERSION:-unknown} @ $PLUGIN_ROOT"
 # first, so a dead toolchain cannot impersonate INVALID and send the operator to "fix" a
 # healthy config.yaml (row names are canonical yq/jq whatever the override points at).
 TOOLCHAIN_OK=1
-# WHICH tool is missing decides the fix the summary hints at the bottom — `pipx install yq`
-# (Python-yq specifically) is not the same advice as `apt install jq`, and by then the rows
-# printed here can no longer be read back.
+# WHICH tool is missing decides the fix the summary hints at the bottom — "install a yq that
+# emits JSON", which offers both flavors and lets the operator pick, is not the same advice as
+# `apt install jq`, and by then the rows printed here can no longer be read back.
 TOOLCHAIN_MISSING=""
 # TWO lookups per tool, not one — the same rule the curl gate below states, for the same reason:
 # PREFLIGHT_YQ_BIN / PREFLIGHT_JQ_BIN govern what THIS script checks, while config-loader.sh
-# resolves bare `yq` / `jq` from PATH (config-loader.sh:61). An override pointing at a working
-# binary while PATH holds none used to satisfy this gate and come back as `config INVALID` —
-# precisely the impersonation the paragraph above says cannot happen.
+# resolves bare `yq` / `jq` from PATH (config-loader.sh's `require_yq`, and the `command -v jq`
+# in `load_or_die`). An override pointing at a working binary while PATH holds none used to
+# satisfy this gate and come back as `config INVALID` — precisely the impersonation the
+# paragraph above says cannot happen.
 toolchain_row() {       # $1 = canonical name the loader looks for, $2 = the override this script uses
     local canon="$1" bin="$2" gap=""
     command -v "$bin" >/dev/null 2>&1 || gap="$bin"
     if [ "$bin" != "$canon" ] && ! command -v "$canon" >/dev/null 2>&1; then
         gap="${gap:+$gap, }$canon on PATH (where the loader looks)"
     fi
-    [ -n "$gap" ] || return 0
+    if [ -z "$gap" ]; then
+        # Present under both names: say WHICH one. Both yq flavors are accepted now, and which
+        # is installed changes the transcode form and the loader's speed, so a silent success
+        # leaves the reading session guessing. The banner comes from $bin, matching this
+        # function's contract that the override governs what THIS script checks. The row does
+        # NOT name the working invocation: deriving that would duplicate the loader's decision,
+        # and re-deriving a verdict made elsewhere is exactly what this file forbids. So this OK
+        # reports PRESENCE, not capability — a yq that emits no JSON still gets one, and the
+        # config row below carries the real diagnosis. A known cost, and the cheaper half of the
+        # trade.
+        row "$canon" OK "$("$bin" --version 2>&1 | head -1)"
+        return 0
+    fi
     TOOLCHAIN_OK=0
     TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:+$TOOLCHAIN_MISSING, }$canon"
     row "$canon" MISSING "loader cannot run without it (missing: $gap)"
@@ -228,23 +241,32 @@ else
         2) CONFIG_STATUS="MISSING"; CONFIG_MISSING_CAUSE="noconfig"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; cp config.example.yaml into the data dir"; MODELS="" ;;
         *) # rc=1 means "the loader refused", which is not the same as "the config is bad":
            # require_yq and require_gnu_coreutils die with this very code BEFORE config.yaml is
-           # opened. The presence check above cannot catch those two — a Go-yq binary (what
-           # `apt install yq` and `brew install yq` actually deliver) is present under the name
-           # the loader looks for, and passes it. Calling that INVALID sends the operator to
-           # edit a file the loader never read, so it is routed to the toolchain cause and its
-           # "install Python-yq" hint instead. Matching on the loader's own wording is the cost;
-           # the Go-yq scenario in test-preflight-env.sh is what keeps the two in step.
+           # opened. The presence check above cannot catch those two — a `yq` that is present under
+           # the name the loader looks for can still be one the loader cannot use — it emits
+           # no JSON, or it resolves YAML 1.1 — and the presence check above passes it.
+           # Calling that INVALID sends the operator to edit a file the loader never read, so
+           # it is routed to the toolchain cause and its "install a yq that emits JSON" hint
+           # instead. Matching on the loader's own wording is the cost; the Go-yq scenario in
+           # test-preflight-env.sh is what keeps the two in step.
            CONFIG_DETAIL="$(head -1 "$LERR")"; MODELS=""
            case "$CONFIG_DETAIL" in
-               *"yq not found"*|*"yq flavor mismatch"*)
+               *"yq not found"*|*"yq cannot produce JSON"*|*"yq mis-resolves"*)
                    CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="toolchain"
                    # The presence gate passed, so TOOLCHAIN_MISSING is empty and the hint would
                    # degrade to "see README Dependencies". The loader just named the tool — carry
-                   # that through, so the advice stays "pipx install yq, NOT the Go one".
+                   # that through, so the advice stays "install a yq that emits JSON" instead of the
+                   # generic toolchain fallback.
                    TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:-yq}" ;;
                *"GNU coreutils"*)
                    CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="toolchain"
                    TOOLCHAIN_MISSING="${TOOLCHAIN_MISSING:-GNU coreutils}" ;;
+               *"mktemp failed"*)
+                   # Both of the loader's mktemp deaths land here — the config snapshot's and
+                   # yq_probe's. TMPDIR is at fault and config.yaml was never opened, so the
+                   # `*)` below would answer INVALID and say a healthy file is malformed. This
+                   # is the same cause the guarded mktemps at the top of this block already
+                   # report for the probe's OWN temp files; the loader's are no different.
+                   CONFIG_STATUS="UNKNOWN"; CONFIG_UNKNOWN_CAUSE="tmpfile" ;;
                *)  CONFIG_STATUS="INVALID" ;;
            esac ;;
     esac
@@ -648,7 +670,7 @@ UNAVAIL=""
 # it, tokens and all. config.yaml is user-owned and agents never edit it (commands/mesh-review.md,
 # Step 1), so a table the generated prompts tell a session to print verbatim must not carry an
 # instruction to clobber it. It is also the distinction Task 1's config row exists to draw:
-# "pipx install yq" and "edit a healthy config" are different days' work.
+# "install a usable yq" and "edit a healthy config" are different days' work.
 BLOCKER=""
 BLOCKER_HINT=""
 DATA_DIR="<plugin-data-dir>"
@@ -686,11 +708,11 @@ case "$CONFIG_STATUS" in
         U_FIX=""
         case "$CONFIG_UNKNOWN_CAUSE" in
             toolchain)
-                # Naming the tool matters more than usual here — Go-yq is a DIFFERENT program
-                # that config-loader.sh rejects on sight (config-loader.sh:71), so "install yq"
-                # alone sends a fair number of people to the wrong binary.
+                # Naming what to install matters more than usual here: both flavors are
+                # accepted, so the advice has to name both rather than send half the readers
+                # to the wrong binary.
                 T_FIX=""
-                case "$TOOLCHAIN_MISSING" in *yq*) T_FIX="pipx install yq (Python-yq — NOT brew/Go-yq)" ;; esac
+                case "$TOOLCHAIN_MISSING" in *yq*) T_FIX="install a yq that emits JSON — 'pipx install yq' (Python-yq) or 'apt install yq' / 'brew install yq' (Go-yq v4+)" ;; esac
                 case "$TOOLCHAIN_MISSING" in *jq*) T_FIX="${T_FIX:+$T_FIX; }apt install jq (or brew install jq)" ;; esac
                 U_FIX="install the loader toolchain — ${T_FIX:-see README Dependencies}" ;;
             tmpfile)

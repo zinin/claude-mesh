@@ -9,8 +9,11 @@ set -u
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$TESTS_DIR/../preflight-env.sh"
 
+# shellcheck source=lib-yq-doubles.sh
+. "$TESTS_DIR/lib-yq-doubles.sh"
+
 # Precondition, not an assertion. Every fixture below drives config-loader.sh, so on a machine
-# without Python-yq or jq the probe takes the "toolchain missing" branch in ALL of them: the
+# without a `yq` or `jq` the probe takes the "toolchain missing" branch in ALL of them: the
 # universal gates still pass (MISSING is a legal status and every verdict still exits 0), while
 # the per-scenario assertions produce a wall of failures that say nothing about the code. One
 # loud line beats thirty misleading ones.
@@ -196,15 +199,17 @@ run_probe invalid-defaults-runmode.yaml
 assert_eq   "broken defaults -> config INVALID" INVALID "$(field config "$OUT")"
 
 # A dead toolchain must not impersonate a rejected config — the loader dies rc=1 either way,
-# but the operator's next move differs (pipx install yq vs editing a healthy config).
+# but the operator's next move differs (installing a yq that emits JSON vs editing a healthy
+# config).
 run_probe valid-claude-models.yaml PREFLIGHT_YQ_BIN="$WORK/no-such-yq"
 assert_eq   "missing yq exits 0"              0        "$RC"
 assert_eq   "missing yq -> its own row"       MISSING  "$(field yq "$OUT")"
 assert_eq   "missing yq -> config UNKNOWN, not INVALID" UNKNOWN "$(field config "$OUT")"
 
-# The override the probe checks is not the binary the loader runs: config-loader.sh:61 resolves
-# bare `yq` from PATH. A working override with no `yq` on PATH used to satisfy the presence gate
-# and come back as INVALID — a healthy config accused by a probe that never opened it.
+# The override the probe checks is not the binary the loader runs: config-loader.sh's
+# `require_yq` resolves bare `yq` from PATH. A working override with no `yq` on PATH used to
+# satisfy the presence gate and come back as INVALID — a healthy config accused by a probe that
+# never opened it.
 mkfarm "$WORK/noyq" yq
 run_probe valid-claude-models.yaml PATH="$WORK/curlfast:$WORK/noyq" PREFLIGHT_YQ_BIN="$(command -v yq)"
 assert_eq   "override without a PATH yq exits 0"                0        "$RC"
@@ -213,25 +218,86 @@ assert_eq   "…and config is UNKNOWN, not INVALID"               UNKNOWN  "$(fi
 assert_match "…naming where the loader looks"                   "where the loader looks" "$OUT"
 
 # The trigger a presence check CANNOT catch, and the one operators actually hit: `apt install yq`
-# on Debian and `brew install yq` on macOS both deliver Go-yq, which IS present under the name
-# the loader looks for and is rejected by it on sight (config-loader.sh:71). The loader dies
-# rc=1 exactly as a rejected config does, so until this was routed by cause the row read INVALID
-# and the hint sent the operator to edit a config.yaml nothing had read. This scenario is also
-# what keeps the probe's signature match in step with the loader's own wording.
-mkdir -p "$WORK/goyq"
-cat > "$WORK/goyq/yq" <<'SH'
-#!/usr/bin/env bash
-[ "${1:-}" = "--version" ] && { echo "yq (https://github.com/mikefarah/yq/) version v4.44.1"; exit 0; }
-exit 0
-SH
-chmod +x "$WORK/goyq/yq"
+# on Debian and `brew install yq` on macOS both deliver Go-yq. It IS present under the name the
+# loader looks for, and the loader now USES it — so a working Go-yq must come back as a working
+# environment, not as a verdict about the config.
+mkyq_go "$WORK/goyq"
 run_probe valid-claude-models.yaml PATH="$WORK/goyq:$WORK/curlfast:$WORK/noyq"
-assert_eq   "Go-yq exits 0"                          0        "$RC"
-assert_eq   "Go-yq -> config UNKNOWN, not INVALID"   UNKNOWN  "$(field config "$OUT")"
-assert_match "…and the detail names the flavour"     "flavor mismatch"  "$OUT"
-assert_match "…and the hint names Python-yq"         "pipx install yq"  "$OUT"
-# The whole point of the routing: an unread config.yaml must not be blamed for a dead toolchain.
-assert_match "…and says the config was never read"   "was never read"   "$OUT"
+assert_eq   "Go-yq exits 0"                            0    "$RC"
+assert_eq   "Go-yq -> config OK"                       OK   "$(field config "$OUT")"
+# The one place the yq row can be pinned to the tool that PRODUCED it rather than merely
+# proved non-empty: on the happy path the banner belongs to whatever yq the machine has, but
+# here the suite authors it (lib-yq-doubles.sh), so a substring is both stable and strong.
+# Without this, `row "$canon" OK "present"` — no --version call at all — passes every other
+# assertion about the row.
+assert_match "…and the yq row names the flavour it found" "mikefarah" "$OUT"
+assert_no_match "…and nothing claims a flavour mismatch" "flavor mismatch" "$OUT"
+assert_no_match "…and nobody is sent to install a different yq" "pipx install yq" "$OUT"
+
+# A yq that is present, is used, and still cannot do the job. The loader dies rc=1 exactly as a
+# rejected config does, so only the routing by cause keeps a healthy config.yaml from being
+# blamed — and this scenario is what keeps the probe's signature match in step with the
+# loader's own wording.
+mkyq_nojson "$WORK/nojsonyq"
+run_probe valid-claude-models.yaml PATH="$WORK/nojsonyq:$WORK/curlfast:$WORK/noyq"
+assert_eq   "unusable yq exits 0"                          0        "$RC"
+assert_eq   "unusable yq -> config UNKNOWN, not INVALID"   UNKNOWN  "$(field config "$OUT")"
+assert_match "…and the detail names the tool"              "cannot produce JSON" "$OUT"
+assert_match "…and the hint names both flavours"           "Go-yq v4+"      "$OUT"
+assert_match "…and says the config was never read"         "was never read" "$OUT"
+
+# The other toolchain die, and the one a version gate would have missed: a yq that DOES emit
+# JSON but resolves YAML 1.1. The fixture is the only one whose scalars diverge between the two
+# schemas — with any other config the loader is right to accept this binary.
+if have_pyyaml; then
+    mkyq_yaml11 "$WORK/y11yq"
+    run_probe valid-claude-models-level-off.yaml PATH="$WORK/y11yq:$WORK/curlfast:$WORK/noyq"
+    assert_eq   "YAML-1.1 yq exits 0"                      0        "$RC"
+    assert_eq   "YAML-1.1 yq -> config UNKNOWN"            UNKNOWN  "$(field config "$OUT")"
+    assert_match "…named as a resolver, not as a bad config" "mis-resolves" "$OUT"
+    assert_no_match "…and the user is not told to quote a correct value" \
+        "must be a string (got boolean)" "$OUT"
+else
+    echo "  SKIP: python3 has no PyYAML — the YAML-1.1 preflight scenario cannot run"
+fi
+
+# The third way the loader can die before it has read anything: it cannot create the snapshot
+# file at all. TMPDIR is the fault there, not config.yaml, and this file already has a `tmpfile`
+# cause for exactly that class — its own mktemp_or_fail guards use it. Without an arm for the
+# loader's wording these dies fall through to the routing's `*)` and the probe answers INVALID,
+# accusing a file the loader never opened: the impersonation the routing exists to prevent.
+# The double fails ONLY the loader's snapshot template, so preflight's own mktemp_or_fail — a
+# bare `mktemp`, no template — still works and the scenario stays about the loader.
+mkdir -p "$WORK/mktempshim"
+MKTEMP_REAL="$(command -v mktemp)"   # resolved BEFORE the shim is on PATH, or the shim recurses
+cat > "$WORK/mktempshim/mktemp" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in claude-mesh-cfg-*) exit 1 ;; esac; done
+exec $MKTEMP_REAL "\$@"
+SH
+chmod +x "$WORK/mktempshim/mktemp"
+run_probe valid-claude-models.yaml PATH="$WORK/mktempshim:$WORK/curlfast:$PATH"
+assert_eq   "a snapshot that cannot be created exits 0"       0        "$RC"
+assert_eq   "…-> config UNKNOWN, not INVALID"                 UNKNOWN  "$(field config "$OUT")"
+assert_match "…and the detail is the loader's own sentence"   "mktemp failed" "$OUT"
+assert_match "…and the hint sends the operator to TMPDIR"     "make TMPDIR writable" "$OUT"
+assert_match "…and says the config was never read"            "was never read" "$OUT"
+
+# toolchain_row used to print nothing at all on success, so the table said nothing about which
+# yq was in play. With both flavors accepted that is a real variable — it decides the transcode
+# form and the loader's speed — and "what can actually be used here" is the question this probe
+# exists to answer.
+run_probe valid-claude-models.yaml
+assert_eq   "a usable yq gets its own OK row"  OK  "$(field yq "$OUT")"
+assert_eq   "…and so does jq"                  OK  "$(field jq "$OUT")"
+# Not assert_match on the banner: a real one carries parentheses and slashes, and the row must
+# be proved NON-EMPTY rather than proved to contain the word "yq", which its own name supplies.
+YQ_ROW_DETAIL="$(awk '$1=="yq"{ $1=""; $2=""; sub(/^ +/,""); print; exit }' <<<"$OUT")"
+if [ -n "$YQ_ROW_DETAIL" ]; then
+    PASS=$((PASS+1)); echo "  PASS: the yq row carries a version banner ($YQ_ROW_DETAIL)"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: the yq row has no detail column"
+fi
 
 # The OTHER way to reach UNKNOWN, and the one that looked like a rejected config until it was
 # guarded: with an unwritable TMPDIR the probe cannot create the file that catches the loader's
@@ -646,12 +712,12 @@ assert_match "…because it is the operator's, not ours" "do NOT overwrite" "$OU
 assert_no_match "…never offering to overwrite a real config" "cp config.example.yaml" "$OUT"
 
 # UNKNOWN is the worst of the three to get wrong: the loader never ran, so the config may well
-# be perfect and the only thing missing is yq. Naming the tool matters — Go-yq is a different
-# program that config-loader.sh rejects on sight.
+# be perfect and the only thing missing is yq. Naming what to install matters here too: both
+# flavors are accepted, so the advice has to name both.
 run_probe valid-claude-models.yaml PREFLIGHT_YQ_BIN="$WORK/no-such-yq"
 assert_eq   "unevaluated config -> nothing selectable either" "SUMMARY available: —" "$(grep '^SUMMARY available:' <<<"$OUT")"
 assert_match "…claude says exactly that, and not that a file is missing" "claude (config state could not be evaluated" "$OUT"
-assert_match "…the hint names the tool the rows above reported" "pipx install yq" "$OUT"
+assert_match "…the hint names the tool the rows above reported" "install a yq that emits JSON" "$OUT"
 assert_match "…and says the config itself was never read"       "was never read"  "$OUT"
 assert_no_match "…never offering to overwrite an unread config" "cp config.example.yaml" "$OUT"
 
@@ -666,7 +732,7 @@ assert_eq   "unevaluated config (no temp file) -> nothing selectable" "SUMMARY a
 assert_match "…claude blocked with the same could-not-evaluate reason" "claude (config state could not be evaluated" "$OUT"
 assert_match "…and the hint points at TMPDIR"                   "hint: make TMPDIR" "$OUT"
 assert_no_match "…not at a toolchain that is already installed" "install the loader toolchain" "$OUT"
-assert_no_match "…and never at yq"                              "pipx install yq" "$OUT"
+assert_no_match "…and never at yq"                              "install a yq that emits JSON" "$OUT"
 assert_match "…while still saying the config was never read"    "was never read"  "$OUT"
 assert_no_match "…and never offering to overwrite it"           "cp config.example.yaml" "$OUT"
 
@@ -751,13 +817,14 @@ while read -r PNAME PSTAT _; do
 done <<<"$(grep '^provider:' <<<"$OUT")"
 assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 
-# Row order is part of the contract — a reader scanning top-down meets the config state, then
-# the reviewers, then the environment, then the summary. This assertion is the one place the
-# whole table is checked at once, so it also catches a block appended in the wrong place.
+# Row order is part of the contract — a reader scanning top-down meets the toolchain, then the
+# config state, then the reviewers, then the environment, then the summary. This assertion is the
+# one place the whole table is checked at once, so it also catches a block appended in the wrong
+# place.
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "plugin yq jq config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines

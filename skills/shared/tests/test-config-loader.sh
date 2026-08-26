@@ -5,6 +5,9 @@ TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOADER="$TESTS_DIR/../config-loader.sh"
 FIXTURES="$TESTS_DIR/fixtures"
 
+# shellcheck source=lib-yq-doubles.sh
+. "$TESTS_DIR/lib-yq-doubles.sh"
+
 FAIL=0
 PASS=0
 
@@ -24,6 +27,16 @@ assert_stderr_contains() {
     else
         FAIL=$((FAIL+1)); echo "  FAIL: $desc (expected stderr to contain: $needle)"
         echo "    stderr was:"; sed 's/^/      /' "$stderr_file"
+    fi
+}
+
+assert_stderr_lacks() {
+    local desc="$1" needle="$2" stderr_file="$3"
+    if grep -q -- "$needle" "$stderr_file"; then
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc (stderr should NOT contain: $needle)"
+        echo "    stderr was:"; sed 's/^/      /' "$stderr_file"
+    else
+        PASS=$((PASS+1)); echo "  PASS: $desc"
     fi
 }
 
@@ -635,6 +648,13 @@ TMPD=$(mktemp -d)
 # iter-3 CRITICAL-4: stage a REPLACE_ME→fake-token copy so cmd_export's
 # REPLACE_ME guard (iter-2 CONCERN-10) doesn't trip on the shipped example.
 sed 's/REPLACE_ME/test-token-fake/g' "$PLUGIN_ROOT/config.example.yaml" > "$TMPD/config.yaml"
+# RAW `yq`, no double: this reaches whatever `yq` the machine actually has, independent of
+# lib-yq-doubles.sh and of anything the loader does. Whether that makes the harness
+# flavor-DEPENDENT is unsettled and was never measured: `-r` is kislyuk's raw-output flag,
+# mikefarah v4 is believed to accept it too as the short form of --unwrapScalar, and
+# `.models[].id` is valid in both dialects — but no machine carrying both flavors has run this.
+# What is certain is the failure mode if some yq rejects either: $MODEL_IDS comes back empty and
+# the loop below runs zero times, so this test would pass while asserting nothing.
 MODEL_IDS=$(yq -r '.models[].id' "$TMPD/config.yaml")
 for mid in $MODEL_IDS; do
     OUT=$(mktemp)
@@ -1167,6 +1187,159 @@ if [ "$GOT" = "background,4" ]; then PASS=$((PASS+1)); echo "  PASS: example cod
 GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
 if [ "$GOT" = "null,4" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review keeps run_mode=null + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review run_mode/models count (expected 'null,4', got '$GOT')"; fi
 rm -rf "$TDIR"
+
+# === Test 52: Go-yq transcodes, and its scalars match Python-yq's ===
+# The failure this whole change exists for: `apt install yq` / `brew install yq` deliver Go-yq,
+# whose bare `yq '.'` prints YAML rather than JSON. The loader must find the -o=json form on its
+# own. The `off` assertion is Test 45's, re-run through the other flavor: it is the property
+# validate_codex and validate_defaults depend on, and the reason accepting Go-yq is safe.
+echo "=== Test 52: the loader works under Go-yq, with Test-45 scalar semantics ==="
+TDIR=$(mktemp -d); GODIR=$(mktemp -d); ERR=$(mktemp)
+mkyq_go "$GODIR"
+sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
+    "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits zero under Go-yq" "0" "$RC"
+assert_stderr_contains "warns about the unknown level, as it does under Python-yq" 'unknown value "off"' "$ERR"
+VAL=$(PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+if [ "$VAL" = "gpt-5.5|off" ]; then
+    PASS=$((PASS+1)); echo "  PASS: get-codex passes 'off' through as a string under Go-yq"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' under Go-yq (expected 'gpt-5.5|off')"
+fi
+# The same document through both flavors must produce the same snapshot, not merely a valid one.
+A=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime 2>/dev/null)
+B=$(PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime 2>/dev/null)
+if [ "$A" = "$B" ]; then
+    PASS=$((PASS+1)); echo "  PASS: both flavors yield an identical runtime block"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: flavors disagree — python-yq '$A' vs Go-yq '$B'"
+fi
+rm -rf "$TDIR" "$GODIR" "$ERR"
+
+# The doubles prove the plumbing, not that a REAL Go-yq behaves. When this machine has one —
+# even shadowed by a python-yq earlier in PATH, which is the usual arrangement — exercise it.
+# When it has none, say so out loud: a silent single-flavor run is exactly what let the Go-yq
+# path rot unnoticed in the first place. Hard-requiring both binaries is not an option — there
+# is no CI here and the suites are run by hand on whatever machine is at hand.
+if REAL_GO="$(find_real_go_yq)"; then
+    TDIR=$(mktemp -d); REALDIR=$(mktemp -d); ERR=$(mktemp)
+    ln -s "$REAL_GO" "$REALDIR/yq"
+    sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
+        "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
+    PATH="$REALDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "validate exits zero under the REAL Go-yq on this machine" "0" "$RC"
+    VAL=$(PATH="$REALDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+    if [ "$VAL" = "gpt-5.5|off" ]; then
+        PASS=$((PASS+1)); echo "  PASS: real Go-yq ($("$REAL_GO" --version 2>&1|head -1)) keeps 'off' a string"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: real Go-yq printed '$VAL' (expected 'gpt-5.5|off')"
+    fi
+    rm -rf "$TDIR" "$REALDIR" "$ERR"
+else
+    echo "  SKIP: no real Go-yq found — the mikefarah path was exercised only against a double"
+fi
+
+# === Test 53: a yq that cannot emit JSON is named as the toolchain ===
+# Until this split existed, every transcode failure read "check yaml syntax" and sent the
+# operator to edit a file nothing had opened. The negative assertion is the point of the test.
+echo "=== Test 53: a yq that cannot produce JSON does not get the config blamed for it ==="
+TDIR=$(mktemp -d); NJDIR=$(mktemp -d); ERR=$(mktemp)
+mkyq_nojson "$NJDIR"
+cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+PATH="$NJDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 when yq cannot emit JSON" "1" "$RC"
+assert_stderr_contains "names the toolchain" "yq cannot produce JSON" "$ERR"
+assert_stderr_lacks "and does NOT accuse a healthy config.yaml" "check yaml syntax" "$ERR"
+rm -rf "$TDIR" "$NJDIR" "$ERR"
+
+# === Test 54: a YAML-1.1 resolver is caught where it matters, and only where it matters ===
+# Today such a yq surfaces as `codex.reasoning_level: must be a string (got boolean) — quote
+# it`, telling the user to fix a value that is already correct. Half (a) is that message being
+# replaced by an accurate one. Half (b) is the gate staying per-document: on a config that
+# yields no booleans the same binary emitted exactly what a YAML-1.2-core resolver would, and
+# the snapshot is all anything downstream reads. Both halves must hold, or a later refactor
+# will quietly turn the gate into a blanket probe on every load.
+echo "=== Test 54: a YAML-1.1 yq is refused when it can change the config, accepted when it cannot ==="
+if ! have_pyyaml; then
+    echo "  SKIP: python3 has no PyYAML — the YAML-1.1 double cannot be built"
+else
+    Y11DIR=$(mktemp -d); mkyq_yaml11 "$Y11DIR"
+    TDIR=$(mktemp -d); ERR=$(mktemp)
+    cp "$FIXTURES/valid-claude-models-level-off.yaml" "$TDIR/config.yaml"
+    PATH="$Y11DIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "validate exits 1 under a YAML-1.1 yq" "1" "$RC"
+    assert_stderr_contains "names the resolver" "yq mis-resolves YAML scalars" "$ERR"
+    assert_stderr_lacks "and does not tell the user to quote a correct value" \
+        "must be a string (got boolean)" "$ERR"
+    rm -rf "$TDIR" "$ERR"
+    TDIR=$(mktemp -d); ERR=$(mktemp)
+    cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+    PATH="$Y11DIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "…and the same yq is accepted on a config that yields no booleans" "0" "$RC"
+    rm -rf "$TDIR" "$ERR" "$Y11DIR"
+fi
+
+# === Test 55: a healthy yq plus broken yaml still blames the yaml; empty configs are unchanged ===
+# The other half of Test 53's split, and the degenerate case where `jq .` cannot tell the
+# flavors apart because both emit the same thing: the verdict must stay the config-level one.
+echo "=== Test 55: malformed yaml blames the yaml; empty/comment-only configs unchanged under both flavors ==="
+TDIR=$(mktemp -d); ERR=$(mktemp); GODIR=$(mktemp -d)
+mkyq_go "$GODIR"
+printf 'providers:\n  - id: zai\n    label: "[unclosed\n' > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 on malformed yaml" "1" "$RC"
+assert_stderr_contains "blames the yaml" "check yaml syntax" "$ERR"
+assert_stderr_lacks "and does not accuse the yq" "yq cannot produce JSON" "$ERR"
+for FLAVOR in python-yq go-yq; do
+    case "$FLAVOR" in python-yq) PFX="" ;; go-yq) PFX="$GODIR:" ;; esac
+    : > "$TDIR/config.yaml"
+    PATH="$PFX$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "empty config exits 1 ($FLAVOR)" "1" "$RC"
+    assert_stderr_contains "…and says providers is empty ($FLAVOR)" \
+        "providers: section is empty or missing" "$ERR"
+    printf '# only a comment\n' > "$TDIR/config.yaml"
+    PATH="$PFX$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    assert_exit "comment-only config exits 1 ($FLAVOR)" "1" "$RC"
+    assert_stderr_contains "…and says providers is empty ($FLAVOR)" \
+        "providers: section is empty or missing" "$ERR"
+done
+rm -rf "$TDIR" "$ERR" "$GODIR"
+
+# === Test 56: the snapshot never outlives the process, not even when the probe dies ===
+# $CONFIG_JSON is config.yaml transcoded — plaintext provider tokens included. Mode 600 decides
+# WHO may read it; only the EXIT trap decides HOW LONG it exists. yq_probe can die of its own
+# `mktemp -d` with the snapshot already written, so the trap has to be armed before the probe
+# can run. It was not: it sat at the end of load_or_die, and this path left the file in TMPDIR.
+# The double fails ONLY the probe's mktemp, matched on its template, so the loader's own
+# snapshot mktemp still works and the failure lands exactly where the argument says it matters.
+echo "=== Test 56: a dying probe does not leave the token-bearing snapshot in TMPDIR ==="
+TDIR=$(mktemp -d); ERR=$(mktemp); SHIMDIR=$(mktemp -d); LEAKTMP=$(mktemp -d)
+MKTEMP_REAL="$(command -v mktemp)"   # resolved BEFORE the shim is on PATH, or the shim recurses
+cat > "$SHIMDIR/mktemp" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in claude-mesh-yqprobe-*) exit 1 ;; esac; done
+exec $MKTEMP_REAL "\$@"
+SH
+chmod +x "$SHIMDIR/mktemp"
+cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+# Nothing reads this key. Its only job is to put a BOOLEAN in the snapshot, which is what makes
+# the per-document gate run the probe at all — no fixture carries one, by the design's own
+# measurement.
+printf 'probe_trigger: true\n' >> "$TDIR/config.yaml"
+PATH="$SHIMDIR:$PATH" TMPDIR="$LEAKTMP" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 when the probe's mktemp fails" "1" "$RC"
+# Without this the emptiness below would be vacuous — an exit BEFORE the snapshot is written
+# also leaves TMPDIR clean, and would pass a test that pins nothing.
+assert_stderr_contains "…dying in the probe, with the snapshot already on disk" \
+    "mktemp failed for the yq probe" "$ERR"
+LEFTOVER="$(ls -A "$LEAKTMP")"
+if [ -z "$LEFTOVER" ]; then
+    PASS=$((PASS+1)); echo "  PASS: the snapshot is removed even on that death"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: the snapshot outlived the process: $LEFTOVER"
+fi
+rm -rf "$TDIR" "$ERR" "$SHIMDIR" "$LEAKTMP"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
