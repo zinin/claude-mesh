@@ -1303,6 +1303,41 @@ for FLAVOR in python-yq go-yq; do
 done
 rm -rf "$TDIR" "$ERR" "$GODIR"
 
+# === Test 56: the snapshot never outlives the process, not even when the probe dies ===
+# $CONFIG_JSON is config.yaml transcoded — plaintext provider tokens included. Mode 600 decides
+# WHO may read it; only the EXIT trap decides HOW LONG it exists. yq_probe can die of its own
+# `mktemp -d` with the snapshot already written, so the trap has to be armed before the probe
+# can run. It was not: it sat at the end of load_or_die, and this path left the file in TMPDIR.
+# The double fails ONLY the probe's mktemp, matched on its template, so the loader's own
+# snapshot mktemp still works and the failure lands exactly where the argument says it matters.
+echo "=== Test 56: a dying probe does not leave the token-bearing snapshot in TMPDIR ==="
+TDIR=$(mktemp -d); ERR=$(mktemp); SHIMDIR=$(mktemp -d); LEAKTMP=$(mktemp -d)
+MKTEMP_REAL="$(command -v mktemp)"   # resolved BEFORE the shim is on PATH, or the shim recurses
+cat > "$SHIMDIR/mktemp" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in claude-mesh-yqprobe-*) exit 1 ;; esac; done
+exec $MKTEMP_REAL "\$@"
+SH
+chmod +x "$SHIMDIR/mktemp"
+cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+# Nothing reads this key. Its only job is to put a BOOLEAN in the snapshot, which is what makes
+# the per-document gate run the probe at all — no fixture carries one, by the design's own
+# measurement.
+printf 'probe_trigger: true\n' >> "$TDIR/config.yaml"
+PATH="$SHIMDIR:$PATH" TMPDIR="$LEAKTMP" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate exits 1 when the probe's mktemp fails" "1" "$RC"
+# Without this the emptiness below would be vacuous — an exit BEFORE the snapshot is written
+# also leaves TMPDIR clean, and would pass a test that pins nothing.
+assert_stderr_contains "…dying in the probe, with the snapshot already on disk" \
+    "mktemp failed for the yq probe" "$ERR"
+LEFTOVER="$(ls -A "$LEAKTMP")"
+if [ -z "$LEFTOVER" ]; then
+    PASS=$((PASS+1)); echo "  PASS: the snapshot is removed even on that death"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: the snapshot outlived the process: $LEFTOVER"
+fi
+rm -rf "$TDIR" "$ERR" "$SHIMDIR" "$LEAKTMP"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

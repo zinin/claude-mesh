@@ -153,6 +153,16 @@ load_or_die() {
     # exists. The loader no longer needs its `yq` to be a jq wrapper.
     CONFIG_JSON=$(mktemp -t claude-mesh-cfg-XXXXXX.json) || die "mktemp failed for config snapshot"
     chmod 600 "$CONFIG_JSON"
+    # Cleanup runs even on `die` because die exits non-zero and the EXIT trap fires. Armed HERE,
+    # before anything that can exit, and not after the transcode block: yq_probe dies of its own
+    # `mktemp -d` with the snapshot already written, and that snapshot is config.yaml transcoded —
+    # plaintext provider tokens included. Mode 600 decides WHO can read it; only this trap decides
+    # HOW LONG it exists. The explicit `rm -f`s in the block below are kept: they shorten the
+    # window further by removing the file before the probe runs rather than at exit.
+    # NOTE: bash EXIT traps do NOT stack — if a caller later sets its own `trap … EXIT`
+    # it REPLACES this one. That is why cmd_export (Task 8) must manage its own
+    # $CONFIG_JSON / $ENV_FILE cleanup explicitly rather than relying on this trap.
+    trap 'rm -f "$CONFIG_JSON"' EXIT
     # ONE yq -> $CONFIG_JSON, then every read via jq on the snapshot. Which of the two JSON
     # invocations does the transcoding is decided by yq_to_json, not by this call site.
     if yq_to_json "$CONFIG_FILE" "$CONFIG_JSON"; then
@@ -191,11 +201,6 @@ known-good document. claude-mesh accepts Python-yq (kislyuk/yq — 'pipx install
 v4+ (mikefarah/yq — 'apt install yq', 'brew install yq'). Got: $(yq --version 2>&1 | head -1)"
         fi
     fi
-    # Cleanup runs even on `die` because die exits non-zero and the EXIT trap fires.
-    # NOTE: bash EXIT traps do NOT stack — if a caller later sets its own `trap … EXIT`
-    # it REPLACES this one. That is why cmd_export (Task 8) must manage its own
-    # $CONFIG_JSON / $ENV_FILE cleanup explicitly rather than relying on this trap.
-    trap 'rm -f "$CONFIG_JSON"' EXIT
 }
 
 validate_providers() {
