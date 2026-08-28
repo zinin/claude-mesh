@@ -2318,7 +2318,29 @@ echo "HAS_GROK=$HAS_GROK"
 echo "GROK_MODELS=[$(echo "$GROK_MODELS" | tr '\n' ' ')]"
 ```
 
-- [ ] **Step 2: Add the Q1 option**
+- [ ] **Step 2: Restructure Q1 — it cannot simply gain a fifth option**
+
+`AskUserQuestion` takes at most four options and Q1 (`commands/mesh-review.md:109-121`) already
+has four. Adding grok as a fifth is not a thing the tool permits, so Q1 changes shape, per
+design §3:
+
+1. Replace the separate `codex` and `gemini` entries with ONE option,
+   `внешние CLI (codex / gemini / grok) ★ default`, shown when **any** of `HAS_CODEX`,
+   `HAS_GEMINI`, `HAS_GROK` is `1`; mark it ★ when any of the three appears in
+   `defaults.code_review.builtin`. Q1 is then three options and stays three however many CLI
+   engines exist later.
+2. Add a new engine-selection page, reached only when that option is chosen: a multiSelect over
+   the CONFIGURED engines (`codex`, `gemini`, `grok` — each shown only when its flag is `1`),
+   using the same `chunk of 4` pagination as Step 2.4, with ★ from `builtin`.
+3. **Skip that page and select the engine implicitly when exactly one is configured.** Without
+   this, every single-engine user pays an extra screen for a problem they do not have.
+4. Selecting no engine on that page is not an error — it means no CLI reviewer runs, the same
+   rule the model pages already follow.
+
+Everything downstream keys off the ENGINE set this page produces, exactly as it keyed off the
+old per-engine Q1 answers; no other step changes shape.
+
+- [ ] **Step 2b: Add the Q1 option**
 
 In Step 2's option list, after the gemini line:
 
@@ -2579,16 +2601,16 @@ After the `gemini` bullet:
     iterations 2..N.
 ```
 
-- [ ] **Step 3: Add the Q1 option and Step 5.2.6**
+- [ ] **Step 3: Restructure Q1 the same way, then add Step 5.2.6**
 
-In Step 5.2's option list:
-
-```
-  - "grok CLI ★ default"                           — show only if HAS_GROK=1; ★ if "grok" in defaults.builtin
-```
+Q1 here (`skills/mesh-design-review/SKILL.md:309-317`) has the same four options and the same
+four-option ceiling, so it takes the same restructure as Task 11 Step 2 — written for this file,
+not copied: one `внешние CLI (codex / gemini / grok)` option shown when any of the three flags is
+`1`, a follow-up engine page on the Step 5.3 pagination mechanic, that page skipped when exactly
+one engine is configured, and an empty selection meaning "no CLI reviewer runs".
 
 Extend the parenthetical after that list ("Show the codex / gemini / external-models options
-only when their gating flag is `1`") to name grok, and add: "If `grok` is not selected → skip
+only when their gating flag is `1`") accordingly, and add: "If `grok` is not selected → skip
 Step 5.2.6 and run no grok reviewer."
 
 Then add Step 5.2.6 after Step 5.2.5, written for this file: the same paginated

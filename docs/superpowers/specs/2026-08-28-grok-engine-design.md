@@ -226,6 +226,30 @@ documentary: a grok model duplicating a configured ext-claude provider is not an
 corroboration, and `config.example.yaml` recommends keeping `grok.models` to the grok family
 for exactly that reason.
 
+**Q1 has to be restructured before grok can appear in it — a design change, not a plan detail.**
+`AskUserQuestion` accepts at most four options, and Q1 already carries exactly four (`claude`,
+`codex`, `gemini`, `external models`) in both orchestrators. grok would be the fifth on a fully
+configured machine, which is the machine this feature targets. So Q1 collapses the CLI engines
+into ONE option:
+
+```
+  claude ★ default (свой Claude Code)
+  внешние CLI (codex / gemini / grok) ★ default     — shown when any of the three is configured
+  external models (Anthropic-API) ★ default          — shown when models: is non-empty
+```
+
+Choosing the CLI option opens a second page listing the configured engines, built on the SAME
+`chunk of 4` pagination Step 2.4 and Step 3 already use — no new UI mechanic is introduced.
+**When exactly one CLI engine is configured that page is skipped and the engine selected
+implicitly**, so the common single-engine setup costs no extra screen; the page appears only
+where a choice actually exists.
+
+The grouping is not arbitrary: codex / gemini / grok are precisely the class `preflight-env.sh`
+already treats as one through `cli_row` — third-party binaries the user installs and
+authenticates outside this plugin — as opposed to the built-in `claude` and the `provider:*`
+rows behind `external models`. The UI now names a division the code already makes. A fourth CLI
+engine will need no Q1 change at all.
+
 **`/mesh-review`** gains `HAS_GROK` and `list-grok-models` in Step 1 with
 the established rc handling (rc=2 means "config not created yet", rc=1 means "print the
 validator's stderr and stop"); a `grok CLI ★ default` option in Q1, shown only when
