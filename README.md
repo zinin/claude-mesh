@@ -131,6 +131,7 @@ The plugin requires:
 - `python3` — for `ext-claude-exec` and for prompt templating (`shared/render-template.py`) in ALL review skills (`ext-claude-`, `codex-`, `gemini-code-review`)
 - `codex` CLI (only if using codex agents)
 - `gemini` CLI (only if using gemini agents)
+- `grok` CLI (only if using grok agents). It authenticates itself (`grok login`); claude-mesh never handles a grok token. Unlike codex and gemini, grok also reads your `~/.claude/CLAUDE.md` and every installed claude-* plugin — a grok reviewer starts with your project rules in context, and its review prompt forbids it from invoking any of those skills
 
 Install missing tools:
 - Ubuntu/Debian: `apt install jq bc curl python3`
@@ -160,6 +161,7 @@ See `config.example.yaml` for the canonical example. Sections:
 | `claude:` | no | `models:` — catalog of Claude model aliases offered for the built-in `claude` reviewer; each selected entry becomes one independent reviewer. Omit it (together with any `defaults.*.claude_models`) for the previous single-reviewer behaviour |
 | `codex:` | no | model + reasoning_level for codex CLI — the default for `/codex-*` skills and reviews unless the caller overrides; unknown levels pass through with a WARN (known set as of 2026-07 is listed in `config.example.yaml`) |
 | `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
+| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer (required when the section exists); `reasoning_effort:` — one of low/medium/high/xhigh/max (run `grok --help` for the current set), unknown values pass through with a WARN. Each selected entry becomes one independent reviewer |
 | `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |
 | `runtime:` | no | UI defaults + timeouts |
 

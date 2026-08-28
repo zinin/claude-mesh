@@ -137,13 +137,13 @@ models:
 # ============================================================================
 # (3) Built-in reviewers                                          [optional]
 # ============================================================================
-# Configuration for the three built-in reviewer types selectable in
-# `defaults.*.builtin`: claude, codex, gemini.
+# Configuration for the four built-in reviewer types selectable in
+# `defaults.*.builtin`: claude, codex, gemini, grok.
 #
-#   * codex: / gemini: are GATES — they shell out to the codex / gemini CLIs and
-#     are NOT Anthropic-API endpoints. Omit a section entirely to remove that tool
-#     from the UI and from any `defaults.*.builtin` list (referencing it in builtin
-#     then becomes a hard error).
+#   * codex: / gemini: / grok: are GATES — they shell out to the codex / gemini /
+#     grok CLIs and are NOT Anthropic-API endpoints. Omit a section entirely to
+#     remove that tool from the UI and from any `defaults.*.builtin` list
+#     (referencing it in builtin then becomes a hard error).
 #   * claude: is NOT a gate — the built-in claude reviewer is your own Claude Code
 #     and has no external dependency, so `builtin: [claude]` works with no section
 #     here at all. The section only WIDENS it to several Claude models.
@@ -180,6 +180,39 @@ codex:
 
 gemini:
   model: gemini-3.1-pro-preview                # [required when gemini: present]
+
+grok:
+  # Catalog of grok models offered when you pick the built-in `grok` reviewer. REQUIRED when
+  # this section exists, and it must hold at least one entry: the grok reviewer agent refuses
+  # to start without a model, so an empty catalog would offer a reviewer that cannot run.
+  # (This is the one place grok differs from claude:, whose catalog is optional.)
+  #
+  # Each entry becomes ONE independent reviewer, exactly as under claude: — same diff, same
+  # prompt, different model.
+  #
+  # What belongs here: the names THIS MACHINE's grok CLI accepts after `-m`, which is not the
+  # same set as "the grok family" — run `grok models` to see them. The catalog is yours: it may
+  # well list models proxied in from other vendors (deepseek-*, glm-*, minimax-*, kimi-*,
+  # codex-*), and your own CLI default may be one of those. claude-mesh does not police the
+  # names and cannot: a model your CLI does not accept is not caught here, it fails that
+  # reviewer's run instead.
+  #
+  # Still, prefer keeping this catalog to the grok family. claude-mesh cannot tell that a grok
+  # alias and one of your ext-claude models (section 2) are the same model underneath —
+  # `grok models` prints names, never the provider behind them — so listing both makes ONE
+  # opinion count twice in the attribution table.
+  #
+  # CHARSET: [A-Za-z0-9._-] (first char alphanumeric), narrower than claude.models. A grok
+  # model id becomes a directory name (runs/grok/<model>/) and a roster entry for the run
+  # watcher, and neither accepts ':'.
+  models: [grok-4.6, grok-4.5]                 # [required when grok: present, >=1 entry]
+
+  # [optional] known values as of 2026-08 (grok 1.0.5): low | medium | high | xhigh | max.
+  # NOT an enum — the set goes stale as xAI ships levels, so `grok --help` is the current
+  # source. Unknown values pass through with a WARN (the grok CLI validates them). One value
+  # for the whole section, not per model. Omit it and the CLI's own default applies
+  # (~/.grok/config.toml, [models] default_reasoning_effort).
+  reasoning_effort: xhigh
 
 
 # ============================================================================
