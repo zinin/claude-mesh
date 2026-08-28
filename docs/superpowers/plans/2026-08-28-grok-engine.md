@@ -640,6 +640,11 @@ Expected: the first case fails with `unknown value "grok"` (the current enum), a
 
 - [ ] **Step 4: Implement**
 
+**Insertion point, named once so it cannot mean two things:** put the grok preset block
+**immediately after the closing `fi` of the `claude_models` block** inside `validate_defaults`
+— not "beside the catalog checks" and not at the end of the function. That keeps the grok
+checks in the same order as the claude ones, which is what a reader diffing the two expects.
+
 In `validate_defaults`, after the `validate_claude` call, add the catalog validation and read the catalog:
 
 ```bash
@@ -689,10 +694,13 @@ Then, after the whole `claude_models` block (immediately before the loop's closi
         local gm_count grok_in_builtin
         gm_count=$(jq ".defaults.$preset.grok_models | length" "$CONFIG_JSON")
         grok_in_builtin=$(jq "[(.defaults.$preset.builtin // [])[] | select(. == \"grok\")] | length" "$CONFIG_JSON")
-        if [ "$gm_count" -gt 0 ] && [ "$grok_in_builtin" = 0 ]; then
+        # -gt/-eq throughout, never `= 0`: these are jq integers, and the claude block beside
+        # this one uses the arithmetic form everywhere. Mixing the string and arithmetic
+        # comparators for the same values invites a future `= 00` that silently never matches.
+        if [ "$gm_count" -gt 0 ] && [ "$grok_in_builtin" -eq 0 ]; then
             die "defaults.$preset.grok_models is set but \"grok\" is missing from defaults.$preset.builtin (add \"grok\" to builtin, or drop grok_models)"
         fi
-        if [ "$grok_in_builtin" -gt 0 ] && [ "$gm_count" = 0 ]; then
+        if [ "$grok_in_builtin" -gt 0 ] && [ "$gm_count" -eq 0 ]; then
             die "defaults.$preset.builtin lists \"grok\" but defaults.$preset.grok_models is empty — a grok reviewer cannot start without a model (name one from the grok.models catalog)"
         fi
 
@@ -2462,6 +2470,12 @@ options:
 
 Collect the selections into `SELECTED_GROK_MODELS`.
 
+<!-- SYNC: the "no fallback" rule for grok is ONE rule living in four places — this paragraph,
+     the preset branch of Step 0/5.1, the same paragraph in the sibling orchestrator, and the
+     design's §1 note that grok_models is required whenever grok is in builtin. It is the exact
+     mirror of the four-place SYNC marker the claude fallback rule already carries. Change all
+     four or none: a copy that still promises a fallback would have the orchestrator dispatch a
+     reviewer the agent then refuses to start for want of a MODEL. -->
 **An empty selection runs no grok reviewer — and unlike claude, there is no fallback.** The
 grok reviewer agent stops without a `MODEL`, so there is nothing to dispatch. Say so on the
 Step 2.5 confirmation page ("grok: модели не выбраны — ревьюер не запускается") and continue;
@@ -2880,7 +2894,7 @@ Beyond the schema and dependency entries added in Task 4, add three troubleshoot
 ```markdown
 | `grok: command not found` | Install Grok Build, then `grok login` |
 | `grok` row reads `NO-NETWORK` in the probe | `grok models` failed: no network, or the CLI is signed out — run `grok login` |
-| `unknown model id` from a grok reviewer | The id in `grok.models` is not one your subscription offers — `grok models` lists them |
+| `unknown model id` from a grok reviewer | The id in `grok.models` is not one this machine's CLI accepts. Run `grok models`: it prints `Available models:` followed by one `- <id>` per line, with `*` marking the default — copy an id from there verbatim |
 ```
 
 And add grok to the feature bullet that currently reads "**`codex-*`, `gemini-*` agents** —

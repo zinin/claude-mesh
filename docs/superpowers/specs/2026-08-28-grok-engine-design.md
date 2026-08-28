@@ -104,6 +104,16 @@ roster entry for `watch-runs.sh`, whose validation is
 `^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$` and rejects `:` and `@`. Claude model names never
 enter a path, so that catalog keeps its wider charset unchanged.
 
+**`reasoning_effort` is a PER-MODEL capability in the CLI, while this key is per-section.** In
+`~/.grok/config.toml` support is declared model by model (`supports_reasoning_effort` plus a
+`[[model.<id>.reasoning_efforts]]` table), and on this machine most catalog entries declare
+none. claude-mesh passes `--effort` whenever the key is set, so a user who sets it AND picks a
+model without support may get a CLI-side error instead of a review. The plugin does not predict
+that — it would have to parse the CLI's private config to know — so the rule is documentary:
+the key applies to models that support it, and the CLI rejects what it will not accept. One
+command settles what that rejection looks like and belongs here once run:
+`grok -m <a model without support> --effort xhigh -p x`.
+
 **The key is `reasoning_effort`, not `reasoning_level`** — the name the CLI flag
 (`--reasoning-effort`) and the CLI's own config (`default_reasoning_effort`) use. One value
 per section, not per model. The five known values (`low`, `medium`, `high`, `xhigh`, `max`)
