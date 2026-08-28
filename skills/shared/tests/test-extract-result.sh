@@ -164,6 +164,41 @@ assert_eq "exit 0" "0" "$RC"
 assert_eq "output.txt is empty (0 bytes)" "0" "$(stat -c %s "$TDIR/output.txt")"
 rm -rf "$TDIR"
 
+# === Test 15: REGRESSION (grok) error message — BOTH shapes, nested arm first ===
+# grok emits the error text TOP-LEVEL (`.message`); claude/codex/gemini nest it under
+# `.error.message`. The extractor tries nested first, then top-level, then str(err), so
+# all three pre-grok engines stay byte-identical while a grok error-only stream — the
+# shape a typo in `-m` produces — stops rendering as the literal "API Error: {}".
+echo "=== Test 15: error message read from nested AND top-level shapes ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"error","error":{"message":"nested msg"}}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "nested shape: exit 0" "0" "$RC"
+assert_eq "nested shape: output.txt == 'API Error: nested msg'" "API Error: nested msg" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"error","message":"Couldn'"'"'t set model to bogus-model"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "top-level shape: exit 0" "0" "$RC"
+assert_eq "top-level shape: message survives (was 'API Error: {}')" "API Error: Couldn't set model to bogus-model" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+# Precedence: when BOTH are present the nested arm wins, which is what keeps the three
+# pre-grok engines byte-identical. Pins the order of the two arms, not just their presence.
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"error","message":"top-level","error":{"message":"nested"}}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "both shapes: exit 0" "0" "$RC"
+assert_eq "both shapes: nested wins" "API Error: nested" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

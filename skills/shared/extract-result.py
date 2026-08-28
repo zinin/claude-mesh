@@ -96,7 +96,14 @@ def main() -> int:
             if ev.get("type") == "error":
                 err = ev.get("error", {})
                 if isinstance(err, dict):
-                    err_msg = err.get("message", str(err))
+                    # TWO shapes, nested arm FIRST so claude/codex/gemini stay
+                    # byte-identical: those three nest the text under `.error.message`,
+                    # while grok emits it TOP-LEVEL as `.message` — e.g.
+                    # {"type":"error","message":"Couldn't set model to bogus-model"},
+                    # the shape a typo in `-m` produces. Without the `ev.get("message")`
+                    # arm such a stream rendered the literal "API Error: {}" and the
+                    # message was lost. Guarded by test-extract-result.sh Test 15.
+                    err_msg = err.get("message") or ev.get("message") or str(err)
                 else:
                     err_msg = str(err)
                 final_text = [f"API Error: {err_msg}"]
