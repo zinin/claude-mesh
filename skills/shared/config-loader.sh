@@ -51,11 +51,16 @@ warn() {
 
 # Forward-compatible identifier charsets (fix waves 3+5, single source of truth).
 # The leading-alnum anchor rejects flag-injection (values starting with -/./:/@);
-# both sets exclude `|` (the model|level pipe protocol) and anything unsafe for
+# all three sets exclude `|` (the model|level pipe protocol) and anything unsafe for
 # shell substitution in the executor skills. No enum — a new model or level must
 # never require a validator change.
 IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._:@-]*$'    # reasoning levels, claude.models, runtime.dispatch_model
 MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'   # engine models: adds "/" for provider-qualified ids
+# grok.models is NARROWER than IDENT_RE, and deliberately so: a grok model name becomes a path
+# component (runs/grok/<model>/) and a watch-runs.sh roster entry, and that script's own
+# validation is ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ — a ':' or '@' accepted here would be
+# rejected there, after the run had already been written somewhere the watcher cannot name.
+GROK_IDENT_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
 require_yq() {
     # Presence only. WHICH yq this is has stopped mattering: the transcode below tries both
@@ -403,6 +408,47 @@ validate_gemini() {
     [ -n "$model" ] || die "gemini.model: required when gemini: section present"
 }
 
+# Shared by claude: and grok: — the two sections that expose a LIST of model names the
+# orchestrators fan independent reviewers out over. The four guards below are what the two
+# lists must never diverge on, and each of them is here because it once mattered:
+#   - element type: `jq -r` stringifies a number/boolean, so an unquoted `- 5` would compare
+#     as the string "5" downstream and a catalog of ["5"] would accept a preset of [5];
+#   - empty value: an empty entry makes the membership glob *"  "* match against an EMPTY
+#     catalog, silently accepting anything;
+#   - charset: it forbids the space that a missing comma produces, which is what stops a
+#     preset entry from SPANNING two adjacent catalog members in the substring membership
+#     test ("opus fable" matched " opus fable ");
+#   - duplicates: two reviewers with one name are indistinguishable in every attribution
+#     table both orchestrators print.
+# MUST stay side-effect free (no warn): validate_defaults calls it again after validate_all.
+# $1 = jq path to the list, $2 = message label, $3 = charset regex, $4 = charset for the message,
+# $5 = an example model name for the element-type message (OPTIONAL). Given, that message ends
+# `— quote it, e.g. - "<$5>"`; omitted, the clause is dropped entirely, because any example
+# baked into the shared string would be claude-specific and wrong for half the callers.
+# Never hardcode "opus" here — validate_claude passes it, which is what keeps its text frozen.
+validate_model_catalog() {
+    local jq_path="$1" label="$2" charset_re="$3" charset_display="$4" example="${5:-}"
+    local type_hint=""
+    [ -n "$example" ] && type_hint=" — quote it, e.g. - \"$example\""
+    local count i=0 seen=""   # line-based accumulator (no bash-4 associative arrays)
+    count=$(jq "$jq_path | length" "$CONFIG_JSON")
+    while [ "$i" -lt "$count" ]; do
+        local etype v
+        etype=$(jq -r "${jq_path}[$i] | type" "$CONFIG_JSON")
+        [ "$etype" = "string" ] \
+            || die "${label}[$i]: must be a string (got $etype)$type_hint"
+        v=$(jq -r "${jq_path}[$i]" "$CONFIG_JSON")
+        [ -n "$v" ] || die "${label}[$i]: empty value"
+        [[ "$v" =~ $charset_re ]] \
+            || die "${label}[$i]: must start with a letter/digit and match $charset_display (a model alias or id), got \"$v\""
+        case " $seen " in
+            *" $v "*) die "${label}[$i]: duplicate model \"$v\" (two reviewers would be indistinguishable)" ;;
+        esac
+        seen="$seen $v"
+        i=$((i+1))
+    done
+}
+
 validate_claude() {
     # MAY BE CALLED SEVERAL TIMES per loader invocation — validate_all calls it directly,
     # and validate_defaults calls it again before its catalog membership check. It must
@@ -435,30 +481,11 @@ validate_claude() {
         *) die "claude.models: must be a list of Claude model aliases, got $mtype" ;;
     esac
 
-    local count
-    count=$(jq '.claude.models | length' "$CONFIG_JSON")
-    local i=0
-    local seen=""   # line-based accumulator (no bash-4 associative arrays)
-    while [ "$i" -lt "$count" ]; do
-        local etype v
-        etype=$(jq -r ".claude.models[$i] | type" "$CONFIG_JSON")
-        [ "$etype" = "string" ] \
-            || die "claude.models[$i]: must be a string (got $etype) — quote it, e.g. - \"opus\""
-        v=$(jq -r ".claude.models[$i]" "$CONFIG_JSON")
-        [ -n "$v" ] || die "claude.models[$i]: empty value"
-        # Same forward-compatible charset as runtime.dispatch_model — no enum, a new
-        # Claude model must never require a validator change. The leading-alnum anchor
-        # rejects flag-injection (-opus/.foo).
-        [[ "$v" =~ $IDENT_RE ]] \
-            || die "claude.models[$i]: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got \"$v\""
-        # Duplicates would produce two reviewers with the same name — indistinguishable
-        # in the dedup/attribution tables of both orchestrators.
-        case " $seen " in
-            *" $v "*) die "claude.models[$i]: duplicate model \"$v\" (two reviewers would be indistinguishable)" ;;
-        esac
-        seen="$seen $v"
-        i=$((i+1))
-    done
+    # Same forward-compatible charset as runtime.dispatch_model — no enum, a new
+    # Claude model must never require a validator change. The leading-alnum anchor
+    # rejects flag-injection (-opus/.foo). The "opus" example is passed from here,
+    # not baked into the shared helper, so grok: gets no claude-flavoured wording.
+    validate_model_catalog '.claude.models' 'claude.models' "$IDENT_RE" '[A-Za-z0-9._:@-]' 'opus'
 }
 
 validate_defaults() {

@@ -1341,6 +1341,48 @@ else
 fi
 rm -rf "$TDIR" "$ERR" "$SHIMDIR" "$LEAKTMP"
 
+# === Test 59: the claude catalog's error text is frozen ===
+# validate_claude no longer owns its per-element loop — validate_model_catalog does, and grok:
+# calls the same helper. Every message that loop emits is a contract users read and this suite
+# asserts, so the refactor was checked once by hand against text captured beforehand. That check
+# lived in a temp file and died with the session. Nothing else here would catch a message MOVING:
+# the assertions above (Test 47) grep for substrings, so text that had quietly grown a
+# grok-flavoured clause, lost its index, or swapped its example would still pass every one.
+#
+# The golden file is the whole nine-case stderr, byte for byte. Seven cases produce a message:
+# the non-mapping section, the scalar .models value (the only list-level failure, so the only
+# one with no index), and the four per-element guards — element type, empty value, charset,
+# duplicate — with the charset one covered twice, by a leading dash and by an embedded space.
+# The other two print NOTHING and are recorded as a header with no body under it: an empty list
+# and a mapping with no .models key are both legal "no catalog". That silence is as much of a
+# contract as the text, and it is what breaks the day someone "fixes" an empty catalog into an
+# error — a golden file that only collected messages would not have noticed.
+echo "=== Test 59: claude catalog messages match the golden file byte for byte ==="
+TDIR=$(mktemp -d); ACTUAL=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+for CASE in 'claude:\n  models: opus\n' \
+            'claude:\n  models:\n    - 5\n' \
+            'claude:\n  models:\n    - "-opus"\n' \
+            'claude:\n  models: [opus, "claude fable"]\n' \
+            'claude:\n  models: [opus, fable, opus]\n' \
+            'claude:\n  models: [opus, ""]\n' \
+            'claude:\n  models: []\n' \
+            'claude:\n  other_key: x\n' \
+            'claude: false\n'; do
+    { printf '%s\n' "$BASE"; printf "$CASE"; } > "$TDIR/config.yaml"
+    printf -- '--- case: %s\n' "$CASE" >> "$ACTUAL"
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>> "$ACTUAL"
+done
+# "the two blobs differ" is not actionable — print the diff, or the next maintainer has to
+# reconstruct the nine cases by hand before they can see WHICH message moved.
+if diff -u "$FIXTURES/golden-claude-catalog-messages.txt" "$ACTUAL" > "$TDIR/catalog.diff" 2>&1; then
+    PASS=$((PASS+1)); echo "  PASS: every claude.models message is byte-for-byte unchanged"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: a claude.models message moved (-golden / +actual):"
+    sed 's/^/    /' "$TDIR/catalog.diff"
+fi
+rm -rf "$TDIR" "$ACTUAL"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
