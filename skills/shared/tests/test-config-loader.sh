@@ -1477,6 +1477,18 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a grok_models entry outside the catalog" "1" "$RC"
 assert_stderr_contains "points at the catalog" "grok.models catalog" "$ERR"
 
+# Charset gate, the twin of the claude_models case above (Test 47's block): membership is a
+# substring match against the space-joined catalog, so a multi-token value whose words are
+# ADJACENT catalog members would SPAN it. A missing comma in `["grok-4.6 grok-4.5"]` is ONE
+# YAML string, and against the catalog "grok-4.6 grok-4.5 " it would match and validate clean,
+# handing the orchestrator one bogus model name. GROK_IDENT_RE forbids the space, so the entry
+# is reported for what it is — and this assertion is what makes the SYNC marker's claim true
+# on the grok side: delete the charset line and the suite goes red here.
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: ["grok-4.6 grok-4.5"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a space-spanning grok_models entry (missing comma)" "1" "$RC"
+assert_stderr_contains "reports it as a charset violation, not as unknown" 'must start with a letter/digit' "$ERR"
+
 { printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: [grok-4.6, grok-4.6]\n'; } > "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate grok_models entry" "1" "$RC"
