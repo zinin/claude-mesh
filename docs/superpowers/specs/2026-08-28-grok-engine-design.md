@@ -125,6 +125,14 @@ prints `reasoning_effort` — or an empty line, with rc=0, when the key is unset
 `has_grok_models` flag exists: the catalog cannot be empty while the section exists, so
 `has_grok` answers both questions.
 
+**That sentence is only true because `has_grok` VALIDATES before reading**, the way
+`has_claude_models` does and the bare probes `has_codex` / `has_gemini` deliberately do not.
+Written as a bare `jq -e '.grok'`, the flag would report `1` for a section whose catalog is
+malformed or missing, and the invariant would rest on every caller separately remembering to
+read `list-grok-models` too, in the right order — the class of implicit obligation this design
+otherwise avoids. The distinction is about what each flag promises: `has_codex` answers "is
+there a codex section", while `has_grok` is consumed as "can a grok reviewer be dispatched".
+
 ## 2. Execution layer — `skills/grok-exec`
 
 ### Stream format

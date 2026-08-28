@@ -484,6 +484,17 @@ In `cmd_get_flag`'s `case`, beside `has_gemini`:
 
 ```bash
         has_grok)
+            # VALIDATES BEFORE READING, like has_claude_models (:881) and unlike the bare
+            # probes has_codex / has_gemini above. The difference is what each flag PROMISES,
+            # not inconsistency: has_codex answers "is there a codex section" — its model is a
+            # single scalar with a documented fallback, so presence is the whole question.
+            # has_grok is consumed as "can a grok reviewer be dispatched", which requires a
+            # non-empty, valid catalog, because the reviewer agent stops without a MODEL. That
+            # is the same promise has_claude_models makes, and the reason design §1 can say
+            # `has_grok` answers both questions without a separate has_grok_models flag —
+            # a bare probe would make that sentence false. Do NOT "restore parity" by
+            # simplifying this to `jq -e '.grok'`.
+            validate_grok_catalog
             jq -e '.grok' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
 ```
