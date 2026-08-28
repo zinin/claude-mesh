@@ -27,7 +27,8 @@ is available.
 ## Optional arguments
 
 - **BASE_BRANCH** — what to diff against. The orchestrator passes it on the line right after
-  `MODEL=`. Left unset, Step 1 auto-detects `origin/HEAD` and falls back to `master`.
+  `MODEL=`. Substitute it into the FIRST line of Step 1's fence; left empty there, Step 1
+  auto-detects `origin/HEAD` and falls back to `master`.
 - **CONTEXT** — review context the caller inlined (scope, focus areas, project invariants).
   Use it as `{DESCRIPTION}` in Step 2 instead of asking the user.
 
@@ -123,6 +124,7 @@ If any pre-flight check fails, STOP and report the error to the user verbatim. D
 ### Step 1: Collect Git Context (SINGLE Bash call)
 
 ```bash
+BASE_BRANCH="<the BASE_BRANCH argument, or leave empty to auto-detect>" && \
 BASE_REF=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') && \
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}" && \
 BASE_SHA=$(git merge-base origin/$BASE_BRANCH HEAD 2>/dev/null || git merge-base $BASE_BRANCH HEAD 2>/dev/null || git rev-parse HEAD~1) && \
@@ -133,6 +135,14 @@ echo "Branch: $BRANCH" && \
 echo "" && \
 git diff --stat "$BASE_SHA" "$HEAD_SHA"
 ```
+
+**Fill in the first line before running it.** Put the caller's `BASE_BRANCH` argument there, or
+leave the string empty to auto-detect. It has to be substituted HERE, the way `SKILL_BASE` is:
+`BASE_BRANCH` does NOT arrive as a shell variable — the Bash tool starts a fresh shell for every
+call (see "Bash Variables" above) and the caller's value is prompt text, not environment. An
+unsubstituted line makes `${BASE_BRANCH:-…}` take the fallback every time, and the review then
+covers the wrong range while looking entirely successful. Empty is safe: `:-` fires on empty as
+well as unset, so the no-argument path still auto-detects.
 
 Save the output values (BASE_SHA, HEAD_SHA, BRANCH) for Step 3.
 
@@ -175,7 +185,7 @@ python3 "$SKILL_BASE/../shared/render-template.py" "$SKILL_BASE/../shared/code-r
 # skill on this machine is visible to it. Nothing stops it from "helpfully" launching one
 # instead of reviewing — and a nested orchestration would write run dirs this session never
 # dispatched. codex and gemini need no such line: they cannot see those skills at all.
-cat >> "$PROMPT_FILE" << 'GROK_TOOLING_EOF'
+cat >> "$PROMPT_FILE" << 'GROK_TOOLING_EOF' || { echo "STOP: could not append the tooling constraint"; exit 1; }
 
 ## Tooling constraint
 
@@ -194,12 +204,17 @@ opened `cat >> "$PROMPT_FILE"` expands to `cat >> ""` and dies with `ambiguous r
 shipping an unconstrained prompt or no prompt at all.
 
 **No `&&` chaining across the heredoc** — which is why this block uses sequential commands with
-explicit `|| { …; exit 1; }` guards instead of the `&&` chain the sibling skills use. Measured
-on bash 5.2: with `cat >> "$f" << 'INNER' && \` the backslash pulls the body's first line into
-the command list, where bash RUNS it (`appended-line: command not found`), and the delimiter
-line then closes an EMPTY heredoc — so nothing is appended at all, `cat` exits 0, and the block
-reports success while handing Step 4 an unconstrained prompt. The guards give the same
-abort-on-failure the `&&` chain provides, inside the one required call.
+explicit `|| { …; exit 1; }` guards instead of the `&&` chain the sibling skills use. What breaks
+is the backslash-continued chain, not the `||`. Measured on bash 5.2: with
+`cat >> "$f" << 'INNER' && \` the backslash pulls the body's first line into the command list,
+where bash RUNS it (`appended-line: command not found`), and the delimiter line then closes an
+EMPTY heredoc — so nothing is appended at all, `cat` exits 0, and the block reports success while
+handing Step 4 an unconstrained prompt. A guard on the opener line with NO trailing backslash —
+`cat >> "$f" << 'EOF' || { …; exit 1; }`, the form used above — is a different construct and was
+measured safe under `set -euo pipefail`: the whole body is appended, none of it is executed, and
+a failed redirect stops the block. Which is what that guard is for: an unguarded append that
+fails would let Step 4 ship a prompt with no tooling constraint, which is exactly the prompt that
+lets grok launch a nested orchestration.
 
 Quoting rules (mesh-review hardening, 2026-07-16):
 - Prose values go through quoted heredocs (`<<'MESH_DESC_EOF'`) and `"$VAR"` expansions —
