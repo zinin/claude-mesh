@@ -1,6 +1,6 @@
 #!/bin/bash
-# Generate human-readable markdown from ext-claude JSON log
-# Usage: ./generate-md.sh <log_file> <md_file> <profile> [report_title] [task_name_override]
+# Generate human-readable markdown from an Anthropic stream-json log (ext-claude and grok)
+# Usage: ./stream-json-report.sh <log_file> <md_file> <profile> [report_title] [task_name_override]
 #
 # task_name_override: if non-empty, used verbatim as TASK_NAME in the report
 # header. Otherwise TASK_NAME is parsed from the directory path (legacy
