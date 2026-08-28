@@ -68,7 +68,12 @@ RC=$(cat "$WORK/rc" 2>/dev/null || echo 99)
 [ "$RC" = 0 ] && ok "grok accepts the SKILL.md flag set (rc=0)" || bad "grok exited rc=$RC — $(head -2 "$WORK/stderr.txt")"
 
 grep -q '"type":"system"' "$WORK/raw.jsonl" && ok "stream opens with a system event" || bad "no system event in the stream"
-jq -Rr 'fromjson? | objects | select(.type=="result")' "$WORK/raw.jsonl" 2>/dev/null | grep -q . && ok "stream carries a terminal result event" || bad "no result event — verify-delegation would score this STALLED"
+# `| "1"` projects the match to a constant, as SKILL.md's own checks do: emitting the whole
+# result event makes jq write the entire answer while `grep -q` exits on the first line, and
+# under `pipefail` the resulting SIGPIPE (141) reads as "no result event". Harmless here today
+# (this script sets `set -u` only, so the pipeline's status is grep's), but the shape is a trap
+# for whoever adds `pipefail` next.
+jq -Rr 'fromjson? | objects | select(.type=="result") | "1"' "$WORK/raw.jsonl" 2>/dev/null | grep -q . && ok "stream carries a terminal result event" || bad "no result event — verify-delegation would score this STALLED"
 
 NT="$(grep '"type":"result"' "$WORK/raw.jsonl" | jq -Rr 'fromjson? | objects | select(.type=="result" and .is_error==false) | .num_turns' | sort -n | tail -1)"
 case "$NT" in

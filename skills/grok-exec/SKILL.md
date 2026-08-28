@@ -333,8 +333,18 @@ echo "=== Generating report ==="
 # jq, not grep: the substring "type":"result" also occurs inside tool_result payloads and any
 # assistant text quoting it, so grep answers "there was a terminal event" for a stream that has
 # none. This is the check design §2 offers against a wire-format change — it must not be
-# satisfiable by prose. Same idiom verify-delegation.sh uses.
-if [ -s "$RAW_FILE" ] && ! jq -Rr 'fromjson? | objects | select(.type=="result")' "$RAW_FILE" \
+# satisfiable by prose.
+# `| "1"` is load-bearing: it projects the match to a CONSTANT. Emitting the whole result event
+# instead makes jq write the entire final answer while `grep -q` exits on the first line; past
+# the pipe buffer jq then dies of SIGPIPE, `pipefail` makes 141 the pipeline's status, the
+# leading `!` inverts it and this WARN fires on a perfectly healthy run. Measured on this file
+# 2026-08-29: unprojected, rc=141 for every answer >=16 KB (10/10 runs at 16 KB, 20 KB and
+# 200 KB) and rc=0 at 5 KB; projected, rc=0 at all four sizes. Review answers routinely clear
+# 16 KB, so the unprojected form would cry wolf on most real runs and train the reader to
+# ignore the one signal that catches a wire-format change. verify-delegation.sh:400 shares the
+# `fromjson? | objects | select(...)` prefix but is NOT exposed to this: it pipes into `tail -1`,
+# which drains jq's output, and projects `.is_error` — a few bytes either way.
+if [ -s "$RAW_FILE" ] && ! jq -Rr 'fromjson? | objects | select(.type=="result") | "1"' "$RAW_FILE" \
      2>/dev/null | grep -q .; then
   echo "WARN: no terminal result event in raw.jsonl — the run was cut off, or the CLI changed its wire format" >&2
 fi
@@ -503,7 +513,10 @@ if [ "$WATCHDOG_RC" = "0" ]; then
   # would never execute in production. jq, not grep: the substring "type":"result" also occurs
   # inside tool_result payloads and in assistant text quoting it. (The rc=2 branch below shows
   # the same evidence a different way, through the per-attempt tails.)
-  if [ -s "$WORK_DIR/raw.jsonl" ] && ! jq -Rr 'fromjson? | objects | select(.type=="result")' "$WORK_DIR/raw.jsonl" \
+  # `| "1"` projects the match to a constant — see the default branch for why omitting it makes
+  # this WARN fire on every healthy answer over ~16 KB. This is the branch every review takes,
+  # so it is the branch where that false alarm would actually be seen.
+  if [ -s "$WORK_DIR/raw.jsonl" ] && ! jq -Rr 'fromjson? | objects | select(.type=="result") | "1"' "$WORK_DIR/raw.jsonl" \
        2>/dev/null | grep -q .; then
     echo "WARN: no terminal result event in raw.jsonl — the run was cut off, or the CLI changed its wire format" >&2
   fi
