@@ -19,11 +19,17 @@ gemini do. claude-mesh never handles a grok token.
 Measured on 2026-08-28 with `grok 1.0.5 (5115b46bc9) [stable]`, logged in via grok.com.
 Every claim below was produced by running the command, not read from documentation.
 
+**Read the first three rows as a snapshot of ONE machine, not as properties of grok.** The
+catalog and both defaults live in the user's own `~/.grok/config.toml`, which they edit; the
+same command run on 2026-08-28 returned a 2-model catalog in one session and a 20-model one
+in another, hours apart. Nothing in this plugin may hardcode either. The rows are here to say
+what the CLI's interface looks like, not to pin its contents.
+
 | Fact | Evidence |
 |---|---|
-| Models are `grok-4.6` (default) and `grok-4.5` | `grok models` |
-| Reasoning effort accepts `low`, `medium`, `high`, `xhigh` | `grok -p x --reasoning-effort=__bogus__` names the set in its error |
-| The CLI carries its own defaults | `~/.grok/config.toml`: `[models] default = "grok-4.6"`, `default_reasoning_effort = "xhigh"` |
+| The catalog is user-defined and can be large | `grok models` on this machine listed 20 entries — `grok-4.6`, `grok-4.5` and 18 models the user proxied in (`deepseek-*`, `glm-5-3*`, `minimax-m3`, `kimi-k3`, `codex-*`, …), the starred default being `codex-sol` |
+| Reasoning effort accepts `low`, `medium`, `high`, `xhigh`, `max` — five values | `grok -p x --reasoning-effort=__bogus__` answers `use one of: low, medium, high, xhigh, max`. The same error names BOTH spellings (`--effort/--reasoning-effort`), so `--effort` is a real alias, not a guess |
+| The CLI carries its own defaults, whatever they happen to be | `~/.grok/config.toml` on this machine: `[models] default = "codex-sol"`, `default_reasoning_effort = "low"`. Both are the user's settings — which is exactly why this plugin substitutes neither |
 | Headless runs are agentic | `grok -p "list the files …" --output-format streaming-json --always-approve` called `list_dir` and answered from its output |
 | `--prompt-file` feeds a prompt from disk | run with `--prompt-file`, no stdin |
 | `--output-format streaming-messages-json` emits the Claude Code wire format | `system`/`init` (keys `apiKeySource, cwd, mcp_servers, model, permissionMode, session_id, skills, slash_commands, tools, uuid`), `assistant` with `text`/`thinking`/`tool_use` blocks, `user` with `tool_result`, terminal `result` with `subtype`, `is_error`, `num_turns`, `stop_reason`, `duration_ms`, `total_cost_usd`, `usage` |
@@ -36,7 +42,14 @@ Every claim below was produced by running the command, not read from documentati
 ## Approach
 
 Grok is built the way codex and gemini are built, with one exception: the model-catalog
-validator is extracted into a shared helper that `claude:` and `grok:` both call. Copying
+validator is extracted into a shared helper that `claude:` and `grok:` both call.
+
+**Rejected alternatives, and why.** `grok.models` as a list of `{id, label}` objects was
+rejected because the value becomes a path component (`runs/grok/<model>/`) and a
+`watch-runs.sh` roster entry — a bare string is the only shape all four consumers already
+agree on. Routing grok through `claude:` as another provider kind was rejected because grok
+authenticates itself and carries its own `~/.grok/config.toml`; folding it into the
+Anthropic-API provider table would mean inventing a token path the CLI does not want. Copying
 those sixty lines a third time would fork three subtle guards — the span attack on a missing
 comma, the element type gate, the empty-value check against an absent catalog — and they
 would drift on the first edit. Nothing else in the working codex/gemini path changes.
@@ -74,9 +87,16 @@ enter a path, so that catalog keeps its wider charset unchanged.
 
 **The key is `reasoning_effort`, not `reasoning_level`** — the name the CLI flag
 (`--reasoning-effort`) and the CLI's own config (`default_reasoning_effort`) use. One value
-per section, not per model. The four known values pass silently; anything else passes with a
-WARN, exactly as `codex.reasoning_level` does, so a new xAI level never needs a plugin
-release.
+per section, not per model. The five known values (`low`, `medium`, `high`, `xhigh`, `max`)
+pass silently; anything else passes with a WARN, exactly as `codex.reasoning_level` does, so a
+new xAI level never needs a plugin release.
+
+**The enumeration is a hint, not a contract, and it WILL go stale.** `codex.reasoning_level`
+already proves it: its known set (`config-loader.sh:384`) still lacks `max`, the user's own
+`config.yaml` sets exactly that, and every loader invocation on this machine therefore prints
+`WARN: codex.reasoning_level: unknown value "max"`. WARN-and-pass is what keeps that from being
+an outage. So: re-read the list from `grok --help` whenever this section is edited, and never
+write a test asserting that an unknown value is REJECTED — only that it warns and passes.
 
 **claude-mesh never substitutes a grok model of its own.** When no caller and no catalog
 names one, `-m` is omitted and `~/.grok/config.toml` decides. A hardcoded fallback would
@@ -100,9 +120,19 @@ prints `reasoning_effort` — or an empty line, with rc=0, when the key is unset
 `claude -p --output-format stream-json` produces, which this plugin already parses, and that
 buys three things:
 
-- `shared/extract-result.py` consumes it unchanged — no third extractor;
-- the `ext-claude` branch of `verify-delegation.sh` classifies it unchanged — grok gains the
-  `DEGRADED` verdict, which codex and gemini cannot reach;
+- `shared/extract-result.py` consumes it after ONE additive fix — no third extractor. The fix is
+  required, not optional: grok emits a TOP-LEVEL `{"type":"error","message":"…"}`, while the
+  extractor's error fallback reads the NESTED `.error.message`, so today an error-only stream
+  yields the literal `API Error: {}` and the message is lost. Reproduced:
+  `printf '{"type":"error","message":"…"}' > D/raw.jsonl && python3 extract-result.py D`.
+  Adding a top-level `.message` fallback beside the existing nested one keeps all three current
+  engines byte-identical and makes the "no third extractor" claim true;
+- the `ext-claude` branch of `verify-delegation.sh` classifies it unchanged — grok becomes
+  ELIGIBLE for the `DEGRADED` verdict, which codex and gemini cannot reach. Eligible, not
+  demonstrated: no run has yet been observed emitting `permission_denials`, because every
+  measured invocation passed `--permission-mode bypassPermissions` and that field was absent
+  from the result event. The branch is engine-agnostic and its test drives a synthetic event,
+  so what is verified is the classifier, not the CLI's willingness to populate the field;
 - the stream reaches disk unbuffered, so the watchdog's stall detection works as designed.
 
 The risk is that xAI maintains this as a compatibility layer and could change it. `raw.jsonl`
@@ -112,7 +142,7 @@ so plainly when it finds none, instead of leaving an empty `output.txt` behind.
 ### Invocation
 
 ```bash
-timeout 1800 stdbuf -oL -eL grok \
+timeout 1800 grok \
   --prompt-file "$PROMPT_FILE" \
   --output-format streaming-messages-json \
   --permission-mode bypassPermissions \
@@ -120,13 +150,20 @@ timeout 1800 stdbuf -oL -eL grok \
   [-m "$MODEL"] [--effort "$EFFORT"]
 ```
 
+- **No `stdbuf`**, unlike the three sibling skills. The grok binary is statically linked, and
+  `stdbuf` works by preloading `libstdbuf` through a dynamic loader that is not there — it
+  would be a silent no-op. Nor is it needed: the stream was measured reaching a redirected
+  file unbuffered. Stated here so the omission reads as a decision, not an oversight.
 - `--prompt-file` replaces the stdin plumbing codex (`-`) and gemini (`-p ""`) need.
   `watchdog.sh` treats `STDIN_FILE` as optional, so the launch drops it.
 - `--permission-mode bypassPermissions` beats `--always-approve`: it lets the reviewer read
   outside its working directory. Confinement is what pushed five ext-claude reviewers into
   `DEGRADED` on 2026-08-04.
 - `--no-plan` stops grok from entering plan mode and answering with a plan instead of a
-  review. Neither codex nor gemini has such a mode.
+  review. Neither codex nor gemini has such a mode. It is NOT redundant with
+  `--permission-mode bypassPermissions`: the two are orthogonal — permissions govern what a
+  tool call may touch, plan mode governs whether the model answers with a plan instead of
+  doing the work. A run can be fully permitted and still return a plan.
 - Subagents stay enabled. The shared guard already reads a stream split into segments by a
   background subagent: it takes the maximum `num_turns` across successful `result` events.
 
@@ -136,7 +173,7 @@ timeout 1800 stdbuf -oL -eL grok \
 already uses. A direct `/claude-mesh:grok-exec` call that names no model writes to
 `runs/grok/<timestamp>-<task>/` instead, one level up. The two never collide: the guard and
 the watcher accept a run directory only if its name matches `^[0-9]{4}(-[0-9]{2}){5}-`, so a
-model directory is never mistaken for a run, nor a run for a model. Contents: `.task_name`, `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`,
+model directory is never mistaken for a run, nor a run for a model. Contents: `.task_name`, `.model` (the validated model id, so the run dir and the `-m` argument can never disagree), `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`,
 `output.txt`, `report.md`, `stderr.txt`; supervised mode adds `attempt-N/`, `final/` and
 `watchdog.log`.
 
@@ -180,6 +217,15 @@ selection UI shows, what the delegation table carries, what `preflight-env.sh` r
 what finding attribution uses — so two grok models reporting one issue count as two
 independent corroborations, exactly like `claude:opus` and `claude:fable`.
 
+**One caveat the catalog makes real.** `grok models` on this machine proxies models that
+claude-mesh ALSO reaches through `ext-claude` — `deepseek-*`, `glm-5-3*`, `minimax-m3`,
+`kimi-k3`. Selecting `grok:deepseek-v4-pro` beside `ext-claude deepseek/v4-pro` puts ONE model
+behind two transports, and the attribution table counts its single opinion twice. The plugin
+cannot detect this — it never learns what a grok alias resolves to — so the rule is
+documentary: a grok model duplicating a configured ext-claude provider is not an independent
+corroboration, and `config.example.yaml` recommends keeping `grok.models` to the grok family
+for exactly that reason.
+
 **`/mesh-review`** gains `HAS_GROK` and `list-grok-models` in Step 1 with
 the established rc handling (rc=2 means "config not created yet", rc=1 means "print the
 validator's stderr and stop"); a `grok CLI ★ default` option in Q1, shown only when
@@ -218,7 +264,18 @@ updated.
 **`preflight-env.sh`** gets a `grok` row and contributes `grok:<model>` names to the summary.
 The probe runs `grok models`, which checks reachability and login in one call; a curl against
 `api.x.ai` would test an endpoint the subscription path does not use, since grok.com relays
-the traffic.
+the traffic. Measured at 1.0–1.2 s warm across three consecutive runs, so the existing
+`HTTP_TIMEOUT` of 5 s carries roughly fourfold headroom; a cold start has not been measured,
+and if one is ever seen to exceed the budget the fix is a `PREFLIGHT_CLI_TIMEOUT` of its own,
+following the `PREFLIGHT_GIT_TIMEOUT` precedent — not a raise of the shared HTTP budget.
+
+**The two halves of the row mean different things.** `grok OK` is a statement about the CLI:
+it is installed and logged in. `grok:<model>` in `SUMMARY available` is a statement about the
+CONFIG: that name is listed in `grok.models`. The probe deliberately does not cross-check the
+two — that would mean parsing the human-readable output of `grok models`, a format with no
+stability promise — so a model the subscription no longer serves still appears as available
+and fails at dispatch instead. Say so in the row's comment, so no reader mistakes the second
+half for a subscription check.
 
 ## 5. Tests
 
@@ -243,7 +300,12 @@ Extensions to the existing suites:
 - `test-verify-delegation.sh` — grok scoring REAL, STALLED, BROKEN, FLIP, DEGRADED and KILLED
 - `test-watch-runs.sh` — a `grok/<model>` roster entry
 - `test-preflight-env.sh` — the grok row in its OK, unconfigured and unavailable states
-- `test-command-sync.sh` — the grok wording shared by both orchestrators
+- `test-command-sync.sh` — the grok wording shared by both orchestrators. Note what this suite
+  can and cannot do: it compares two files against EACH OTHER, so it catches drift but never
+  a mistake made identically in both. The orchestrator defects this design is most likely to
+  produce are of the second kind (wrong agent type, a missing binding, `grok/<model>` where
+  `grok:<model>` belongs), so a separate static orchestrator-contract block is added — it
+  asserts absolute facts per file, not equality between them
 
 Finally, a live `/mesh-review` on this repository with grok selected.
 

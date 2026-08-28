@@ -16,7 +16,7 @@
 - **Claude catalog messages are frozen.** After Task 1, every `claude.models` / `claude_models` error must be byte-identical to what it was before. Tests assert their text.
 - **grok model charset:** `[A-Za-z0-9._-]`, anchored to a leading alphanumeric (`GROK_IDENT_RE`). Never widen it: the value becomes a path component and a `watch-runs.sh` roster entry, whose own pattern rejects `:` and `@`.
 - **claude model charset stays `[A-Za-z0-9._:@-]`** (`IDENT_RE`). Do not narrow it.
-- **Known reasoning efforts:** `low | medium | high | xhigh`. Unknown values WARN and pass through — the CLI validates. Never make this an enum.
+- **Known reasoning efforts:** `low | medium | high | xhigh | max` — FIVE, verified against `grok 1.0.5` (`grok -p x --reasoning-effort=__bogus__` answers `use one of: low, medium, high, xhigh, max`). Unknown values WARN and pass through — the CLI validates. Never make this an enum, and never write a test asserting an unknown value is REJECTED; assert only that it warns and passes. The list goes stale on its own: `codex.reasoning_level` (`config-loader.sh:384`) still lacks `max` while the user's `config.yaml` sets exactly that, so every loader run on this machine already prints a spurious WARN.
 - **Never hardcode a grok model.** When neither caller nor catalog names one, omit `-m` and let `~/.grok/config.toml` decide.
 - **Watchdog budgets:** `HARD_ZERO_TIMEOUT=600`, `GLOBAL_TIMEOUT=3600`, `MAX_RETRIES=2`, `timeout 1800` per attempt. Supervised runs launch as **background** Bash calls, never foreground.
 - **Review floor:** `MIN_REVIEW_BYTES=400` non-space bytes, unchanged.
@@ -41,7 +41,7 @@
 | `agents/grok-code-reviewer.md` | Thin wrapper agent that must call `grok-code-review`; requires `MODEL` |
 | `skills/shared/stream-json-report.sh` | Anthropic stream-json → markdown report (moved out of `ext-claude-exec/`, now shared by two engines) |
 | `skills/shared/tests/test-grok-exec-smoke.sh` | Opt-in live smoke test of the grok invocation (`GROK_SMOKE=1`) |
-| `skills/shared/tests/fixtures/valid-grok.yaml` and 9 siblings | Config fixtures for the new validator |
+| `skills/shared/tests/fixtures/valid-grok.yaml` and 7 siblings (8 files; the design lists 11 cases — the remaining 3 are written inline in the test, which reads better beside the assertion. Keep these three numbers in agreement) | Config fixtures for the new validator |
 
 **Modified:**
 
@@ -86,7 +86,10 @@ for CASE in 'claude:\n  models: opus\n' \
             'claude:\n  models:\n    - "-opus"\n' \
             'claude:\n  models: [opus, "claude fable"]\n' \
             'claude:\n  models: [opus, fable, opus]\n' \
-            'claude:\n  models: [opus, ""]\n'; do
+            'claude:\n  models: [opus, ""]\n' \
+            'claude:\n  models: []\n' \
+            'claude:\n  other_key: x\n' \
+            'claude: false\n'; do
     { printf '%s\n' "$BASE"; printf "$CASE"; } > "$TDIR/config.yaml"
     printf -- '--- case: %s\n' "$CASE" >> /tmp/claude-catalog-baseline.txt
     CLAUDE_PLUGIN_DATA="$TDIR" bash skills/shared/config-loader.sh validate \
@@ -96,7 +99,14 @@ rm -rf "$TDIR"
 cat /tmp/claude-catalog-baseline.txt
 ```
 
-Expected: six `config-loader: ERROR:` lines naming `claude.models[…]`.
+Expected: NINE `--- case:` blocks. Read the actual text, do not assume its shape — `die()`
+(`config-loader.sh:40-43`) prints `config-loader: <msg>`, with **no** `ERROR:` in it, and only
+the per-element failures carry an index. The nine cases cover four distinct code paths, and
+the last three are the ones a six-case baseline silently missed:
+`claude.models: must be a list…` (scalar value, no index), the four `claude.models[<i>]: …`
+element failures, the empty-list path, the absent-`.models` path (`mtype == null` → early
+`return 0`, i.e. NO output at all), and the non-mapping section (`claude: must be a mapping…`).
+A case that legitimately prints nothing is still a contract: record the silence.
 
 - [ ] **Step 2: Record the suite's current state**
 
@@ -132,7 +142,11 @@ Then, immediately above `validate_claude`, add the helper:
 #   - duplicates: two reviewers with one name are indistinguishable in every attribution
 #     table both orchestrators print.
 # MUST stay side-effect free (no warn): validate_defaults calls it again after validate_all.
-# $1 = jq path to the list, $2 = message label, $3 = charset regex, $4 = charset for the message
+# $1 = jq path to the list, $2 = message label, $3 = charset regex, $4 = charset for the message,
+# $5 = an example value for the message (OPTIONAL, defaults to the claude-flavoured wording).
+# Without $5 a grok failure reads `... (a model alias or id), got "..."` — harmless — but any
+# example baked into the shared text would be claude-specific and wrong for half the callers.
+# Keep examples out of the shared string, or pass them per caller; never hardcode "opus" here.
 validate_model_catalog() {
     local jq_path="$1" label="$2" charset_re="$3" charset_display="$4"
     local count i=0 seen=""   # line-based accumulator (no bash-4 associative arrays)
@@ -176,7 +190,10 @@ for CASE in 'claude:\n  models: opus\n' \
             'claude:\n  models:\n    - "-opus"\n' \
             'claude:\n  models: [opus, "claude fable"]\n' \
             'claude:\n  models: [opus, fable, opus]\n' \
-            'claude:\n  models: [opus, ""]\n'; do
+            'claude:\n  models: [opus, ""]\n' \
+            'claude:\n  models: []\n' \
+            'claude:\n  other_key: x\n' \
+            'claude: false\n'; do
     { printf '%s\n' "$BASE"; printf "$CASE"; } > "$TDIR/config.yaml"
     printf -- '--- case: %s\n' "$CASE" >> /tmp/claude-catalog-after.txt
     CLAUDE_PLUGIN_DATA="$TDIR" bash skills/shared/config-loader.sh validate \
@@ -190,13 +207,31 @@ Expected: `IDENTICAL`, no diff output. Any difference is a defect in Step 3/4 �
 
 - [ ] **Step 6: Run the suite**
 
-Run: `bash skills/shared/tests/test-config-loader.sh 2>&1 | tail -3`
-Expected: same pass count as `/tmp/config-loader-before.txt`, `0 failed`.
-
-- [ ] **Step 7: Commit**
+Run — capture the rc, never pipe it away (`| tail` returns `tail`'s status, so a failing suite
+would read as success):
 
 ```bash
-git add skills/shared/config-loader.sh
+bash skills/shared/tests/test-config-loader.sh > /tmp/config-loader-after.txt 2>&1; RC=$?
+tail -3 /tmp/config-loader-after.txt; echo "rc=$RC"
+```
+
+Expected: `rc=0`, same pass count as `/tmp/config-loader-before.txt`, `0 failed`.
+
+- [ ] **Step 7: Make the byte-identity permanent**
+
+Steps 1 and 5 compare two files in `/tmp`; nothing stops the NEXT edit from moving a claude
+message. Design §5 promises a standing regression, so add one to
+`skills/shared/tests/test-config-loader.sh` (new Test 59, after the grok cases of Tasks 2-3):
+commit the nine-case stderr from Step 1 as
+`skills/shared/tests/fixtures/golden-claude-catalog-messages.txt` and assert the freshly
+produced text equals it byte for byte. Committed golden text is the only form of this check
+that survives the session that wrote it.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add skills/shared/config-loader.sh skills/shared/tests/test-config-loader.sh \
+        skills/shared/tests/fixtures/golden-claude-catalog-messages.txt
 git commit -m "refactor(config): one catalog validator for claude: and grok:"
 ```
 
@@ -240,6 +275,29 @@ printf '%s\ngrok:\n  models: [grok-4.6]\n  reasoning_effort: "ludicrous"\n' "$BA
 printf '%s\ngrok:\n  models: grok-4.6\ncodex:\n  model: gpt-5.5\n' "$BASE" > broken-grok-valid-codex.yaml
 ls -1 *grok*.yaml
 ```
+
+- [ ] **Step 2a: Add the missing `assert_eq_str` helper FIRST**
+
+The tests below compare VALUES, and `test-config-loader.sh` has no helper for that: it defines
+exactly three (`assert_exit` :14, `assert_stderr_contains` :23, `assert_stderr_lacks` :33) and
+does value comparison inline (see :1086). Calling an undefined `assert_eq_str` would not fail
+the suite — the file runs under `set -u` but **not** `set -e`, so `command not found` returns
+127, touches neither `PASS` nor `FAIL`, and the summary still prints `0 failed` while none of
+these assertions ran. A silently green suite is worse than a red one, so define the helper
+beside the other three before writing a single test that uses it:
+
+```bash
+assert_eq_str() {
+    # $1 = description, $2 = expected, $3 = actual
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $1"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $1 — expected '$2', got '$3'"
+    fi
+}
+```
+
+Verify it is really there before continuing: `grep -c '^assert_eq_str()' skills/shared/tests/test-config-loader.sh` must print `1`.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -340,6 +398,10 @@ validate_grok_catalog() {
     # die cleanly instead of crashing the getters with a raw jq "Cannot index boolean" (rc=5).
     local stype
     stype=$(jq -r '.grok | type' "$CONFIG_JSON" 2>/dev/null)
+    # `grok:` written with NO value (YAML null) counts as ABSENT, not as "present but empty".
+    # That is the established precedent, not a new choice: `codex:` with no value already
+    # yields has_codex=0 rather than a "model required" error, and a user who comments out a
+    # section's body means "off", not "misconfigured".
     case "$stype" in
         ""|null) return 0 ;;
         object) ;;
@@ -375,11 +437,14 @@ validate_grok() {
         *) die "grok.reasoning_effort: must be a string (got $ltype) — quote it, e.g. reasoning_effort: \"xhigh\"" ;;
     esac
     effort=$(jq -r '.grok.reasoning_effort' "$CONFIG_JSON")
-    [ -n "$effort" ] || die "grok.reasoning_effort: empty value"
+    # Empty string == key not set, the codex.reasoning_level semantics. A user who comments a
+    # value out and leaves `reasoning_effort: ""` behind means "let the CLI decide", and dying
+    # on that would be stricter than the section this one is modelled on.
+    [ -n "$effort" ] || return 0
     [[ "$effort" =~ $IDENT_RE ]] \
         || die "grok.reasoning_effort: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$effort\""
     case "$effort" in
-        low|medium|high|xhigh) ;;
+        low|medium|high|xhigh|max) ;;
         *) warn "grok.reasoning_effort: unknown value \"$effort\" — passing through (the grok CLI will validate)" ;;
     esac
 }
@@ -446,7 +511,13 @@ And extend the usage line to:
 
 - [ ] **Step 6: Run the tests**
 
-Run: `bash skills/shared/tests/test-config-loader.sh 2>&1 | tail -3`
+Run — keep the rc; `| tail` would return **tail's** status and a failing suite would read as success:
+
+```bash
+bash skills/shared/tests/test-config-loader.sh > /tmp/test-config-loader.txt 2>&1; RC=$?
+tail -3 /tmp/test-config-loader.txt; echo "rc=$RC"
+```
+
 Expected: `0 failed`, pass count higher than `/tmp/config-loader-before.txt` by the number of new assertions.
 
 - [ ] **Step 7: Commit**
@@ -626,7 +697,13 @@ Finally, extend `cmd_get_defaults`'s jq object:
 
 - [ ] **Step 5: Run the tests**
 
-Run: `bash skills/shared/tests/test-config-loader.sh 2>&1 | tail -3`
+Run — keep the rc; `| tail` would return **tail's** status and a failing suite would read as success:
+
+```bash
+bash skills/shared/tests/test-config-loader.sh > /tmp/test-config-loader.txt 2>&1; RC=$?
+tail -3 /tmp/test-config-loader.txt; echo "rc=$RC"
+```
+
 Expected: `0 failed`.
 
 - [ ] **Step 6: Commit**
@@ -682,7 +759,22 @@ In section 4, add to both presets:
                                                #   there is no single-reviewer fallback here.
 ```
 
-and extend both `builtin:` lines and their comments to `[claude, codex, gemini, grok]`, with `grok — requires the grok: section above.` on the list of per-entry notes.
+**Leave `grok` OUT of the `builtin:` lines at this task, and add it in Task 13 instead.** This
+task lands five tasks before the reviewer agents exist (Task 7) and before either orchestrator
+knows the word (Tasks 11-12), so putting grok into the shipped presets here makes every commit
+in between advertise a reviewer that cannot be dispatched — and a user who copies
+`config.example.yaml` in that window gets a config the orchestrators reject. Add the `grok:`
+section itself here as documentation, and switch the presets on in Task 13, once everything
+behind them is in place. When that moment comes, extend both `builtin:` lines and their
+comments to `[claude, codex, gemini, grok]`, with `grok — requires the grok: section above.` on the list of per-entry notes.
+
+**Renderer limitation, recorded rather than fixed.** `stream-json-report.sh` renders only the
+first block of each `.message.content[]`, so a mixed message (thinking + text + tool_use) loses
+the rest in `report.md`. The defect predates grok and affects ext-claude identically, and
+`report.md` is an auxiliary artifact — every decision in this plugin is made from `output.txt`,
+which `extract-result.py` builds independently. Fixing the renderer for all engines is a
+separate change; note the limitation in `grok-exec/SKILL.md` so nobody debugs a run by reading
+a report that quietly dropped half of it.
 
 - [ ] **Step 2: Verify the example still validates**
 
@@ -697,12 +789,22 @@ rm -rf "$TDIR"
 
 Expected: `rc=0`, the two models on their own lines, `["grok-4.6"]`.
 
+Then run the suite that reads `config.example.yaml` directly — Tests 31, 32 and 51 in
+`test-config-loader.sh` load that file, so an edit here can break them while the ad-hoc check
+above stays green — and confirm the example produces the row a user without a section sees:
+
+```bash
+bash skills/shared/tests/test-config-loader.sh > /tmp/cfg-task4.txt 2>&1; RC=$?
+tail -3 /tmp/cfg-task4.txt; echo "rc=$RC"
+bash skills/shared/preflight-env.sh 2>/dev/null | grep '^grok'   # a user with no grok: section -> grok MISSING
+```
+
 - [ ] **Step 3: Update the README**
 
 In the config-schema table, after the `gemini:` row:
 
 ```markdown
-| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer (required when the section exists); `reasoning_effort:` — one of low/medium/high/xhigh, unknown values pass through with a WARN. Each selected entry becomes one independent reviewer |
+| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer (required when the section exists); `reasoning_effort:` — one of low/medium/high/xhigh/max (run `grok --help` for the current set), unknown values pass through with a WARN. Each selected entry becomes one independent reviewer |
 ```
 
 In the dependency list, after the gemini CLI line:
@@ -761,7 +863,11 @@ grep -n 'stream-json-report\|generate-md' skills/ext-claude-exec/SKILL.md
 
 Expected: the two call sites now name `stream-json-report.sh`; the remaining hits are prose
 (lines that read "generate-md.sh detects the missing timestamp prefix", the supervised-mode
-paragraph, the flag table and the checklist). Rewrite those five mentions to say
+paragraph, the flag table and the checklist). The count is **six**, not five, and two of them
+(`SKILL.md:223` and `:346`) are RUNTIME lines — they build the path the skill actually executes,
+so leaving them stale breaks the shipped skill rather than merely misdescribing it; the rest are
+prose. The verification grep below is also too narrow: it looks for `ext-claude-exec/generate-md`
+and misses a bare `generate-md.sh`, so run both forms. Rewrite all six to say
 `shared/stream-json-report.sh`, leaving the sentences otherwise as they are.
 
 Also fix the usage comment inside the moved script itself:
@@ -784,7 +890,7 @@ diff /tmp/report-before.md /tmp/report-after.md && echo "IDENTICAL"
 Expected: `IDENTICAL`. Then confirm nothing else in the repo still points at the old path:
 
 ```bash
-grep -rn 'ext-claude-exec/generate-md' --exclude-dir=.git --exclude-dir=docs --exclude-dir=.superpowers . || echo "no stale references"
+grep -rn 'generate-md' --exclude-dir=.git --exclude-dir=docs --exclude-dir=.superpowers . || echo "no stale references"
 ```
 
 `CHANGELOG.md` may mention the old path in a historical entry — leave history alone; only code and live docs must move.
@@ -806,8 +912,40 @@ git commit -m "refactor(exec): share the stream-json report renderer between eng
 
 **Interfaces:**
 - Consumes: `config-loader.sh data-dir`, `get-flag has_grok`, `get-grok` (Task 2); `shared/watchdog.sh`; `shared/extract-result.py`; `shared/stream-json-report.sh` (Task 5).
-- Produces: a run directory `${PLUGIN_DATA}/runs/grok/<model>/<TIMESTAMP>-<TASK_NAME>/` — or `${PLUGIN_DATA}/runs/grok/<TIMESTAMP>-<TASK_NAME>/` when no model is given — holding `.task_name`, `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`, `output.txt`, `report.md`, `stderr.txt`, and under supervision `attempt-N/`, `final/`, `watchdog.log`.
+- Produces: a run directory `${PLUGIN_DATA}/runs/grok/<model>/<TIMESTAMP>-<TASK_NAME>/` — or `${PLUGIN_DATA}/runs/grok/<TIMESTAMP>-<TASK_NAME>/` when no model is given — holding `.task_name`, `.model`, `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`, `output.txt`, `report.md`, `stderr.txt`, and under supervision `attempt-N/`, `final/`, `watchdog.log`.
 - Produces: skill parameters `PROMPT` (required), `TASK_NAME`, `MODEL`, `REASONING_EFFORT`, `SUPERVISED_MODE` (`none` | `shell`).
+
+- [ ] **Step 0: Teach `extract-result.py` grok's error shape — FIRST, and with a test**
+
+Design §2 rests on "no third extractor", and that claim is false until this lands. grok emits
+a **top-level** `{"type":"error","message":"…"}`; `extract-result.py:96-102` reads the
+**nested** `.error.message`. Reproduce it before changing anything, so the fix is anchored to
+observed behaviour:
+
+```bash
+cd /opt/github/zinin/claude-mesh
+D=$(mktemp -d)
+printf '%s\n' '{"type":"error","message":"Couldn'"'"'t set model to bogus-model"}' > "$D/raw.jsonl"
+python3 skills/shared/extract-result.py "$D" && cat "$D/output.txt"; echo
+rm -rf "$D"
+```
+
+Observed today: `API Error: {}` — the message is gone, and the single most common user error
+(a typo in a model name) reaches the report as an empty brace pair. Fix it ADDITIVELY, keeping
+the nested branch first so all three current engines stay byte-identical:
+
+```python
+            if ev.get("type") == "error":
+                err = ev.get("error", {})
+                if isinstance(err, dict):
+                    err_msg = err.get("message") or ev.get("message") or str(err)
+                else:
+                    err_msg = str(err)
+```
+
+Then add a regression to `skills/shared/tests/test-extract-result.sh` covering BOTH shapes —
+nested (`{"type":"error","error":{"message":"x"}}`) and top-level — and re-run that suite,
+capturing the rc rather than piping it away. Existing engines must show no change.
 
 - [ ] **Step 1: Scaffold the skill from its sibling**
 
@@ -925,9 +1063,20 @@ RAW_MODEL=$(cat <<'__MODEL_BOUNDARY_9f21c6b4_MODEL_END__'
 {MODEL}
 __MODEL_BOUNDARY_9f21c6b4_MODEL_END__
 )
-# Same allow-list the config validator enforces on grok.models, applied again here: this value
-# becomes a directory name, and the skill must not trust a caller more than a config file.
-MODEL=$(printf '%s' "$RAW_MODEL" | tr -cd '[:alnum:]._-' | head -c 64)
+# REJECT, never rewrite. `tr -cd` is NOT "the same allow-list the config validator enforces":
+# GROK_IDENT_RE anchors the first character, tr does not. `..` survives the filter intact and
+# sends WORK_DIR to runs/grok/../<ts>-task — outside the tree verify-delegation.sh searches,
+# so a run that genuinely happened scores FLIP; `-p` survives too. And a 70-char id that the
+# config accepts is silently truncated to 64, after which the directory carries one string
+# while `-m` below is handed another, leaving guard and watcher hunting a path that does not
+# exist. Silent rewriting is the wrong tool for a value that is simultaneously a path
+# component and a CLI argument: one string, or a hard stop.
+[[ "$RAW_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || [ -z "$RAW_MODEL" ] || {
+    echo "STOP: MODEL must match [A-Za-z0-9][A-Za-z0-9._-]* (got '$RAW_MODEL')" >&2; exit 1; }
+MODEL="$RAW_MODEL"
+# Persist it so Step 2 reads the SAME string instead of re-expanding {MODEL} from the template
+# unfiltered — that second, unchecked read is what let the path and the -m argument diverge.
+# Mirrors the existing .task_name file.
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 PLUGIN_DATA="$("$LOADER" data-dir)"
@@ -937,6 +1086,8 @@ PLUGIN_DATA="$("$LOADER" data-dir)"
 WORK_DIR="$PLUGIN_DATA/runs/grok${MODEL:+/$MODEL}/${TIMESTAMP}-${TASK_NAME}"
 mkdir -p "$WORK_DIR"
 echo "$TASK_NAME" > "$WORK_DIR/.task_name"
+# The validated model, so Step 2 uses the SAME string the path was built from.
+printf '%s\n' "$MODEL" > "$WORK_DIR/.model"
 # Stamp the dispatching session so watch-runs.sh and verify-delegation.sh can tell this run
 # from one a concurrent orchestration started under the same engine/model in the same data dir.
 printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}" > "$WORK_DIR/.session_id"
@@ -952,10 +1103,9 @@ echo "WORK_DIR=$WORK_DIR"
 # === EXECUTE THIS ENTIRE BLOCK AS ONE BASH CALL ===
 set -euo pipefail
 WORK_DIR="{WORK_DIR}"
-MODEL=$(cat <<'__MODEL_BOUNDARY_9f21c6b4_MODEL_END__'
-{MODEL}
-__MODEL_BOUNDARY_9f21c6b4_MODEL_END__
-)
+# Read the model Step 1 validated and persisted. Do NOT re-expand {MODEL} here: that second,
+# unchecked read is exactly how the directory name and the -m argument came apart.
+MODEL=$(cat "$WORK_DIR/.model" 2>/dev/null || true)
 EFFORT=$(cat <<'__EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__'
 {REASONING_EFFORT}
 __EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__
@@ -997,8 +1147,11 @@ PIPELINE_RC=0
     case "$TYPE" in
         system) echo ":: Session started" ;;
         assistant)
+            # `[ -n "$X" ] && echo` is the SC2015 shape this project avoids: as the LAST
+            # command of a loop body it makes the whole loop exit 1 whenever the string is
+            # empty — i.e. on a perfectly healthy run whose final message called no tool.
             TOOLS=$(printf '%s' "$line" | jq -r '[.message.content[]? | select(.type=="tool_use") | .name] | join(", ")' 2>/dev/null)
-            [ -n "$TOOLS" ] && echo ":: Tools: $TOOLS"
+            if [ -n "$TOOLS" ]; then echo ":: Tools: $TOOLS"; fi
             ;;
         result) echo ":: Completed" ;;
     esac
@@ -1006,7 +1159,10 @@ done ; } || PIPELINE_RC=$?
 
 # Extraction and report generation run UNCONDITIONALLY, so a crash still leaves whatever the
 # stream carried — including an {"type":"error"} event, which extract-result.py surfaces as
-# "API Error: …" in output.txt (that is the shape an unknown model produces: the CLI prints
+# "API Error: <msg>" in output.txt — but ONLY after the Step 0 fix below; today the extractor
+# reads the NESTED .error.message while grok emits a TOP-LEVEL .message, so an error-only
+# stream renders the literal "API Error: {}" and the text is lost (that is the shape an
+# unknown model produces: the CLI prints
 # the error on stdout AND stderr and exits 1).
 python3 "$SKILL_BASE/../shared/extract-result.py" "$WORK_DIR" || echo "WARN: extract-result.py failed" >&2
 { [ -s "$RAW_FILE" ] && "$SKILL_BASE/../shared/stream-json-report.sh" "$RAW_FILE" "$WORK_DIR/report.md" "grok" "Grok Execution Report" "$TASK_NAME" \
@@ -1014,7 +1170,12 @@ python3 "$SKILL_BASE/../shared/extract-result.py" "$WORK_DIR" || echo "WARN: ext
 
 # The stream is the evidence. A run with events but no terminal result event is a torn stream;
 # a run with no output at all is a failed launch. Both must be loud rather than empty.
-if [ -s "$RAW_FILE" ] && ! grep -q '"type":"result"' "$RAW_FILE"; then
+# jq, not grep: the substring "type":"result" also occurs inside tool_result payloads and any
+# assistant text quoting it, so grep answers "there was a terminal event" for a stream that has
+# none. This is the check design §2 offers against a wire-format change — it must not be
+# satisfiable by prose. Same idiom verify-delegation.sh uses.
+if [ -s "$RAW_FILE" ] && ! jq -Rr 'fromjson? | objects | select(.type=="result")' "$RAW_FILE" \
+     2>/dev/null | grep -q .; then
   echo "WARN: no terminal result event in raw.jsonl — the run was cut off, or the CLI changed its wire format" >&2
 fi
 if [ ! -s "$WORK_DIR/output.txt" ]; then
@@ -1050,10 +1211,7 @@ WORK_DIR="{WORK_DIR}" && \
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>" && \
 WATCHDOG="$SKILL_BASE/../shared/watchdog.sh" && \
 LOADER="$SKILL_BASE/../shared/config-loader.sh" && \
-MODEL=$(cat <<'__MODEL_BOUNDARY_9f21c6b4_MODEL_END__'
-{MODEL}
-__MODEL_BOUNDARY_9f21c6b4_MODEL_END__
-) && \
+MODEL=$(cat "$WORK_DIR/.model" 2>/dev/null || true) && \
 EFFORT=$(cat <<'__EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__'
 {REASONING_EFFORT}
 __EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__
@@ -1078,7 +1236,12 @@ WATCHDOG_RC=0 && { \
       GLOBAL_TIMEOUT=3600 \
       STREAM_FILE_NAME=raw.jsonl \
       "$WATCHDOG" -- \
-        timeout 1800 stdbuf -oL -eL grok \
+        # No stdbuf: the grok binary is statically linked (`file $(command -v grok)` says so),
+        # and stdbuf works by preloading libstdbuf into a dynamic loader that is not there —
+        # it would be a silent no-op. It is not needed either: the stream was measured
+        # reaching a redirected file unbuffered (5 KB -> 50 KB over 30 s). Keep this comment;
+        # without it the next reader "restores parity" with codex/gemini and reintroduces it.
+        timeout 1800 grok \
           --prompt-file "$PROMPT_FILE" \
           --output-format streaming-messages-json \
           --permission-mode bypassPermissions \
@@ -1221,6 +1384,29 @@ AGENT_EOF
 head -8 agents/grok-executor.md
 ```
 
+- [ ] **Step 9b: Bring the supervised block to ext-claude parity — four gaps**
+
+Review always runs `SUPERVISED_MODE=shell` (Task 7 Step 5), so the supervised branch is the
+production path and the default branch is the one used by hand. Every safeguard below exists in
+`skills/ext-claude-exec/SKILL.md` or in this file's own default branch, and is missing from the
+supervised one:
+
+1. **Call the extractor tolerantly.** ext-claude uses
+   `python3 extract-result.py "$FINAL" || { echo "WARN: extract-result.py rc=$?" >&2; }`. As a
+   link in an `&&` chain instead, rc=3 ("raw.jsonl exists but nothing parses") aborts the block
+   before the report is written — and rc=3 is exactly the shape "xAI changed the wire format"
+   takes, the risk design §2 names. Aborting there destroys the evidence for it.
+2. **Empty-output guard.** The default branch prints stderr plus the stream tail and exits 4
+   when `output.txt` is empty while `raw.jsonl` is not. Supervised has nothing, so it leaves a
+   silent empty file.
+3. **Copy `stderr.txt` and `raw.json` to the run root**, as ext-claude does
+   (`for f in raw.jsonl stderr.txt; do …`). Design §2 and this task's own Interfaces list both
+   at the root; today supervised leaves them only under `final/`.
+4. **Move the terminal-result check into a tail both branches run.** It currently lives only in
+   the default branch, so the check design §2 offers as the answer to a wire-format change
+   never executes on the path every review takes.
+
+
 - [ ] **Step 10: Write the opt-in smoke test**
 
 ```bash
@@ -1242,7 +1428,10 @@ if [ "${GROK_SMOKE:-0}" != "1" ]; then
     exit 0
 fi
 for REQ in grok jq python3; do
-    command -v "$REQ" >/dev/null 2>&1 || { echo "SKIP: $REQ not installed"; exit 0; }
+    # A missing grok binary is "the user did not opt in" -> SKIP. A missing jq or python3 is a
+    # broken environment, and reporting that as SKIP hides it: the suite would look clean on a
+    # machine where nothing could have run.
+    command -v "$REQ" >/dev/null 2>&1 || { echo "FAIL: $REQ not installed — this is an environment defect, not an opt-out"; exit 1; }
 done
 
 FAIL=0
@@ -1267,7 +1456,7 @@ RC=$?
 [ "$RC" = 0 ] && ok "grok accepts the SKILL.md flag set (rc=0)" || bad "grok exited rc=$RC — $(head -2 "$WORK/stderr.txt")"
 
 grep -q '"type":"system"' "$WORK/raw.jsonl" && ok "stream opens with a system event" || bad "no system event in the stream"
-grep -q '"type":"result"' "$WORK/raw.jsonl" && ok "stream carries a terminal result event" || bad "no result event — verify-delegation would score this STALLED"
+jq -Rr 'fromjson? | objects | select(.type=="result")' "$WORK/raw.jsonl" 2>/dev/null | grep -q . && ok "stream carries a terminal result event" || bad "no result event — verify-delegation would score this STALLED"
 
 NT="$(grep '"type":"result"' "$WORK/raw.jsonl" | jq -Rr 'fromjson? | objects | select(.type=="result" and .is_error==false) | .num_turns' | sort -n | tail -1)"
 case "$NT" in
@@ -1289,6 +1478,11 @@ bash "$SHARED/stream-json-report.sh" "$WORK/raw.jsonl" "$WORK/report.md" grok "G
 
 # The whole stall-detection design rests on this: the file must grow while the run is live.
 echo ""
+# A single final size proves nothing about buffering — a fully buffered stream also ends up
+# large. Stall detection rests on the file GROWING while the run is live, so sample twice.
+SZ1=$(wc -c < "$WORK/raw.jsonl"); sleep 5; SZ2=$(wc -c < "$WORK/raw.jsonl")
+[ "$SZ2" -gt "$SZ1" ] && ok "stream grows while the run is live ($SZ1 -> $SZ2 bytes)" \
+    || echo "  NOTE: no growth between samples — either the run had already finished, or the stream is buffered; re-run against a longer prompt before trusting stall detection"
 echo "  (stream size: $(wc -c < "$WORK/raw.jsonl") bytes, $(wc -l < "$WORK/raw.jsonl") events)"
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
@@ -1383,13 +1577,20 @@ echo "OK: git repo"
 if [ ! -x "$LOADER" ] || [ "$("$LOADER" get-flag has_grok 2>/dev/null)" != "1" ]; then
     echo "STOP: no grok: section in config.yaml — add one with a models: catalog, or pick another reviewer"; exit 1
 fi
-echo "OK: grok: section present ($("$LOADER" list-grok-models | tr '\n' ' ')）"
+GROK_CAT=$("$LOADER" list-grok-models) || { echo "STOP: grok: section is present but its catalog does not validate — fix config.yaml (user-owned; agents never edit it)" >&2; exit 1; }
+echo "OK: grok: section present ($(printf '%s' "$GROK_CAT" | tr '\n' ' '))"
 ```
 
 - [ ] **Step 4: Append the tooling constraint to the rendered prompt**
 
-After the `render-template.py` call in Step 3 of the Process, and before Step 4 hands the
-prompt to `grok-exec`, add this fence:
+**This fence must be part of Step 3's block, not a new one.** A shell variable does not survive
+from one Bash-tool call to the next — this repository says so in several places, and it is the
+reason `$PROMPT_FILE` is re-derived rather than remembered. Opened as its own call, the
+`cat >> "$PROMPT_FILE"` below expands to `cat >> ""` and the shipped skill fails with
+`ambiguous redirect` on its first real use. So: append this to the SAME fence that runs
+`render-template.py` in Process Step 3, after that call and before Step 4 hands the prompt to
+`grok-exec`; and name Process Steps 3 and 5 explicitly in Step 1's keep-list so the scaffold
+does not drop them.
 
 ```bash
 # Grok loads the user's Claude Code plugins, so `claude-mesh:mesh-review` and every other
@@ -1597,6 +1798,31 @@ assert_eq "verdict STALLED" "STALLED" "$VERDICT"
 assert_eq "exit 2" "2" "$RC"
 rm -rf "$TDIR"
 
+# Design §5 promises grok coverage for REAL, STALLED, BROKEN, FLIP, DEGRADED **and KILLED**;
+# KILLED and the engine-specific STALLED floor note are the two the first draft omitted.
+echo "=== Test: grok KILLED (watchdog cleanup 143, no watchdog.exit) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-30-00-1000-killed)
+printf '%s\n' '{"ts":"2026-08-28T11:40:00+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}' > "$rd/watchdog.log"
+: > "$rd/output.txt"
+run_full grok grok-4.6 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: grok STALLED floor note is grok's, not ext-claude's archive number ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-45-00-1000-short)
+mk_output "$rd/output.txt" 'ok'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":4}' > "$rd/raw.jsonl"
+run_full grok grok-4.6 1 "$TDIR"
+# "the shortest genuine review in the archive is 460" is a measured ext-claude fact; quoting it
+# for grok would cite evidence that does not exist for this engine.
+assert_no_match "no ext-claude archive number" "archive" "$REASON"
+assert_match "names the floor itself" "400 non-space" "$REASON"
+rm -rf "$TDIR"
+
 echo "=== Test: grok DEGRADED (denials on an otherwise real review) ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-00-00-1000-denied)
@@ -1610,6 +1836,9 @@ assert_eq "counts both denials" "2" "$(reason_count)"
 # The ext-claude remedy prescribes a flag grok already passes — saying it here would send the
 # reader after a setting that is not the cause.
 assert_no_match "does not prescribe the ext-claude remedy" "the ext-claude run needs" "$REASON"
+# assert_no_match alone would also pass on an EMPTY or generic reason, so pin the grok text too:
+# the branch must say something true about grok, not merely avoid saying something false.
+assert_match "names the grok remedy" "grok-exec already passes" "$REASON"
 rm -rf "$TDIR"
 
 echo "=== Test: grok requires a model argument ==="
@@ -1653,6 +1882,10 @@ Change the branch head from `ext-claude)` to:
 
 ```bash
     ext-claude|grok)
+        # Two more strings in this branch are ext-claude-specific besides the archive floor and
+        # the DEGRADED remedy: sweep the whole branch for engine-specific wording rather than
+        # patching the two the design names, and either move each into `case "$ENGINE"` or
+        # rephrase it so it is true for both engines.
 ```
 
 Inside it, the two message texts that are true only of ext-claude become engine-aware. Above
@@ -1704,7 +1937,13 @@ stays as it is — only the comment block enumerates engines.
 
 - [ ] **Step 6: Run the tests**
 
-Run: `bash skills/shared/tests/test-verify-delegation.sh 2>&1 | tail -3`
+Run — keep the rc; `| tail` would return **tail's** status and a failing suite would read as success:
+
+```bash
+bash skills/shared/tests/test-verify-delegation.sh > /tmp/test-verify-delegation.txt 2>&1; RC=$?
+tail -3 /tmp/test-verify-delegation.txt; echo "rc=$RC"
+```
+
 Expected: `0 failed`, including every pre-existing ext-claude, codex and gemini case.
 
 - [ ] **Step 7: Commit**
@@ -1736,7 +1975,7 @@ Append to `skills/shared/tests/test-watch-runs.sh`, before its summary block:
 
 ```bash
 echo ""
-echo "Test 31: a grok roster entry follows runs/grok/<model>/"
+echo "Test 40: a grok roster entry follows runs/grok/<model>/"
 TDIR="$(mktemp -d)"
 A="$(mk_run "$TDIR" grok/grok-4.6)"
 wd_log "$A" 0; printf 'findings\n' > "$A/output.txt"
@@ -1746,7 +1985,7 @@ assert_match "grok row is DONE" "DONE" "$(row grok/grok-4.6)"
 rm -rf "$TDIR"
 
 echo ""
-echo "Test 32: two grok models are watched independently"
+echo "Test 41: two grok models are watched independently"
 TDIR="$(mktemp -d)"
 A="$(mk_run "$TDIR" grok/grok-4.6)"
 wd_log "$A" 0; printf 'findings\n' > "$A/output.txt"
@@ -1759,7 +1998,14 @@ rm -rf "$TDIR"
 
 - [ ] **Step 2: Run them**
 
-Run: `bash skills/shared/tests/test-watch-runs.sh 2>&1 | grep -A4 'Test 31\|Test 32'`
+`test-watch-runs.sh` already contains tests numbered up to **39**, so 31/32 would be duplicates
+— the numbers above are 40/41. Verify no number is used twice before running:
+
+```bash
+grep -o 'Test [0-9]\+' skills/shared/tests/test-watch-runs.sh | sort -V | uniq -d   # expect empty
+bash skills/shared/tests/test-watch-runs.sh > /tmp/watch.txt 2>&1; RC=$?
+grep -A4 'Test 40\|Test 41' /tmp/watch.txt; echo "rc=$RC"
+```
 Expected: they PASS immediately — the script is already engine-agnostic. If they fail, the
 roster pattern or the freshness list regressed; fix that before continuing.
 
@@ -1782,7 +2028,13 @@ If a test asserts the old wording, update the assertion in the same commit.
 
 - [ ] **Step 4: Run the suite**
 
-Run: `bash skills/shared/tests/test-watch-runs.sh 2>&1 | tail -3`
+Run — keep the rc; `| tail` would return **tail's** status and a failing suite would read as success:
+
+```bash
+bash skills/shared/tests/test-watch-runs.sh > /tmp/test-watch-runs.txt 2>&1; RC=$?
+tail -3 /tmp/test-watch-runs.txt; echo "rc=$RC"
+```
+
 Expected: `0 failed`.
 
 - [ ] **Step 5: Commit**
@@ -1803,6 +2055,24 @@ git commit -m "test(watch): pin grok roster entries; name grok-exec in the stall
 **Interfaces:**
 - Consumes: `get-flag has_grok`, `get-grok`, `list-grok-models` (Task 2).
 - Produces: a `grok` row in the report, and `grok:<model>` entries on the `SUMMARY available:` line — spelled exactly as the two orchestrators spell them, so a reading session needs no mapping.
+
+- [ ] **Step 0: Update the pinned row order — the suite fails without it**
+
+`skills/shared/tests/test-preflight-env.sh:826-828` pins the report's row order as one literal
+string, and the comment above it says why: it "catches a block appended in the wrong place".
+The `grok` row prints **unconditionally** (as `grok MISSING` when there is no section, exactly
+like codex and gemini), so this assertion goes red the moment Step 5 lands, and nothing else in
+this task touches it. Insert `grok` between `gemini` and `provider:zai`, matching where Step 5
+puts the row:
+
+```bash
+assert_eq "row order is the documented one" \
+  "plugin yq jq config builtin-claude claude-models codex gemini grok provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "$ORDER"
+```
+
+If Step 6 still reports a failure here, the row was added in the wrong place — fix the row's
+position, not this string.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1875,6 +2145,12 @@ before the existing `if [ "$SKIP_NET" = 0 ] && [ "$HAVE_CURL" = 1 ]` announcemen
 
 ```bash
 cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_section flag, $5 = probe command (optional)
+                        # $5 is deliberately UNQUOTED at the call below: it must split into argv
+                        # ("grok models" -> two words). That makes word splitting part of this
+                        # function's public contract, so a caller may never pass a value
+                        # carrying spaces-in-one-argument, and glob characters must be disabled
+                        # around the expansion (`set -f` / `set +f`) or a probe like `foo *`
+                        # would expand against the cwd.
 ```
 
 ```bash
@@ -1893,7 +2169,10 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
             row "$1" UNKNOWN "CLI present, no timeout(1) — \`$5\` not run (brew install coreutils)"
         else
             echo "probing $1 (\`$5\`)…" >&2
-            if timeout "$HTTP_TIMEOUT" $5 >/dev/null 2>&1; then
+            set -f                                   # see the contract note on $5 above
+            timeout "$HTTP_TIMEOUT" $5 >/dev/null 2>&1; PROBE_RC=$?
+            set +f                                   # restored on BOTH paths, before any branch
+            if [ "$PROBE_RC" -eq 0 ]; then
                 CLI_STATUS="OK"
                 row "$1" OK "CLI present, \`$5\` answered (checks login as well as network)"
             else
@@ -1923,6 +2202,23 @@ Beside the `HAS_CODEX` / `HAS_GEMINI` reads (~line 308):
 Declare `GROK_MODELS=""` beside the existing `CLAUDE_MODELS=""` initialisation (~line 280) so
 the no-config branch leaves it defined.
 
+**And declare `HAS_GROK=0` at line 186, beside `HAS_CODEX=0` / `HAS_GEMINI=0` (:184-185).**
+This is not optional tidiness — it is the difference between a working probe and a broken one.
+Those two are initialised THERE, outside the `if [ "$CONFIG_STATUS" = "OK" ]` branch that
+begins at :285, precisely because `cli_row … "$HAS_CODEX"` at :421 runs unconditionally.
+The reads added above live INSIDE that branch, so on any path where the config is not usable —
+`run_probe none`, no `config.yaml`, no `yq`/`jq`, an invalid config — `preflight-env.sh:19`'s
+`set -u` aborts on `HAS_GROK: unbound variable`, killing the probe before git-remote,
+bash-timeout and SUMMARY. That breaks scenarios which have nothing to do with grok, and it
+turns the suite's `every verdict exits 0` backstop red across the board.
+
+Verify both, since a missing initialisation is invisible on the happy path:
+
+```bash
+grep -n '^HAS_GROK=0' skills/shared/preflight-env.sh          # must print one line, ~186
+PREFLIGHT_SKIP_NETWORK=1 bash skills/shared/preflight-env.sh >/dev/null 2>&1; echo "rc=$?"
+```
+
 - [ ] **Step 5: Add the row and the summary entries**
 
 Beside the codex and gemini `cli_row` calls:
@@ -1948,6 +2244,8 @@ if [ "$GROK_STATUS" = "OK" ]; then
             [ -n "$GM" ] && add_avail "grok:$GM"
         done <<< "$GROK_MODELS"
     else
+        # Unreachable through the validator (a section without a non-empty catalog does not
+        # validate), kept only so a future config shape cannot reach the summary silently.
         add_avail grok
     fi
 else
@@ -1955,9 +2253,29 @@ else
 fi
 ```
 
+**And expand grok on the `SUMMARY defaults` line too — otherwise the probe starts lying about
+`default` mode.** `preflight-env.sh:794-802` expands only `claude` into `claude:<model>`; every
+other `builtin` name passes through bare. After Step 5, `SUMMARY available` carries
+`grok:grok-4.6` while `SUMMARY defaults code_review` carries a bare `grok`, and the invariant
+stated in the comment above that block — "every name on a defaults line must appear in
+SUMMARY available" — breaks. It is checked mechanically by `defaults_not_available()`
+(`test-preflight-env.sh:625-643`), which compares WHOLE entries and hard-codes exactly one
+exception, for `claude`. Expand `grok` over `.grok_models` in that jq, the same way `claude` is
+expanded over `.claude_models`; the validator guarantees a non-empty `grok_models` whenever
+`grok` is in `builtin`, so the expansion is always defined. Do NOT instead add a second
+hard-coded exception to the test helper: that would leave the product printing two different
+names for one reviewer, and a reader deciding whether `default` is safe would have to know the
+exception to get the right answer.
+
 - [ ] **Step 6: Run the tests**
 
-Run: `bash skills/shared/tests/test-preflight-env.sh 2>&1 | tail -3`
+Run — keep the rc; `| tail` would return **tail's** status and a failing suite would read as success:
+
+```bash
+bash skills/shared/tests/test-preflight-env.sh > /tmp/test-preflight-env.txt 2>&1; RC=$?
+tail -3 /tmp/test-preflight-env.txt; echo "rc=$RC"
+```
+
 Expected: `0 failed`.
 
 - [ ] **Step 7: See the real probe**
@@ -2063,7 +2381,18 @@ Each selected model becomes an independent reviewer with the same diff and the s
 the point is model diversity, so never differentiate their prompts.
 ````
 
-- [ ] **Step 4: Expand grok on the confirmation page (Step 2.5)**
+- [ ] **Step 4: Expand grok on the confirmation page (Step 2.5) — including the empty case**
+
+Define the empty-roster state explicitly, in both orchestrators. "grok selected, no model
+checked" is reachable interactively (it is NOT reachable in `default` mode, where the validator
+forbids an empty `grok_models`), and today nothing says what happens: the confirmation page
+would list a reviewer that never runs, and the watcher would be handed a roster entry with no
+dispatch behind it — a `MISSING` row indistinguishable from a dead executor. Required
+behaviour: the page states "grok выбран, но ни одной модели не отмечено — grok-ревьюер не
+запускается", the pair contributes nothing to the dispatch roster, the watcher roster and the
+guard, and if the TOTAL effective roster is empty the run stops with "ничего не выбрано для
+ревью" instead of starting an orchestration with no reviewers.
+
 
 In Step 2.5, extend the expansion sentence: after "**Expand `claude` in that list into one
 bullet per entry of `SELECTED_CLAUDE_MODELS`**", add:
@@ -2092,6 +2421,32 @@ In Step 0's `default`-mode bullet list, after the `codex` / `gemini` bullet:
     consumes it unconditionally, and an unbound name in a prompt raises nothing at all.
 ```
 
+- [ ] **Step 5b: Cover team mode — it dispatches separately**
+
+`/mesh-review` has a second dispatch path (Step 5b, team mode) with its own enumeration of
+wrapper reviewers. Nothing in the steps above touches it, so a team-mode run would spawn codex,
+gemini and ext-claude reviewers and silently none for grok. Extend that step's wrapper list and
+spawn one task per `grok:<model>` pair, exactly as Step 5a does. Then re-check by name:
+
+```bash
+grep -n 'codex / gemini / ext-claude' commands/mesh-review.md   # expect: no functional list left
+grep -c 'grok' commands/mesh-review.md
+```
+
+**And sweep the stale engine enumerations while you are here.** The phrase
+"codex / gemini / ext-claude" (and its variants) appears in both orchestrators and in the
+header of `verify-delegation.sh`; each one that describes what the plugin CAN dispatch is now
+wrong. Fix them by name, not by eye:
+
+```bash
+grep -rn 'codex / gemini / ext-claude\|codex/gemini/ext-claude' commands/ skills/ | grep -v grok
+```
+
+Expect zero lines left that enumerate dispatchable engines without grok. Lines that describe a
+historical incident or a measured fact about those three engines stay as they are — they are
+statements about the past, not about the roster.
+
+
 - [ ] **Step 6: Dispatch in Step 5a**
 
 In the "Before dispatch" paragraph, extend the pair list: `codex`→`codex:-`,
@@ -2103,7 +2458,10 @@ In the builtin reviewer list, after the gemini bullet:
 ```markdown
 - grok: `subagent_type: "claude-mesh:grok-code-reviewer"`, **one Task per entry of
   `SELECTED_GROK_MODELS`**, prompt: `MODEL=<entry> Review the changes for production readiness`
-  — with the base branch it becomes `BASE_BRANCH=<branch> MODEL=<entry> Review the changes for
+  — **`MODEL=` must be the FIRST non-blank line**, so write `MODEL=<entry>` first and
+  `BASE_BRANCH=<branch>` on the next line; the agent contract (Task 7) parses `^MODEL=(\S+)`
+  and a line that begins with `BASE_BRANCH=` does not match it. Spelled the other way round it
+  becomes `BASE_BRANCH=<branch> MODEL=<entry> Review the changes for
   production readiness`. The `MODEL=` prefix is a parameter, exactly as for ext-claude; it is
   not review content, so the CRITICAL rule below still forbids inlining scope or diff.
 ```
@@ -2188,7 +2546,11 @@ resolution, the order of guard and ping, the routing of a dead run, the scope of
 loop), and its "Never mirror these four" note exists because someone will try.
 
 **Files:**
-- Modify: `skills/mesh-design-review/SKILL.md` — parameters block, Step 5.0 (gates), Step 5.1 (`default` preset), Step 5.2 (Q1), a new Step 5.2.6, Step 5.4 (dispatch), the watcher and guard examples, the per-executor output section
+- Modify: `skills/mesh-design-review/SKILL.md` — parameters block, Step 5.0 (gates), Step 5.1 (`default` preset), Step 5.2 (Q1), a new Step 5.2.6, **Step 5.4 (Confirm selection — NOT dispatch)**, Step 6 (dispatch, watcher and guard live there), the per-executor output section of Step 7
+
+**Step numbering, checked against the file:** 5.4 is *Confirm selection* (`SKILL.md:368`), and
+dispatch begins at Step 6 (`:385`). An executor following "Step 5.4 (dispatch)" would look for
+the routing in the wrong section and, finding none, improvise.
 
 **Interfaces:** identical to Task 11, on the `design_review` preset.
 
@@ -2204,7 +2566,12 @@ follows the fence — "Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_MODELS` / `HAS_
 After the `gemini` bullet:
 
 ```markdown
-  - `grok` → **one `claude-mesh:grok-code-reviewer` per entry of `.grok_models`**, each with
+  - `grok` → **one `claude-mesh:grok-executor` per entry of `.grok_models`** — the EXECUTOR,
+    never `grok-code-reviewer`. Design review composes its own prompt in Step 4 and hands it
+    over verbatim; `grok-code-reviewer` would instead resolve a `BASE_BRANCH`/`merge-base`
+    diff and render `shared/code-review-prompt.md`, i.e. review the working tree and ignore
+    the two documents entirely. That is why this file dispatches `codex-executor` /
+    `gemini-executor` / `ext-claude-executor` and not the `*-code-reviewer` agents. Each gets
     `MODEL=<entry>` on the first line. The validator guarantees a non-empty list whenever
     `grok` is in `builtin`, so this branch has no fallback and cannot dispatch nothing.
   - **Bind `SELECTED_GROK_MODELS` to that list here** (empty when `grok` is absent from
@@ -2230,29 +2597,85 @@ AskUserQuestion over `GROK_MODELS` with ★ from `.grok_models`, collecting into
 fallback" rule. Do **not** copy Step 2.45's loader-resolution fence: this file resolves the
 loader from `SKILL_BASE` and asks it for `data-dir`, as its own note explains.
 
+- [ ] **Step 3b: Cover Step 5.4 (Confirm selection) — five edits, none optional**
+
+Task 11 spells the symmetric edits out for `/mesh-review`; without them here, grok works for
+exactly one iteration and then vanishes from an orchestrator whose whole purpose is iterating.
+
+1. **`SKILL.md:381` — "Remember the confirmed set (built-in TYPES + `SELECTED_CLAUDE_MODELS` +
+   `SELECTED_IDS`) for all subsequent iterations in the loop."** Add `SELECTED_GROK_MODELS` to
+   that list. Miss it and the grok reviewers run on iteration 1 and silently disappear on
+   iteration 2 — the "silently ignored list" failure that the `validate_defaults` comment cites
+   as the very reason `claude_models` is fail-closed.
+2. **Expand `grok` into one bullet per selected model on the confirmation page**
+   (`grok:grok-4.6`, `grok:grok-4.5`), exactly as `claude` is expanded, so the user sees how
+   many reviewers they are about to pay for.
+3. **The "Перевыбрать" clause** currently reads "restarts Step 5.2 from Q1 with the same
+   DEFAULT_IDS / CLAUDE_DEFAULT_IDS (Step 5.2.5 re-runs too)". Add 5.2.6, or a re-select leaves
+   a stale `SELECTED_GROK_MODELS` behind.
+4. **The "grok selected, no models checked" line.** Design §3 requires the confirmation page to
+   say so outright. Task 11 Step 4 does this for `/mesh-review`; it must be written here too.
+5. **Bind `SELECTED_GROK_MODELS` to the empty list when `grok` is not selected in Q1.** Step 3
+   above says "skip Step 5.2.6 and run no grok reviewer" but never binds the name, and this
+   file is emphatic about why that matters (`SKILL.md:328`: "Both bindings are mandatory… An
+   undefined name in a shell script raises an error under `set -u`; in a prompt it raises
+   nothing at all — the reader improvises"). Task 11 Step 3 binds both; the asymmetry is a
+   defect, not a decision.
+
+Then verify mechanically, the way Task 11 Step 10 does for its own file — design review has no
+such check today, which is why these five went missing in the first place:
+
+```bash
+grep -c 'SELECTED_GROK_MODELS' skills/mesh-design-review/SKILL.md   # expect >= 4
+grep -n 'grok' skills/mesh-design-review/SKILL.md | grep -ci 'code-reviewer'   # expect 0
+```
+
 - [ ] **Step 4: Dispatch, watch and verify**
 
-- In the executors list, add: **`claude-mesh:grok-code-reviewer`** (built-in selected: `grok`)
-  — one per entry of `SELECTED_GROK_MODELS`, `MODEL=<entry>` on the first line, no
-  `REASONING_EFFORT` unless the user named one.
+- In the executors list, add: **`claude-mesh:grok-executor`** (built-in selected: `grok`)
+  — one per entry of `SELECTED_GROK_MODELS`, no `REASONING_EFFORT` unless the user named one.
+  Write the dispatch template out in full, in the `ext-claude` shape, because `MODEL` must be
+  the FIRST non-blank line and an `Execute this prompt via…` line above it would break the
+  parse:
+
+  ```
+  Task tool:
+    subagent_type: claude-mesh:grok-executor
+    description: "Design review via grok:<model> (iter N)"
+    prompt: "MODEL=<model>
+      Execute this prompt via grok-exec:
+      PROMPT: [composed prompt with PREVIOUS_DECISIONS]
+      TASK_NAME: design-review-[TOPIC]-iter-N
+      SUPERVISED_MODE: shell"
+  ```
 - In the parameters block at the top of the file, add `GROK_REASONING_EFFORT` beside
   `CODEX_REASONING_LEVEL`, described as: "resolved from `config.yaml` (`grok.reasoning_effort`)
   by the executor; when that is unset too, the CLI's own default applies. Set only when the
   user explicitly overrides."
 - In the watcher example, add `grok/grok-4.6` to the roster.
-- In the guard example, add `grok:grok-4.6` to the spec loop, and extend the sentence "The
-  arguments are the engine, the model (`-` for codex and gemini)" to read "(`-` for codex and
-  gemini; the model id for grok; `<provider>/<short>` for ext-claude)".
+- In the guard example, extend the sentence "The arguments are the engine, the model (`-` for
+  codex and gemini)" to read "(`-` for codex and gemini; the model id for grok;
+  `<provider>/<short>` for ext-claude)". **There is no "spec loop" in this file** — that is
+  `/mesh-review`'s shape; here the guard is a single command (`SKILL.md:480-485`), so add a
+  grok invocation line beside it, e.g. `bash "$VERIFY" grok grok-4.6 <DISPATCH_EPOCH> "$DATA_DIR"`.
 - In the closing clause of watch-loop point 6, extend "the codex / gemini / ext-claude
   executors only" to include grok.
-- In the per-executor output section, add a `## grok-code-reviewer (<model>)` block beside the
-  codex and gemini ones.
+- In the per-executor output section, add a `## grok-executor (<model>)` block beside the
+  codex and gemini ones — the section is named after the agent that ran, and per the bullet
+  above that agent is the executor.
+- **Carry the tooling constraint into the PROMPT block.** In `/mesh-review` the no-skills line
+  is appended by `grok-code-review` (Task 7 Step 4); design review bypasses that skill entirely
+  and hands its own composed prompt to the executor, so nothing adds the line here. Without it,
+  grok — which sees every installed claude-* plugin, `claude-mesh:mesh-design-review` included —
+  can answer a review request by launching an orchestration that writes run dirs this session
+  never dispatched. Append the same paragraph to the composed prompt for grok dispatches only;
+  codex, gemini and ext-claude cannot see those skills and need no such line.
 
 - [ ] **Step 5: Check both orchestrators still agree where they must**
 
 ```bash
 cd /opt/github/zinin/claude-mesh
-bash skills/shared/tests/test-command-sync.sh 2>&1 | tail -3
+bash skills/shared/tests/test-command-sync.sh > /tmp/sync.txt 2>&1; RC=$?; tail -3 /tmp/sync.txt; echo "rc=$RC"
 grep -c 'grok' skills/mesh-design-review/SKILL.md
 ```
 
@@ -2287,14 +2710,78 @@ cd /opt/github/zinin/claude-mesh
 grep -n 'codex' commands/code-review-fresh-session.md commands/design-review-fresh-session.md
 ```
 
-Extend each "codex / gemini" enumeration to "codex / gemini / grok". Change nothing inside the
-`DO NOT` and `PREFLIGHT` regions: `test-command-sync.sh` asserts those two are byte-identical
-across the pair, and the `DO NOT` wording is a measured experimental result.
+**Read this before editing — the naive reading of the instruction contradicts itself.** One of
+the two mentions per file lives INSIDE the `PREFLIGHT` region
+(`commands/code-review-fresh-session.md:177`, region 168-185;
+`commands/design-review-fresh-session.md:126`, region 117-134), which
+`test-command-sync.sh:144-145` pins at 17 lines and asserts byte-identical across the pair.
+"Extend both mentions" and "change nothing inside PREFLIGHT" cannot both be obeyed literally.
+The resolution: **edit the in-region sentence in BOTH files identically and without changing
+the line count.** Both assertions then stay green — they check equality between the files and
+the region's length, not its content.
+
+There is a second, worse problem in that same sentence. It currently reads: "`OK` on the
+codex / gemini rows is a heuristic — binary present, section valid, endpoint answered; NOT an
+auth check". Mechanically appending grok to that list ships a false statement into the one
+region the suite guards most carefully: grok's probe runs `grok models`, which answers only
+with a live login, so for grok it IS an auth check (Task 10 Step 3 says exactly that). Rewrite
+with the distinction instead of extending the list, same line count, both files:
+
+> `OK` on codex / gemini is a heuristic — binary present, section valid, endpoint answered,
+> NOT an auth check. `OK` on grok is stronger: the probe runs the CLI itself, which answers
+> only when a login is live.
+
+The second mention per file (`:207` / `:155`, under `## WHEN THE USER SAYS GO`) is outside every
+synced region — extend that one freely. The `DO NOT` region is not touched at all; its wording
+is a measured experimental result.
+
+- [ ] **Step 1b: Add a static orchestrator-contract block to `test-command-sync.sh`**
+
+`test-command-sync.sh` compares the two orchestrators against EACH OTHER, so it catches drift
+but is blind to a mistake made identically in both — and to a mistake made in only one file
+about a place where the two are *supposed* to differ. Every orchestrator defect this review
+surfaced was of that kind: the wrong agent type in design review, a missing
+`SELECTED_GROK_MODELS` binding, an enumeration left at three engines. Assert absolute facts per
+file, not equality between them:
+
+```bash
+echo "=== Test: orchestrator contract (grok) ==="
+# design review dispatches EXECUTORS (it composes its own prompt); /mesh-review dispatches
+# the code-reviewer wrappers. Crossing them makes grok review a git diff in a document review.
+assert_eq "design review dispatches grok-executor" "1" \
+  "$(grep -c 'claude-mesh:grok-executor' skills/mesh-design-review/SKILL.md)"
+assert_eq "design review never dispatches grok-code-reviewer" "0" \
+  "$(grep -c 'claude-mesh:grok-code-reviewer' skills/mesh-design-review/SKILL.md)"
+assert_eq "mesh-review dispatches grok-code-reviewer" "1" \
+  "$(grep -c 'claude-mesh:grok-code-reviewer' commands/mesh-review.md)"
+# the empty-list binding both files insist on, in both files
+for f in commands/mesh-review.md skills/mesh-design-review/SKILL.md; do
+    [ "$(grep -c 'SELECTED_GROK_MODELS' "$f")" -ge 4 ] \
+      && { PASS=$((PASS+1)); echo "  PASS: $f binds SELECTED_GROK_MODELS"; } \
+      || { FAIL=$((FAIL+1)); echo "  FAIL: $f under-binds SELECTED_GROK_MODELS"; }
+done
+# roster spelling vs reviewer-name spelling — one slash, one colon, never swapped
+assert_eq "watcher roster uses grok/<model>" "1" "$(grep -c 'grok/grok-4.6' commands/mesh-review.md)"
+assert_eq "reviewer name uses grok:<model>"  "1" "$(grep -c 'grok:grok-4.6' commands/mesh-review.md)"
+# no enumeration of dispatchable engines left without grok
+assert_eq "no stale engine enumeration" "0" \
+  "$(grep -rc 'codex / gemini / ext-claude' commands/mesh-review.md skills/mesh-design-review/SKILL.md | awk -F: '{s+=$2} END{print s+0}')"
+```
+
+Also extend `LOADER_SUBCMDS` in that suite with `list-grok-models` and `get-grok`: the list
+pins which loader subcommands the orchestrators may call, and a new getter absent from it is
+invisible to the check.
+
 
 - [ ] **Step 2: Re-run the sync suite**
 
-Run: `bash skills/shared/tests/test-command-sync.sh 2>&1 | tail -3`
-Expected: `0 failed`. A failure here means an edit landed inside a synced region — move it out.
+```bash
+bash skills/shared/tests/test-command-sync.sh > /tmp/sync-after.txt 2>&1; RC=$?
+tail -3 /tmp/sync-after.txt; echo "rc=$RC"
+```
+
+Expected: `rc=0`, `0 failed`. A failure here means either an edit landed inside a synced region,
+or the two files drifted — read which assertion failed before moving anything.
 
 - [ ] **Step 3: Finish the README**
 
@@ -2367,13 +2854,16 @@ The suites prove the parts. This proves the chain: config → UI → agent → s
 
 - [ ] **Step 1: Configure the live plugin**
 
-Add to the real `config.yaml` (the user's file — ask before editing it, or have them do it):
+**Ask the user to add this to their `config.yaml`; do not edit it yourself.** The file is
+user-owned — the first Global Constraint of this plan says validators report and agents never
+fix, and "or have them do it" leaves the wrong door open. The commands below only print and
+check; the edit is the user's:
 
 ```bash
 cd /opt/github/zinin/claude-mesh
 DATA="$(bash skills/shared/config-loader.sh data-dir)"
 echo "$DATA/config.yaml"
-grep -n 'grok' "$DATA/config.yaml" || echo "no grok section yet — add: grok:\n  models: [grok-4.6, grok-4.5]\n  reasoning_effort: xhigh"
+grep -n 'grok' "$DATA/config.yaml" || printf '%s\n' "no grok section yet — add:" "grok:" "  models: [grok-4.6, grok-4.5]" "  reasoning_effort: xhigh"
 ```
 
 Then verify:
@@ -2425,16 +2915,27 @@ reading code, which is a prompt problem, not a plumbing one).
 
 - [ ] **Step 5: Run every suite one last time**
 
+The loop must ACCUMULATE failures and exit non-zero. As written before this fix it printed
+`FAILED` and moved on, so an acceptance step could end green with three suites broken:
+
 ```bash
 cd /opt/github/zinin/claude-mesh
+FAILED=0
 for t in test-config-loader test-verify-delegation test-watch-runs test-preflight-env test-command-sync test-extract-result test-render-template test-loader-resolution test-check-context-size; do
     printf '%-28s ' "$t"
-    bash "skills/shared/tests/$t.sh" >/tmp/"$t".log 2>&1 && echo OK || { echo FAILED; tail -5 /tmp/"$t".log; }
+    if bash "skills/shared/tests/$t.sh" >/tmp/"$t".log 2>&1; then echo OK
+    else echo FAILED; FAILED=$((FAILED+1)); tail -5 /tmp/"$t".log; fi
 done
-GROK_SMOKE=1 bash skills/shared/tests/test-grok-exec-smoke.sh 2>&1 | tail -2
+GROK_SMOKE=1 bash skills/shared/tests/test-grok-exec-smoke.sh > /tmp/smoke.txt 2>&1 \
+    || FAILED=$((FAILED+1))
+tail -2 /tmp/smoke.txt
+echo "suites failed: $FAILED"
+[ "$FAILED" -eq 0 ] || { echo "ACCEPTANCE NOT MET"; exit 1; }
 ```
 
-Expected: `OK` on every line and `0 failed` from the smoke test.
+Expected: `OK` on every line, `0 failed` from the smoke test, `suites failed: 0`, rc 0. If the
+smoke test SKIPs because `GROK_SMOKE` was forgotten or `grok` is absent, that is not a pass —
+read its output and say which.
 
 - [ ] **Step 6: Commit the acceptance record**
 
