@@ -40,6 +40,15 @@ assert_stderr_lacks() {
     fi
 }
 
+assert_eq_str() {
+    # $1 = description, $2 = expected, $3 = actual
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $1"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $1 — expected '$2', got '$3'"
+    fi
+}
+
 echo "=== Test 1: missing config file ==="
 # iter-2 CONCERN-11: load_or_die exits with rc=2 (distinct from rc=1) when
 # config.yaml is missing — so /do-plan (and any future consumer that wants to
@@ -1340,6 +1349,97 @@ else
     FAIL=$((FAIL+1)); echo "  FAIL: the snapshot outlived the process: $LEFTOVER"
 fi
 rm -rf "$TDIR" "$ERR" "$SHIMDIR" "$LEAKTMP"
+
+# === Test 57: the grok: section ===
+# grok: is a GATE like codex:/gemini: — but unlike claude:, its catalog is REQUIRED, because
+# the grok reviewer agent refuses to start without a MODEL. A section with no models would
+# advertise a reviewer that cannot run.
+echo "=== Test 57: grok: section validation ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+
+cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a well-formed grok: section" "0" "$RC"
+
+cp "$FIXTURES/invalid-grok-scalar.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a scalar grok: section" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "grok: must be a mapping" "$ERR"
+assert_stderr_lacks "no raw jq indexing noise" "Cannot index" "$ERR"
+
+cp "$FIXTURES/invalid-grok-models-missing.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a grok: section with no catalog" "1" "$RC"
+assert_stderr_contains "says the catalog is required" "grok.models: required when grok: section present" "$ERR"
+
+cp "$FIXTURES/invalid-grok-models-empty.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects an empty grok catalog" "1" "$RC"
+assert_stderr_contains "says the catalog is required" "grok.models: required when grok: section present" "$ERR"
+
+# The charset is the narrow one. A colon is legal in claude.models and must NOT be here:
+# the value becomes a path component and a watch-runs.sh roster entry.
+cp "$FIXTURES/invalid-grok-model-charset.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a colon in a grok model id" "1" "$RC"
+assert_stderr_contains "names the narrow charset" "grok.models\[1\]" "$ERR"
+assert_stderr_contains "shows which charset applies" "\[A-Za-z0-9._-\]" "$ERR"
+
+{ printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
+  printf 'grok:\n  models: [grok-4.6, grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate grok model" "1" "$RC"
+assert_stderr_contains "names the duplicate" "duplicate model" "$ERR"
+
+# Unknown effort passes with a WARN — xAI adds levels without asking this plugin.
+cp "$FIXTURES/unknown-grok-effort.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts an unknown reasoning_effort" "0" "$RC"
+assert_stderr_contains "warns about it" "unknown value \"ludicrous\"" "$ERR"
+
+# No grok: section at all — every existing config on earth.
+cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "a config with no grok: section stays valid" "0" "$RC"
+GF=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
+assert_eq_str "has_grok=0 without a section" "0" "$GF"
+
+cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
+GF=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
+assert_eq_str "has_grok=1 with a section" "1" "$GF"
+LIST=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-grok-models 2>/dev/null | tr '\n' ' ')
+assert_eq_str "list-grok-models emits the catalog in config order" "grok-4.6 grok-4.5 " "$LIST"
+EFFORT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok 2>/dev/null)
+assert_eq_str "get-grok returns the effort" "xhigh" "$EFFORT"
+
+# get-grok is a TYPED getter: a malformed section must die here, not return an empty string.
+cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-grok rejects a malformed catalog" "1" "$RC"
+# …while the codex getter beside it still answers: a broken grok section must not
+# ground the other engines (the `ultra` incident, 2026-07-10).
+CG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null); RC=$?
+assert_exit "get-codex still works with a broken grok section" "0" "$RC"
+assert_eq_str "…and returns the codex model" "gpt-5.5|" "$CG"
+
+# The same must hold for the PRESET read, which every orchestrator and preflight-env.sh runs
+# before anything else. Both get-defaults assertions below pass TRIVIALLY today, because
+# validate_defaults does not touch grok yet — that is deliberate. They are the standing
+# regression for the LAZY grok check the next task wires into validate_defaults: the day the
+# full catalog check creeps onto that path, a typo in grok.models grounds every codex and
+# gemini row, and these two assertions are what go red.
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-defaults still answers with a malformed grok section" "0" "$RC"
+
+# The mirror case: a grok: {} section that NO preset references. `validate` must still reject
+# it — the full path owns the whole config — while the preset read must not even look.
+cp "$FIXTURES/unreferenced-broken-grok.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate rejects a catalog-less grok section no preset references" "1" "$RC"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-defaults ignores a grok section no preset references" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
 
 # === Test 59: the claude catalog's error text is frozen ===
 # validate_claude no longer owns its per-element loop — validate_model_catalog does, and grok:

@@ -408,6 +408,102 @@ validate_gemini() {
     [ -n "$model" ] || die "gemini.model: required when gemini: section present"
 }
 
+# Split in THREE on purpose, and each seam pays for itself.
+#
+# validate_grok vs validate_grok_catalog: validate_defaults needs the CATALOG validated before
+# it can check preset membership, and it runs after validate_all has already validated the
+# section — so the half that can `warn` must not be on that path, or every run with an unknown
+# effort prints the warning twice. Same discipline the header of validate_claude spells out.
+#
+# validate_grok_section_type vs validate_grok_catalog: the grok check on the validate_defaults
+# path is LAZY, and that is the whole point. cmd_get_defaults calls validate_defaults,
+# preflight-env.sh derives CONFIG_STATUS from `get-defaults design_review`, and both
+# orchestrators read `get-defaults` before anything else — so validating the grok CATALOG
+# unconditionally there would make a typo in `grok.models` print CONFIG INVALID and SKIP every
+# codex and gemini row. That is the failure preflight-env.sh forbids in so many words ("a
+# broken optional section fails its own row, never the whole environment"), and the shape of
+# the `ultra` incident cmd_export records — the reason has_codex and has_gemini are bare
+# probes. So validate_defaults runs the TYPE GATE unconditionally (jq must never meet
+# `grok: false`) and the full catalog check only when the preset actually references grok —
+# `grok` in `builtin`, or a non-empty `grok_models`. Nothing is weakened: validate_all still
+# validates the catalog for `config-loader.sh validate`, and list-grok-models / get-grok are
+# typed getters that fail loudly for anyone who asks for the catalog itself.
+validate_grok_section_type() {
+    # Its own function because validate_defaults needs THIS half on every run — so jq never
+    # meets `grok: false` — while paying for the catalog check only when a preset actually
+    # references grok. validate_grok_catalog and validate_grok both call it first, so
+    # validate_all, has_grok, list-grok-models and get-grok keep the full check.
+    #
+    # Type-dispatch gate, same class as validate_codex/validate_gemini: a scalar section must
+    # die cleanly instead of crashing the getters with a raw jq "Cannot index boolean" (rc=5).
+    local stype
+    stype=$(jq -r '.grok | type' "$CONFIG_JSON" 2>/dev/null)
+    # `grok:` written with NO value (YAML null) counts as ABSENT, not as "present but empty".
+    # That is the established precedent, not a new choice: `codex:` with no value already
+    # yields has_codex=0 rather than a "model required" error, and a user who comments out a
+    # section's body means "off", not "misconfigured".
+    case "$stype" in
+        ""|null) return 0 ;;
+        object) ;;
+        *) die "grok: must be a mapping with models/reasoning_effort keys (got $stype)" ;;
+    esac
+}
+
+validate_grok_catalog() {
+    validate_grok_section_type
+    # The gate returns 0 for BOTH "no section" and "a well-formed mapping", so ask again which
+    # one it was: there is no catalog to require where there is no section. The order is not
+    # interchangeable — `jq -e` reports `grok: false` as untrue too, so probing first would
+    # read a scalar section as "absent" and skip the very check the gate exists to force.
+    jq -e '.grok' "$CONFIG_JSON" >/dev/null 2>&1 || return 0
+
+    # DELIBERATE ASYMMETRY with claude:, where a section without `models` simply means "no
+    # catalog". Here the catalog is REQUIRED: the grok reviewer agent stops without a MODEL,
+    # so a section with no models advertises a reviewer that cannot start. Closer to
+    # codex.model / gemini.model, which are required for the same kind of reason.
+    local mtype
+    mtype=$(jq -r '.grok.models | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$mtype" in
+        array) ;;
+        null) die "grok.models: required when grok: section present" ;;
+        *) die "grok.models: must be a list of grok model ids, got $mtype" ;;
+    esac
+    [ "$(jq '.grok.models | length' "$CONFIG_JSON")" -gt 0 ] \
+        || die "grok.models: required when grok: section present"
+
+    # The narrow charset, not IDENT_RE — see GROK_IDENT_RE. The "grok-4.6" example is passed
+    # from here for the same reason validate_claude passes "opus": the shared helper must stay
+    # engine-agnostic.
+    validate_model_catalog '.grok.models' 'grok.models' "$GROK_IDENT_RE" '[A-Za-z0-9._-]' 'grok-4.6'
+}
+
+validate_grok() {
+    validate_grok_catalog
+    # reasoning_effort mirrors codex.reasoning_level, including the pass-through: xAI adds
+    # levels with new models, and the CLI rejects a truly invalid one by name.
+    local ltype effort
+    ltype=$(jq -r '.grok.reasoning_effort | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$ltype" in
+        ""|null) return 0 ;;
+        string) ;;
+        *) die "grok.reasoning_effort: must be a string (got $ltype) — quote it, e.g. reasoning_effort: \"xhigh\"" ;;
+    esac
+    effort=$(jq -r '.grok.reasoning_effort' "$CONFIG_JSON")
+    # Empty string == key not set, the codex.reasoning_level semantics. A user who comments a
+    # value out and leaves `reasoning_effort: ""` behind means "let the CLI decide", and dying
+    # on that would be stricter than the section this one is modelled on.
+    [ -n "$effort" ] || return 0
+    [[ "$effort" =~ $IDENT_RE ]] \
+        || die "grok.reasoning_effort: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$effort\""
+    case "$effort" in
+        # Known today (verified against grok 1.0.5). New levels ship with new models, so an
+        # unknown value is NOT an error: warn and pass through, exactly as codex.reasoning_level
+        # does — the grok CLI is the final validator. Never turn this into an enum.
+        low|medium|high|xhigh|max) ;;
+        *) warn "grok.reasoning_effort: unknown value \"$effort\" — passing through (the grok CLI will validate)" ;;
+    esac
+}
+
 # Shared by claude: and grok: — the two sections that expose a LIST of model names the
 # orchestrators fan independent reviewers out over. The four guards below are what the two
 # lists must never diverge on, and each of them is here because it once mattered:
@@ -420,6 +516,11 @@ validate_gemini() {
 #     test ("opus fable" matched " opus fable ");
 #   - duplicates: two reviewers with one name are indistinguishable in every attribution
 #     table both orchestrators print.
+# PRECONDITION: the CALLER must have type-gated $1 to `array` first — this helper does not. A
+# scalar has a length of its own (`jq '"opus" | length'` is 4), so on `models: opus` the loop
+# below would enter, index a string with a number, and report `[0]: must be a string (got )`
+# with jq's raw "Cannot index string with number" beside it, instead of the caller's clean
+# "must be a list". validate_claude and validate_grok_catalog each gate before they call.
 # MUST stay side-effect free (no warn): validate_defaults calls it again after validate_all.
 # $1 = jq path to the list, $2 = message label, $3 = charset regex, $4 = charset for the message,
 # $5 = an example model name for the element-type message (OPTIONAL). Given, that message ends
@@ -741,6 +842,7 @@ validate_all() {
     validate_models
     validate_codex
     validate_gemini
+    validate_grok
     validate_claude
     validate_defaults
     validate_runtime
@@ -902,6 +1004,19 @@ cmd_get_flag() {
         has_gemini)
             jq -e '.gemini' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
+        has_grok)
+            # VALIDATES BEFORE READING, like has_claude_models below and unlike the bare probes
+            # has_codex / has_gemini above. The difference is what each flag PROMISES, not
+            # inconsistency: has_codex answers "is there a codex section" — its model is a
+            # single scalar with a documented fallback, so presence is the whole question.
+            # has_grok is consumed as "can a grok reviewer be dispatched", which requires a
+            # non-empty, valid catalog, because the reviewer agent stops without a MODEL. That
+            # is the same promise has_claude_models makes, and the reason no separate
+            # has_grok_models flag is needed — a bare probe would make that false. Do NOT
+            # "restore parity" by simplifying this to `jq -e '.grok'`.
+            validate_grok_catalog
+            jq -e '.grok' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
+            ;;
         has_models)
             jq -e '.models[0]' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
@@ -950,7 +1065,7 @@ cmd_get_flag() {
             jq -r '.runtime.dispatch_model // empty' "$CONFIG_JSON"
             ;;
         *)
-            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_models, has_claude_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
+            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_grok, has_models, has_claude_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
             ;;
     esac
 }
@@ -1000,6 +1115,23 @@ cmd_get_gemini() {
     validate_gemini
     # Format: <model>
     jq -r '.gemini.model // ""' "$CONFIG_JSON"
+}
+
+cmd_list_grok_models() {
+    # One grok model id per line, config order — same line-per-entry contract as
+    # cmd_list_claude_models. Prints nothing (exit 0) when there is no grok: section.
+    load_or_die
+    validate_grok_catalog
+    jq -r '(.grok.models // [])[]' "$CONFIG_JSON"
+}
+
+cmd_get_grok() {
+    load_or_die
+    validate_grok
+    # Format: <reasoning_effort>, empty when unset. Deliberately NOT "<model>|<effort>" like
+    # get-codex: grok carries a CATALOG, not one model — read it with list-grok-models. Callers
+    # gate on `get-flag has_grok` first, exactly as they do for codex and gemini.
+    jq -r '.grok.reasoning_effort // ""' "$CONFIG_JSON"
 }
 
 # iter-2 CONCERN-3: typed getter for defaults.<category> — /mesh-review (Task 15a)
@@ -1075,8 +1207,14 @@ case "${1:-}" in
     get-gemini)
         cmd_get_gemini
         ;;
+    list-grok-models)
+        cmd_list_grok_models
+        ;;
+    get-grok)
+        cmd_get_grok
+        ;;
     *)
-        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini}" >&2
+        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-grok-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini|get-grok}" >&2
         exit 2
         ;;
 esac
