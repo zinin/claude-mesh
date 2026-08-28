@@ -696,6 +696,20 @@ Then, after the whole `claude_models` block (immediately before the loop's closi
             die "defaults.$preset.builtin lists \"grok\" but defaults.$preset.grok_models is empty — a grok reviewer cannot start without a model (name one from the grok.models catalog)"
         fi
 
+        # <!-- SYNC: this preset loop is the deliberate TWIN of the claude_models loop above.
+        # Four places move together: that loop, this one, and the two `<!-- SYNC: -->` markers
+        # naming them. Editing the membership test, the uniqueness set or the element-type gate
+        # in one WITHOUT the other is the defect this marker exists to catch in review.
+        #
+        # Why twins rather than one shared helper, deliberately: the guard that actually
+        # matters here — the charset rule that stops a preset entry SPANNING two adjacent
+        # catalog members in the substring membership test `*" $entry "*` — already lives in
+        # the shared validate_model_catalog, so the dangerous half IS unified. What is
+        # duplicated is the consumer: a membership test over an already-validated catalog,
+        # whose drift costs a differing error message and is caught by the first run of either
+        # suite. Merging these two would pull the claude preset messages into the same
+        # byte-identity freeze that Task 1 is already spending its risk budget on, to remove a
+        # duplication whose failure mode is cosmetic. Revisit once that freeze is lifted. -->
         local g=0
         local seen_gm=""
         while [ "$g" -lt "$gm_count" ]; do

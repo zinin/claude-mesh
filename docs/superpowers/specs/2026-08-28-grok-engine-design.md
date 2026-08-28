@@ -77,7 +77,14 @@ non-empty when the section exists, mirroring `codex.model`. Message:
 the existing fail-closed rule that rejects `claude_models` without `claude` in `builtin`.
 
 **Every entry of `grok_models` must be a member of the `grok.models` catalog**, must be
-unique, and must be a string — the same three checks `claude_models` gets.
+unique, and must be a string — the same three checks `claude_models` gets, written as a
+deliberate twin of that loop rather than merged into the shared helper. The guard that matters
+is already shared: the charset rule preventing a preset entry from spanning two adjacent
+catalog members in the substring membership test lives in `validate_model_catalog`. What stays
+duplicated is the consumer loop, whose drift costs a differing error message and surfaces on
+the first test run — not worth pulling the claude preset messages into the same byte-identity
+freeze Task 1 already moves. `<!-- SYNC: -->` markers tie the two, the idiom this repository
+already uses for rules that must move together.
 
 **The grok charset is narrower than the claude one:** `[A-Za-z0-9._-]`, not
 `[A-Za-z0-9._:@-]`. A grok model name becomes a path component (`runs/grok/<model>/`) and a
