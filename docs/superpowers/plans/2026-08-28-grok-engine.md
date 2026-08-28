@@ -272,7 +272,13 @@ printf '%s\ngrok:\n  reasoning_effort: xhigh\n' "$BASE" > invalid-grok-models-mi
 printf '%s\ngrok:\n  models: []\n' "$BASE" > invalid-grok-models-empty.yaml
 printf '%s\ngrok:\n  models: ["grok-4.6", "vendor:grok-4.5"]\n' "$BASE" > invalid-grok-model-charset.yaml
 printf '%s\ngrok:\n  models: [grok-4.6]\n  reasoning_effort: "ludicrous"\n' "$BASE" > unknown-grok-effort.yaml
-printf '%s\ngrok:\n  models: grok-4.6\ncodex:\n  model: gpt-5.5\n' "$BASE" > broken-grok-valid-codex.yaml
+# NOTE the `defaults:` block: without it this fixture proves nothing. `get-defaults` is the
+# call that validates the preset, so a fixture with no defaults never exercises the path where
+# a broken grok section could ground codex — the test would pass green while the real
+# configuration (every config.yaml has defaults:) failed.
+printf '%s\ngrok:\n  models: grok-4.6\ncodex:\n  model: gpt-5.5\ndefaults:\n  code_review:\n    builtin: [codex]\n' "$BASE" > broken-grok-valid-codex.yaml
+# And the mirror case: a grok section nothing references must not fail the preset read at all.
+printf '%s\ngrok: {}\ncodex:\n  model: gpt-5.5\ndefaults:\n  code_review:\n    builtin: [codex]\n' "$BASE" > unreferenced-broken-grok.yaml
 ls -1 *grok*.yaml
 ```
 
@@ -393,6 +399,19 @@ In `skills/shared/config-loader.sh`, after `validate_gemini`, add:
 # preset membership, and it runs after validate_all has already validated the section — so the
 # half that can `warn` must not be on that path, or every run with an unknown effort prints the
 # warning twice. Same discipline the comment at validate_claude spells out.
+#
+# LAZY on the validate_defaults path, and that is the whole point. `cmd_get_defaults` calls
+# validate_defaults, preflight-env.sh derives CONFIG_STATUS from `get-defaults design_review`,
+# and both orchestrators read `get-defaults` before anything else — so validating the grok
+# CATALOG unconditionally here would make a typo in `grok.models` print CONFIG INVALID and
+# SKIP every codex and gemini row. That is the failure preflight-env.sh:224-225 forbids in so
+# many words ("a broken optional section fails its own row, never the whole environment"), and
+# the shape of the `ultra` incident config-loader.sh:733-740 records — the reason has_codex and
+# has_gemini are bare probes. So: run the TYPE GATE unconditionally (jq must not meet
+# `grok: false`), and the full catalog check only when the preset actually references grok —
+# `grok` in `builtin`, or a non-empty `grok_models`. Nothing is weakened: `validate_all` still
+# validates the catalog for `config-loader.sh validate`, and `list-grok-models` / `get-grok`
+# are typed getters that fail loudly for anyone who asks for the catalog itself.
 validate_grok_catalog() {
     # Type-dispatch gate, same class as validate_codex/validate_gemini: a scalar section must
     # die cleanly instead of crashing the getters with a raw jq "Cannot index boolean" (rc=5).
@@ -2311,8 +2330,14 @@ catalog read has, because `list-grok-models` validates the section:
 ```bash
 HAS_GROK=$("$LOADER" get-flag has_grok)
 GM_ERR=$(mktemp)
-GROK_MODELS=$("$LOADER" list-grok-models 2>"$GM_ERR") \
-    || { echo "config.yaml невалиден (секция grok):" >&2; cat "$GM_ERR" >&2; rm -f "$GM_ERR"; exit 1; }
+# WARN, do not exit. A broken grok: section must not stop a codex-only review — that is the
+# `ultra` incident (config-loader.sh:733-740) in a new costume, and the reason has_codex is a
+# bare probe. Degrade grok alone: report it, drop the flag, let everything else run.
+if ! GROK_MODELS=$("$LOADER" list-grok-models 2>"$GM_ERR"); then
+    echo "ВНИМАНИЕ: секция grok: не валидируется — grok-ревьюеры отключены на этот запуск:" >&2
+    cat "$GM_ERR" >&2
+    HAS_GROK=0; GROK_MODELS=""
+fi
 rm -f "$GM_ERR"
 echo "HAS_GROK=$HAS_GROK"
 echo "GROK_MODELS=[$(echo "$GROK_MODELS" | tr '\n' ' ')]"

@@ -103,6 +103,19 @@ names one, `-m` is omitted and `~/.grok/config.toml` decides. A hardcoded fallba
 silently override the user's own setting. This applies to a direct `/claude-mesh:grok-exec`
 call; review dispatch always carries a model.
 
+**A broken `grok:` section fails its own row, never the environment.** The catalog check that
+runs on the `validate_defaults` path — the one `cmd_get_defaults` triggers, and through it
+`preflight-env.sh`'s `CONFIG_STATUS` and the first read of both orchestrators — is LAZY: an
+unconditional type gate (so `jq` never meets `grok: false`), and the full catalog check only
+when the preset actually references grok. Otherwise the likeliest user error of all, given the
+catalog is mandatory — writing `grok:` and forgetting `models:` — would print `CONFIG INVALID`
+and SKIP every codex and gemini row, which is exactly what `preflight-env.sh` forbids in its
+own words and what the `ultra` incident of 2026-07-10 cost once already. Nothing is weakened:
+`validate_all` still checks the catalog for `config-loader.sh validate`, and `list-grok-models`
+/ `get-grok` are typed getters that fail loudly for anyone asking about the catalog itself. The
+orchestrators degrade the same way — a section that will not validate switches `has_grok` off
+for that run and reports it, instead of stopping a codex-only review.
+
 **Shared validator.** `validate_model_catalog <jq-path> <label> <charset-re>` replaces the
 body of `validate_claude` and serves `validate_grok`. Claude's error messages must survive
 character for character — the test suite asserts their text.
@@ -315,7 +328,12 @@ New fixtures under `skills/shared/tests/fixtures/`:
 - `invalid-defaults-grok-models-unknown.yaml` — entry outside the catalog
 - `invalid-defaults-builtin-grok-no-grok-models.yaml`
 - `unknown-grok-effort.yaml` — WARN and pass through
-- `broken-grok-valid-codex.yaml` — a malformed grok section must not block a codex run
+- `broken-grok-valid-codex.yaml` — a malformed grok section must not block a codex run. **The
+  fixture must carry a `defaults:` block**, or it proves nothing: `get-defaults` is the call
+  that validates the preset, so without one the test never reaches the path where grok could
+  ground codex, and passes for the wrong reason
+- `unreferenced-broken-grok.yaml` — a grok section that no preset references must not fail the
+  preset read at all
 
 Extensions to the existing suites:
 
