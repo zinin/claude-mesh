@@ -431,8 +431,9 @@ validate_gemini() {
 validate_grok_section_type() {
     # Its own function because validate_defaults needs THIS half on every run — so jq never
     # meets `grok: false` — while paying for the catalog check only when a preset actually
-    # references grok. validate_grok_catalog and validate_grok both call it first, so
-    # validate_all, has_grok, list-grok-models and get-grok keep the full check.
+    # references grok. validate_defaults is the ONLY caller of the gate ALONE: validate_grok
+    # does not call it directly — it reaches it through validate_grok_catalog, which does — so
+    # validate_all, has_grok, list-grok-models and get-grok all keep the full check.
     #
     # Type-dispatch gate, same class as validate_codex/validate_gemini: a scalar section must
     # die cleanly instead of crashing the getters with a raw jq "Cannot index boolean" (rc=5).
@@ -607,12 +608,39 @@ validate_defaults() {
     # `.defaults.<category>.*` and never touches `.claude`.)
     validate_claude
 
+    # The grok TYPE GATE, unconditionally — and deliberately NOT validate_grok_catalog, nor
+    # validate_grok. Unconditional because the catalog READ below is conditional: on
+    # `grok: false`, `(.grok.models // [])[]` dies with raw jq "Cannot index boolean" noise,
+    # and WHETHER jq meets that scalar would otherwise depend on which preset is being
+    # validated. A scalar section is a config error on every path, so it must produce the same
+    # clean message on every path; the gate is one `jq type` call and is cheap enough to pay
+    # for on every run, which is the whole reason it is a function of its own.
+    # The GATE HALF ONLY because this validator is what cmd_get_defaults runs, preflight-env.sh
+    # derives CONFIG_STATUS from `get-defaults design_review`, and both orchestrators read
+    # get-defaults before anything else: validating the grok CATALOG here would make one typo
+    # in grok.models print CONFIG INVALID and skip every codex and gemini row — the `ultra`
+    # incident's shape, spelled out in the header above validate_grok_section_type. The catalog
+    # is checked per preset below, only for a preset that actually references grok. And never
+    # validate_grok here: it can warn, this call site is reached twice per run (validate_all,
+    # then cmd_get_defaults), so its unknown-effort warning would print twice.
+    validate_grok_section_type
+
     local claude_catalog
     claude_catalog=$(jq -r '(.claude.models // [])[]' "$CONFIG_JSON" | tr '\n' ' ')
 
-    local has_codex has_gemini
+    # NOT read beside claude_catalog, on purpose. The read is cheap, but it belongs with the
+    # validation it depends on, and that validation must not run for a config whose presets
+    # never mention grok (see the gate call above). Both are done inside the preset loop, and
+    # grok_catalog_read memoises them so two grok-using presets pay for the catalog once.
+    local grok_catalog="" grok_catalog_read=0
+
+    local has_codex has_gemini has_grok
     has_codex=$(jq -e '.codex' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0)
     has_gemini=$(jq -e '.gemini' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0)
+    # A bare PROBE like the two above, answering only "is there a section for the builtin arm
+    # to point at" — not `get-flag has_grok`, which validates the catalog because it promises
+    # a dispatchable reviewer. The catalog behind this one is validated lazily below.
+    has_grok=$(jq -e '.grok' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0)
 
     local model_ids
     model_ids=$(jq -r '(.models // [])[].id' "$CONFIG_JSON" | tr '\n' ' ')
@@ -654,7 +682,10 @@ validate_defaults() {
                 gemini)
                     [ "$has_gemini" = "1" ] || die "defaults.$preset.builtin lists \"gemini\" but no gemini: section"
                     ;;
-                *) die "defaults.$preset.builtin: unknown value \"$v\" (valid: claude, codex, gemini)" ;;
+                grok)
+                    [ "$has_grok" = "1" ] || die "defaults.$preset.builtin lists \"grok\" but no grok: section"
+                    ;;
+                *) die "defaults.$preset.builtin: unknown value \"$v\" (valid: claude, codex, gemini, grok)" ;;
             esac
             b=$((b+1))
         done
@@ -701,6 +732,11 @@ validate_defaults() {
                 || die "defaults.$preset.claude_models is set but \"claude\" is missing from defaults.$preset.builtin (add \"claude\" to builtin, or drop claude_models)"
         fi
 
+        # <!-- SYNC: this loop has a deliberate TWIN below — the grok_models loop. Four places
+        # move together: this loop, that one, and the two `<!-- SYNC: -->` markers naming them.
+        # Change the membership test, the uniqueness set or the element-type gate here and the
+        # same change is due there. The marker below carries the full rationale for why the two
+        # are hand-written twins rather than one shared consumer helper. -->
         local c=0
         local seen_cm=""
         while [ "$c" -lt "$cm_count" ]; do
@@ -746,6 +782,90 @@ validate_defaults() {
             esac
             seen_cm="$seen_cm $cmv"
             c=$((c+1))
+        done
+
+        # grok_models — the same shape as claude_models, with the requirement running BOTH ways.
+        # claude tolerates "claude in builtin, no claude_models": it falls back to one reviewer
+        # on the dispatch model. grok has no such fallback — its reviewer agent stops without a
+        # MODEL — so the missing list is an error rather than a default.
+        local gmtype
+        gmtype=$(jq -r ".defaults.$preset.grok_models | type" "$CONFIG_JSON")
+        case "$gmtype" in
+            array|null) ;;
+            *) die "defaults.$preset.grok_models: must be a list, got $gmtype" ;;
+        esac
+
+        local gm_count grok_in_builtin
+        # No `|| echo 0` fallback, for the reason the claude_models block above records: the
+        # type gate leaves only array and null, and `null | length` is 0 in jq with rc=0.
+        gm_count=$(jq ".defaults.$preset.grok_models | length" "$CONFIG_JSON")
+        grok_in_builtin=$(jq "[(.defaults.$preset.builtin // [])[] | select(. == \"grok\")] | length" "$CONFIG_JSON")
+
+        # THE LAZY POINT, and the reason grok_catalog is not read with claude_catalog: the
+        # catalog is validated and read only once THIS preset is known to reference grok — by
+        # naming it in builtin, or by carrying a non-empty grok_models. A preset that mentions
+        # grok nowhere reaches neither, so a broken grok catalog cannot ground the codex and
+        # gemini rows that `get-defaults` feeds (see the gate call at the top of this
+        # function). Test 57 holds the standing regressions — unreferenced-broken-grok.yaml
+        # and broken-grok-valid-codex.yaml must both keep `get-defaults code_review` at rc=0
+        # while `validate` rejects them; if either goes red, this stopped being lazy. It runs
+        # BEFORE the two emptiness rules below so a broken catalog reports its OWN error
+        # instead of "grok_models is empty", and grok_catalog_read keeps the second preset
+        # from repeating the work.
+        if { [ "$gm_count" -gt 0 ] || [ "$grok_in_builtin" -gt 0 ]; } && [ "$grok_catalog_read" -eq 0 ]; then
+            validate_grok_catalog
+            grok_catalog=$(jq -r '(.grok.models // [])[]' "$CONFIG_JSON" | tr '\n' ' ')
+            grok_catalog_read=1
+        fi
+
+        # -gt/-eq throughout, never `= 0`: these are jq integers, and the claude block beside
+        # this one uses the arithmetic form everywhere. Mixing the string and arithmetic
+        # comparators for the same values invites a future `= 00` that silently never matches.
+        if [ "$gm_count" -gt 0 ] && [ "$grok_in_builtin" -eq 0 ]; then
+            die "defaults.$preset.grok_models is set but \"grok\" is missing from defaults.$preset.builtin (add \"grok\" to builtin, or drop grok_models)"
+        fi
+        if [ "$grok_in_builtin" -gt 0 ] && [ "$gm_count" -eq 0 ]; then
+            die "defaults.$preset.builtin lists \"grok\" but defaults.$preset.grok_models is empty — a grok reviewer cannot start without a model (name one from the grok.models catalog)"
+        fi
+
+        # <!-- SYNC: this preset loop is the deliberate TWIN of the claude_models loop above.
+        # Four places move together: that loop, this one, and the two `<!-- SYNC: -->` markers
+        # naming them. Editing the membership test, the uniqueness set or the element-type gate
+        # in one WITHOUT the other is the defect this marker exists to catch in review.
+        #
+        # Why twins rather than one shared helper, deliberately: the guard that actually
+        # matters here — the charset rule that stops a preset entry SPANNING two adjacent
+        # catalog members in the substring membership test `*" $entry "*` — already lives in
+        # the shared validate_model_catalog, so the dangerous half IS unified. What is
+        # duplicated is the consumer: a membership test over an already-validated catalog,
+        # whose drift costs a differing error message and is caught by the first run of either
+        # suite. Merging these two would pull the claude preset messages into the same
+        # byte-identity freeze that Task 1 is already spending its risk budget on, to remove a
+        # duplication whose failure mode is cosmetic. Revisit once that freeze is lifted. -->
+        local g=0
+        local seen_gm=""
+        while [ "$g" -lt "$gm_count" ]; do
+            local gmetype gmv
+            gmetype=$(jq -r ".defaults.$preset.grok_models[$g] | type" "$CONFIG_JSON")
+            [ "$gmetype" = "string" ] \
+                || die "defaults.$preset.grok_models[$g]: must be a string (got $gmetype) — quote it, e.g. - \"grok-4.6\""
+            gmv=$(jq -r ".defaults.$preset.grok_models[$g]" "$CONFIG_JSON")
+            # MUST precede the membership test, same as in the claude twin: an empty $gmv
+            # makes the glob *"  "* match an EMPTY catalog and silently accept the entry.
+            [ -n "$gmv" ] || die "defaults.$preset.grok_models[$g]: empty value"
+            # GROK_IDENT_RE, not IDENT_RE — the narrow charset the catalog itself is held to,
+            # so both sides of the catalog⊇preset relation stay validated identically.
+            [[ "$gmv" =~ $GROK_IDENT_RE ]] \
+                || die "defaults.$preset.grok_models[$g]: must start with a letter/digit and match [A-Za-z0-9._-] (a grok model id), got \"$gmv\""
+            case " $grok_catalog " in
+                *" $gmv "*) ;;
+                *) die "defaults.$preset.grok_models[$g]: unknown grok model \"$gmv\" (add it to the grok.models catalog)" ;;
+            esac
+            case " $seen_gm " in
+                *" $gmv "*) die "defaults.$preset.grok_models[$g]: duplicate model \"$gmv\"" ;;
+            esac
+            seen_gm="$seen_gm $gmv"
+            g=$((g+1))
         done
 
         # run_mode (only for code_review)
@@ -1146,10 +1266,10 @@ cmd_get_defaults() {
     load_or_die
     validate_defaults
     # iter-3 CONCERN-1: emit a JSON object so orchestrators get builtin + claude_models +
-    # models + run_mode (run_mode meaningful only for code_review) through the loader
-    # instead of raw yq. -c = one line. claude_models defaults to [] and never null —
-    # both orchestrators iterate it directly.
-    jq -c "{builtin: (.defaults.${category}.builtin // []), claude_models: (.defaults.${category}.claude_models // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null)}" "$CONFIG_JSON"
+    # grok_models + models + run_mode (run_mode meaningful only for code_review) through the
+    # loader instead of raw yq. -c = one line. claude_models and grok_models default to []
+    # and never null — both orchestrators iterate them directly.
+    jq -c "{builtin: (.defaults.${category}.builtin // []), claude_models: (.defaults.${category}.claude_models // []), grok_models: (.defaults.${category}.grok_models // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null)}" "$CONFIG_JSON"
 }
 
 # iter-3 CONCERN-1: typed getter for runtime UI defaults (default_run_mode) + the do-plan

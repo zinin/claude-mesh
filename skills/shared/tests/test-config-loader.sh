@@ -1421,6 +1421,12 @@ assert_exit "get-grok rejects a malformed catalog" "1" "$RC"
 CG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null); RC=$?
 assert_exit "get-codex still works with a broken grok section" "0" "$RC"
 assert_eq_str "…and returns the codex model" "gpt-5.5|" "$CG"
+# has_grok VALIDATES instead of probing (see its case arm), so a MALFORMED section must make
+# it EXIT 1 rather than answer 0 or 1. That rc is the contract preflight-env.sh reads to print
+# an INVALID row instead of a MISSING one, and it is the whole justification for the flag not
+# being a bare `jq -e '.grok'`.
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok exits 1 on a malformed section" "1" "$RC"
 
 # The same must hold for the PRESET read, which every orchestrator and preflight-env.sh runs
 # before anything else. Both get-defaults assertions below pass TRIVIALLY today, because
@@ -1438,6 +1444,55 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate rejects a catalog-less grok section no preset references" "1" "$RC"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-defaults ignores a grok section no preset references" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 58: defaults.<preset> grok gating ===
+# Two rules, and they point in OPPOSITE directions. grok_models without grok in builtin is the
+# same fail-closed rule claude_models has. grok in builtin WITHOUT grok_models is also an
+# error — the mirror image, and unlike claude there is no single-reviewer fallback to land on,
+# because the reviewer agent stops without a MODEL.
+echo "=== Test 58: defaults grok gating ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+GCAT=$(printf 'grok:\n  models: [grok-4.6, grok-4.5]\n')
+
+cp "$FIXTURES/invalid-defaults-builtin-grok-no-section.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects builtin grok with no grok: section" "1" "$RC"
+assert_stderr_contains "says which section is missing" 'builtin lists "grok" but no grok: section' "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects builtin grok with no grok_models" "1" "$RC"
+assert_stderr_contains "explains the reviewer needs a model" "grok_models is empty" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    grok_models: [grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects grok_models without grok in builtin" "1" "$RC"
+assert_stderr_contains "names the missing builtin entry" 'missing from defaults.code_review.builtin' "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: [grok-4.7]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a grok_models entry outside the catalog" "1" "$RC"
+assert_stderr_contains "points at the catalog" "grok.models catalog" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: [grok-4.6, grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate grok_models entry" "1" "$RC"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  design_review:\n    builtin: [grok]\n    grok_models: [grok-4.5]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a well-formed design_review preset" "0" "$RC"
+DJ=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review 2>/dev/null)
+GM=$(printf '%s' "$DJ" | jq -r '.grok_models | join(",")')
+assert_eq_str "get-defaults carries grok_models" "grok-4.5" "$GM"
+
+# A preset with no grok at all still emits an ARRAY, never null — both orchestrators iterate it.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+DJ=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review 2>/dev/null)
+GT=$(printf '%s' "$DJ" | jq -r '.grok_models | type')
+assert_eq_str "grok_models defaults to an array" "array" "$GT"
 
 rm -rf "$TDIR" "$ERR"
 
