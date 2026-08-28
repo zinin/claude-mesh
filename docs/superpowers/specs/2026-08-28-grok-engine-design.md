@@ -67,6 +67,18 @@ defaults:
     grok_models: [grok-4.6]            # required whenever "grok" is in builtin
 ```
 
+**What `grok.models` MEANS:** the names this machine's grok CLI accepts after `-m` — nothing
+narrower. It is not "the grok family": `grok models` here lists 20 entries, most of them models
+the user proxied in (`deepseek-*`, `glm-5-3*`, `minimax-m3`, `kimi-k3`, `codex-*`), and the
+user's own default is `codex-sol`. The plugin does not police that list, for the same reason it
+substitutes no model of its own — the catalog is the user's. It also CANNOT police it: `grok
+models` prints names, never the provider behind an alias, and the `base_url` that would reveal
+one lives in `~/.grok/config.toml`, which this plugin deliberately never reads. So a rule like
+"entries must start with `grok-`" would forbid this user's actual default while still missing
+the duplication it was meant to prevent. The consequence is documentary and belongs where the
+list is edited: the reviewer count is a count of TRANSPORTS, not of distinct models — see the
+attribution caveat in §3.
+
 **`grok:` is a gate, `grok.models` is required inside it.** The reviewer agent demands a
 model (§3), so an empty catalog is not a runnable state. `grok.models` is required and
 non-empty when the section exists, mirroring `codex.model`. Message:

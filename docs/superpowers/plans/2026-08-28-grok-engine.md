@@ -843,6 +843,20 @@ tail -3 /tmp/cfg-task4.txt; echo "rc=$RC"
 bash skills/shared/preflight-env.sh 2>/dev/null | grep '^grok'   # a user with no grok: section -> grok MISSING
 ```
 
+When writing the `grok:` block's comments, say what the catalog MEANS — the names this
+machine's `grok` CLI accepts after `-m`, which is not the same as "the grok family" — and carry
+the attribution recommendation where the user is editing the list:
+
+```yaml
+grok:
+  # Run `grok models` to see what this machine accepts. The list is yours: it may include
+  # models proxied in from other vendors, and your default may well be one of them.
+  # Prefer keeping this catalog to the grok family. claude-mesh cannot tell that a grok alias
+  # and an ext-claude provider are the same model underneath — `grok models` prints names, not
+  # providers — so listing both makes one opinion count twice in the attribution table.
+  models: [grok-4.6, grok-4.5]
+```
+
 - [ ] **Step 3: Update the README**
 
 In the config-schema table, after the `gemini:` row:
