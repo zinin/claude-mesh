@@ -192,9 +192,16 @@ timeout 1800 grok \
 
 `runs/grok/<model>/<timestamp>-<task>/`, the shape `runs/ext-claude/<provider>/<short>/`
 already uses. A direct `/claude-mesh:grok-exec` call that names no model writes to
-`runs/grok/<timestamp>-<task>/` instead, one level up. The two never collide: the guard and
-the watcher accept a run directory only if its name matches `^[0-9]{4}(-[0-9]{2}){5}-`, so a
-model directory is never mistaken for a run, nor a run for a model. Contents: `.task_name`, `.model` (the validated model id, so the run dir and the `-m` argument can never disagree), `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`,
+`runs/grok/_default/<timestamp>-<task>/` — the SAME shape, under a fixed namespace, not a
+second shape one level up. One shape means there is no "are these two confusable" invariant to
+hold: the earlier design had to argue that a model directory could never be read as a run
+because run names match `^[0-9]{4}(-[0-9]{2}){5}-`, which is true but leans on nobody ever
+naming a model `2026-08-28-20-45-02` — a name `GROK_IDENT_RE` would accept. `_default` cannot
+collide with a real model because that charset is anchored at `[A-Za-z0-9]` and the plan's
+Global Constraints forbid widening it, for two other reasons that already depend on it. Such a
+run is a manual invocation and never enters a dispatch roster — both orchestrators always pass
+a model — so `_default` never surfaces as a reviewer name; the guard simply works on it, at no
+extra cost, should anyone want it. Contents: `.task_name`, `.model` (the validated model id, so the run dir and the `-m` argument can never disagree), `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`,
 `output.txt`, `report.md`, `stderr.txt`; supervised mode adds `attempt-N/`, `final/` and
 `watchdog.log`.
 

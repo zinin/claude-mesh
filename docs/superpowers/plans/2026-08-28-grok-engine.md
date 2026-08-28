@@ -942,7 +942,7 @@ git commit -m "refactor(exec): share the stream-json report renderer between eng
 
 **Interfaces:**
 - Consumes: `config-loader.sh data-dir`, `get-flag has_grok`, `get-grok` (Task 2); `shared/watchdog.sh`; `shared/extract-result.py`; `shared/stream-json-report.sh` (Task 5).
-- Produces: a run directory `${PLUGIN_DATA}/runs/grok/<model>/<TIMESTAMP>-<TASK_NAME>/` — or `${PLUGIN_DATA}/runs/grok/<TIMESTAMP>-<TASK_NAME>/` when no model is given — holding `.task_name`, `.model`, `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`, `output.txt`, `report.md`, `stderr.txt`, and under supervision `attempt-N/`, `final/`, `watchdog.log`.
+- Produces: a run directory `${PLUGIN_DATA}/runs/grok/<model>/<TIMESTAMP>-<TASK_NAME>/` — with `_default` in place of `<model>` when no model is given, so the shape never varies — holding `.task_name`, `.model`, `.session_id`, `prompt.md`, `raw.jsonl`, `raw.json`, `output.txt`, `report.md`, `stderr.txt`, and under supervision `attempt-N/`, `final/`, `watchdog.log`.
 - Produces: skill parameters `PROMPT` (required), `TASK_NAME`, `MODEL`, `REASONING_EFFORT`, `SUPERVISED_MODE` (`none` | `shell`).
 
 - [ ] **Step 0: Teach `extract-result.py` grok's error shape — FIRST, and with a test**
@@ -1110,10 +1110,14 @@ MODEL="$RAW_MODEL"
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 PLUGIN_DATA="$("$LOADER" data-dir)"
-# With a model: runs/grok/<model>/<ts>-<task>. Without: runs/grok/<ts>-<task>, one level up.
-# The two never collide — verify-delegation.sh and watch-runs.sh only accept a run directory
-# whose name matches ^[0-9]{4}(-[0-9]{2}){5}-, so a model directory is never read as a run.
-WORK_DIR="$PLUGIN_DATA/runs/grok${MODEL:+/$MODEL}/${TIMESTAMP}-${TASK_NAME}"
+# ONE shape, always: runs/grok/<model>/<ts>-<task>, with a model-less call landing under the
+# fixed namespace _default rather than one level up. Two shapes would need the invariant "a
+# model dir is never read as a run" — true, since run names match ^[0-9]{4}(-[0-9]{2}){5}-,
+# but it leans on nobody naming a model 2026-08-28-20-45-02, which GROK_IDENT_RE would accept.
+# _default is unreachable as a model name: the charset is anchored at [A-Za-z0-9] and the
+# Global Constraints forbid widening it. Keep them in step — if the charset ever changes, this
+# namespace must move too.
+WORK_DIR="$PLUGIN_DATA/runs/grok/${MODEL:-_default}/${TIMESTAMP}-${TASK_NAME}"
 mkdir -p "$WORK_DIR"
 echo "$TASK_NAME" > "$WORK_DIR/.task_name"
 # The validated model, so Step 2 uses the SAME string the path was built from.
@@ -1195,7 +1199,7 @@ done ; } || PIPELINE_RC=$?
 # unknown model produces: the CLI prints
 # the error on stdout AND stderr and exits 1).
 python3 "$SKILL_BASE/../shared/extract-result.py" "$WORK_DIR" || echo "WARN: extract-result.py failed" >&2
-{ [ -s "$RAW_FILE" ] && "$SKILL_BASE/../shared/stream-json-report.sh" "$RAW_FILE" "$WORK_DIR/report.md" "grok" "Grok Execution Report" "$TASK_NAME" \
+{ [ -s "$RAW_FILE" ] && "$SKILL_BASE/../shared/stream-json-report.sh" "$RAW_FILE" "$WORK_DIR/report.md" "${MODEL:-$(jq -r 'select(.type=="system") | .model // empty' "$RAW_FILE" 2>/dev/null | head -1)}" "Grok Execution Report" "$TASK_NAME" \
     || echo "WARN: report generation skipped or failed — report.md may be missing" >&2 ; } || true
 
 # The stream is the evidence. A run with events but no terminal result event is a torn stream;
