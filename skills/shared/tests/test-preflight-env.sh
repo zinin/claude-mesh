@@ -516,6 +516,12 @@ assert_no_match "…and announces no probe it never made" "probing codex" "$ERR"
 mkdir -p "$WORK/cli-grok"
 cat > "$WORK/cli-grok/grok" <<'SH'
 #!/usr/bin/env bash
+# Records EVERY invocation, before any branch. "The flag skipped the probe" is a claim about
+# what did NOT run, and no assertion on the report can make it: the skip row and the HTTP
+# fallback's row carry the same sentence, so "ran the CLI, then printed the skip message
+# anyway" is invisible from stdout. Defaults to /dev/null, so the scenarios that do not set
+# GROK_SHIM_LOG are unaffected by it.
+printf '%s\n' "$*" >> "${GROK_SHIM_LOG:-/dev/null}"
 case "${1:-}" in
   models) [ "${GROK_SHIM_FAIL:-0}" = 1 ] && { echo "not logged in" >&2; exit 1; }
           printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n' ;;
@@ -523,6 +529,7 @@ case "${1:-}" in
 esac
 SH
 chmod +x "$WORK/cli-grok/grok"
+GROK_LOG="$WORK/grok-calls.log"
 
 # No grok: section -> MISSING, and the reason says the UI will not offer it.
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/cli-grok:$PATH"
@@ -530,10 +537,17 @@ assert_eq   "no grok section -> MISSING"    MISSING "$(field grok "$OUT")"
 assert_match "and says why"                 "no grok: section" "$OUT"
 
 # Section present, CLI present, `grok models` answers -> OK, and the catalog reaches the summary.
-run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH"
+: > "$GROK_LOG"
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
+          GROK_SHIM_LOG="$GROK_LOG"
 assert_eq   "grok CLI + login -> OK"        OK "$(field grok "$OUT")"
 assert_match "summary names each grok model" "grok:grok-4.6" "$OUT"
 assert_match "…including the second one"     "grok:grok-4.5" "$OUT"
+# The POSITIVE CONTROL for the skip-network scenario below, which asserts this same log is
+# empty: an unset GROK_SHIM_LOG, a shim that never records, or a PATH that finds a different
+# grok would all satisfy "empty" for the wrong reason. Here the identical plumbing must record
+# exactly one `models` call, so "empty" there can only mean the probe was not run.
+assert_eq   "…and the CLI really was invoked, once, as \`grok models\`" "models" "$(cat "$GROK_LOG")"
 
 # The CLI is there but not logged in -> NO-NETWORK, and the hint names the fix.
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1
@@ -550,10 +564,25 @@ run_probe broken-grok-valid-codex.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
 assert_eq   "malformed grok section -> INVALID" INVALID "$(field grok "$OUT")"
 assert_match "…with the validator's own reason" "grok.models" "$OUT"
 
-# PREFLIGHT_SKIP_NETWORK must skip the command probe too, not run it silently.
-run_probe valid-grok.yaml PREFLIGHT_SKIP_NETWORK=1 PATH="$WORK/cli-grok:$SHIM:$PATH"
+# PREFLIGHT_SKIP_NETWORK must skip the command probe too, not run it silently. TWO assertions
+# are needed and neither is redundant. The message is matched against the grok ROW, not the
+# whole report: provider:zai and git-remote print that same sentence in this very scenario, so
+# an unscoped substring test is green even when the grok row says nothing of the kind — and it
+# WAS, against a build with no grok row at all. The shim's log is the other half: it separates
+# "skipped" from "ran the CLI, then printed the skip message anyway", which stdout cannot.
+: > "$GROK_LOG"
+run_probe valid-grok.yaml PREFLIGHT_SKIP_NETWORK=1 PATH="$WORK/cli-grok:$SHIM:$PATH" \
+          GROK_SHIM_LOG="$GROK_LOG"
 assert_eq   "skip-network -> UNKNOWN"        UNKNOWN "$(field grok "$OUT")"
-assert_match "…named as the flag's doing"    "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
+assert_match "…named as the flag's doing"    "skipped by PREFLIGHT_SKIP_NETWORK" "$(grep '^grok' <<<"$OUT")"
+assert_eq   "…and the CLI was never invoked" "" "$(cat "$GROK_LOG")"
+
+# No timeout(1): `timeout … grok models` would exit 127 and the row would read NO-NETWORK — a
+# not-logged-in accusation fabricated out of a missing binary, on a machine that is online and
+# logged in. Exactly the defect the git-remote gate below exists to prevent, and the same farm.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$WORK/notimeout"
+assert_eq   "no timeout(1) -> grok UNKNOWN, not NO-NETWORK" UNKNOWN "$(field grok "$OUT")"
+assert_match "…naming the missing binary"                   "timeout" "$(grep '^grok' <<<"$OUT")"
 
 # git: absent binary is MISSING, and a hanging remote is NO-NETWORK rather than a hang.
 run_probe none PREFLIGHT_GIT_BIN="$WORK/no-such-git"
@@ -564,6 +593,7 @@ assert_eq   "missing git still exits 0"        0       "$RC"
 # are present, so only the gate order can produce this verdict.
 assert_eq   "no config -> codex SKIPPED"       SKIPPED "$(field codex "$OUT")"
 assert_eq   "no config -> gemini SKIPPED"      SKIPPED "$(field gemini "$OUT")"
+assert_eq   "no config -> grok SKIPPED"        SKIPPED "$(field grok "$OUT")"
 
 # Not a repository at all: still a local fact, never a network verdict.
 mkdir -p "$WORK/gitnorepo"
