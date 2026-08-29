@@ -49,13 +49,15 @@ defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bou
     - list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the behaviour from before this feature and stays the default.
   - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (it is `defaults.code_review.claude_models`, or empty in the fallback case). Step 5a and Step 5b both dispatch "one Task per entry of `SELECTED_CLAUDE_MODELS`" **unconditionally** — the interactive path fills it in Step 2.4, and without this line the variable would simply be undefined in `default` mode. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises, and `default` mode quietly dispatches one reviewer instead of N.
   - `codex` / `gemini` in `defaults.code_review.builtin` → spawn the corresponding agent.
-  <!-- SYNC: the "no fallback" rule in the next bullet is ONE rule living in four places — this
-       bullet, this file's Step 2.45 ("An empty selection runs no grok reviewer"), the same
-       paragraph in the sibling orchestrator, and the design's §1 note that grok_models is
-       required whenever grok is in builtin. This is the twin of the marker Step 2.45 carries,
-       worded from this site exactly as the claude fallback rule's own two markers are. Change
-       all four or none: a copy that still promises a fallback would have the orchestrator
-       dispatch a reviewer the agent then refuses to start for want of a MODEL. -->
+  <!-- SYNC: the "no fallback" rule in the next bullet is ONE rule living in five places — this
+       bullet, this file's Step 2.45 ("An empty selection runs no grok reviewer"), and their two
+       twins in the sibling orchestrator (`skills/mesh-design-review/SKILL.md` Step 5.1's grok
+       preset bullet and Step 5.2.6's same paragraph), plus the design's §1 note that grok_models
+       is required whenever grok is in builtin. The count is of PHYSICAL sites, like the claude
+       fallback rule's own four-place markers — each orchestrator states the rule twice, in its
+       preset branch and on its model page, and the design doc states it once. Change all five or
+       none: a copy that still promises a fallback would have the orchestrator dispatch a
+       reviewer the agent then refuses to start for want of a MODEL. -->
   - `grok` in `defaults.code_review.builtin` → **one `grok-code-reviewer` per entry of `defaults.code_review.grok_models`**, each dispatched with `MODEL=<entry>` alone on the FIRST line of its prompt (and `BASE_BRANCH=<branch>` on the line directly under it when that argument was given — the exact shape is in Step 5a's grok bullet). Name them `grok:<model>` everywhere downstream. The config validator guarantees that list is non-empty whenever `grok` is in `builtin` (`config-loader.sh:828` — "a grok reviewer cannot start without a model"), so there is no fallback branch here and no case where `grok` in the preset dispatches nothing.
   - **Bind `SELECTED_GROK_MODELS` to `defaults.code_review.grok_models` here** (the empty list when `grok` is not in `builtin`), for the same reason `SELECTED_CLAUDE_MODELS` is bound just above: Step 5a and Step 5b consume it unconditionally, the interactive path fills it in Step 2.45, and an unbound name in a prompt raises nothing at all — the reader improvises.
   - For each model id in `defaults.code_review.models`, spawn `ext-claude-code-reviewer` with `MODEL=<id>`.
@@ -321,12 +323,15 @@ id (`grok-4.6`) — never a `<provider>/<short>` pair like ext-claude's. A slash
 sends the Step 6.0 guard to `runs/grok/<provider>/<short>`, which nothing ever writes, and it
 reports `FLIP` — "this reviewer never delegated" — about a reviewer that ran.
 
-<!-- SYNC: the "no fallback" rule for grok is ONE rule living in four places — this paragraph,
-     the preset branch of Step 0/5.1, the same paragraph in the sibling orchestrator, and the
-     design's §1 note that grok_models is required whenever grok is in builtin. It is the exact
-     mirror of the four-place SYNC marker the claude fallback rule already carries. Change all
-     four or none: a copy that still promises a fallback would have the orchestrator dispatch a
-     reviewer the agent then refuses to start for want of a MODEL. -->
+<!-- SYNC: the "no fallback" rule for grok is ONE rule living in five places — this paragraph,
+     this file's Step 0 grok preset bullet, and their two twins in the sibling orchestrator
+     (`skills/mesh-design-review/SKILL.md` Step 5.1's grok preset bullet and Step 5.2.6's same
+     paragraph), plus the design's §1 note that grok_models is required whenever grok is in
+     builtin. The count is of PHYSICAL sites, like the claude fallback rule's own four-place
+     markers — each orchestrator states the rule twice, in its preset branch and on its model
+     page, and the design doc states it once. Change all five or none: a copy that still promises
+     a fallback would have the orchestrator dispatch a reviewer the agent then refuses to start
+     for want of a MODEL. -->
 **An empty selection runs no grok reviewer — and unlike claude, there is no fallback.** The
 grok reviewer agent stops without a `MODEL`, so there is nothing to dispatch. Say so on the
 Step 2.5 confirmation page ("grok: модели не выбраны — ревьюер не запускается") and continue;
