@@ -1,0 +1,32 @@
+# A defaults: preset that references grok — the only fixture that reaches the grok half of the
+# `SUMMARY defaults <preset>` expansion. valid-grok.yaml carries the section but no presets, so
+# without this the product could print a bare `grok` on a defaults line while SUMMARY available
+# says grok:grok-4.6, and the whole suite would stay green on two names for one reviewer.
+#
+# grok_models names ONE of the two catalog entries, and a different one per preset: an expansion
+# that printed the CATALOG, or read one preset and printed it on both lines, would still satisfy
+# assertions written against a fixture where those coincide.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+grok:
+  models:
+    - grok-4.6
+    - grok-4.5
+
+defaults:
+  design_review:
+    builtin: [grok]
+    grok_models: [grok-4.6]
+    models: [zai/glm]
+  code_review:
+    builtin: [grok]
+    grok_models: [grok-4.5]

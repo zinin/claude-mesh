@@ -444,7 +444,7 @@ echo "== Task 3: CLI, git and clipboard rows =="
 # codex and gemini ship via npm, so a developer's PATH very likely has both — and then
 # "section present, CLI absent" could never be reached and the suite would be reporting the
 # laptop instead of the fixture.
-mkfarm "$WORK/nocli" codex gemini
+mkfarm "$WORK/nocli" codex gemini grok
 # `timeout` is GNU-only: absent on a stock macOS, which is exactly the unconfigured machine
 # this probe exists for.
 mkfarm "$WORK/notimeout" timeout
@@ -508,6 +508,52 @@ run_probe valid-codex-gemini.yaml PREFLIGHT_CURL_BIN="$WORK/no-such-curl" PATH="
 assert_eq   "no curl -> codex UNKNOWN"         UNKNOWN "$(field codex "$OUT")"
 assert_eq   "no curl -> its own row"           MISSING "$(field curl "$OUT")"
 assert_no_match "…and announces no probe it never made" "probing codex" "$ERR"
+
+# --- grok ---------------------------------------------------------------------------------
+# Unlike codex and gemini, grok's reachability is probed with the CLI itself: `grok models`
+# answers only when the machine has network AND a live login, and the subscription path never
+# touches the public api.x.ai an HTTP probe would have to guess at.
+mkdir -p "$WORK/cli-grok"
+cat > "$WORK/cli-grok/grok" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  models) [ "${GROK_SHIM_FAIL:-0}" = 1 ] && { echo "not logged in" >&2; exit 1; }
+          printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n' ;;
+  *)      exit 0 ;;
+esac
+SH
+chmod +x "$WORK/cli-grok/grok"
+
+# No grok: section -> MISSING, and the reason says the UI will not offer it.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/cli-grok:$PATH"
+assert_eq   "no grok section -> MISSING"    MISSING "$(field grok "$OUT")"
+assert_match "and says why"                 "no grok: section" "$OUT"
+
+# Section present, CLI present, `grok models` answers -> OK, and the catalog reaches the summary.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH"
+assert_eq   "grok CLI + login -> OK"        OK "$(field grok "$OUT")"
+assert_match "summary names each grok model" "grok:grok-4.6" "$OUT"
+assert_match "…including the second one"     "grok:grok-4.5" "$OUT"
+
+# The CLI is there but not logged in -> NO-NETWORK, and the hint names the fix.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1
+assert_eq   "grok models fails -> NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
+assert_match "…and suggests logging in"       "grok login" "$OUT"
+
+# Section present, binary absent -> MISSING (the section gate passes, the CLI gate does not).
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli"
+assert_eq   "grok binary absent -> MISSING"  MISSING "$(field grok "$OUT")"
+
+# A malformed grok: section is INVALID before any CLI or network claim — same order as codex.
+run_probe broken-grok-valid-codex.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_eq   "malformed grok section -> INVALID" INVALID "$(field grok "$OUT")"
+assert_match "…with the validator's own reason" "grok.models" "$OUT"
+
+# PREFLIGHT_SKIP_NETWORK must skip the command probe too, not run it silently.
+run_probe valid-grok.yaml PREFLIGHT_SKIP_NETWORK=1 PATH="$WORK/cli-grok:$SHIM:$PATH"
+assert_eq   "skip-network -> UNKNOWN"        UNKNOWN "$(field grok "$OUT")"
+assert_match "…named as the flag's doing"    "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
 
 # git: absent binary is MISSING, and a hanging remote is NO-NETWORK rather than a hang.
 run_probe none PREFLIGHT_GIT_BIN="$WORK/no-such-git"
@@ -779,6 +825,18 @@ assert_match "…and the orchestrator's spelling on the preset line" \
     "SUMMARY defaults design_review: claude, zai/glm" "$OUT"
 assert_eq "…and the two are reconciled, not reported as a mismatch" "" "$(defaults_not_available "$OUT")"
 
+# The grok half of the same expansion, and the reason it has to exist: SUMMARY available spells
+# this reviewer grok:<model>, so a defaults line printing a bare `grok` would name a reviewer the
+# available line never offers, and the membership check would answer the wrong question. The
+# preset's grok_models is a strict SUBSET of the catalog, and differs per preset, on purpose.
+run_probe valid-grok-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "grok on a defaults line is spelled grok:<model>" \
+    "SUMMARY defaults design_review: grok:grok-4.6, zai/glm" "$OUT"
+assert_match "…from the preset's own list, not the whole catalog" \
+    "SUMMARY defaults code_review: grok:grok-4.5" "$OUT"
+assert_eq "…so default mode stays a plain membership check" "" "$(defaults_not_available "$OUT")"
+
 # A fast re-run probes nothing, so every network verdict is UNKNOWN. UNKNOWN is not a degraded
 # OK — treating it as unavailable reports a fully working machine as "claude only", and the
 # reading session cannot see the flag it did not set. The summary has to say so itself.
@@ -824,7 +882,7 @@ assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin yq jq config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "plugin yq jq config builtin-claude claude-models codex gemini grok provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines

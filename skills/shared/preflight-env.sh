@@ -181,8 +181,13 @@ toolchain_row jq "$JQ_BIN"
 CONFIG_STATUS=""
 CONFIG_DETAIL=""
 MODELS=""
+# The CLI-reviewer gates are initialised HERE, outside the CONFIG_STATUS=OK branch that reads
+# them: cli_row runs unconditionally, so on any path where the config is not usable `set -u`
+# would abort the whole probe on an unbound flag — killing rows, and the SUMMARY, that have
+# nothing to do with the section in question.
 HAS_CODEX=0
 HAS_GEMINI=0
+HAS_GROK=0
 # WHICH way the probe failed to decide. UNKNOWN has more than one cause and their fixes have
 # nothing in common, so the blocker hint at the bottom branches on this rather than guessing
 # from TOOLCHAIN_MISSING — see the case there. Set it wherever CONFIG_STATUS becomes UNKNOWN.
@@ -278,6 +283,7 @@ row config "$CONFIG_STATUS" "$CONFIG_DETAIL"
 row builtin-claude OK "needs no config section (orchestrators still need config.yaml)"
 
 CLAUDE_MODELS=""
+GROK_MODELS=""
 # A rejected catalog and an absent one both leave CLAUDE_MODELS empty, and the summary at the
 # bottom has to tell them apart: "no catalog" means one claude reviewer on the dispatch model,
 # "rejected" means the orchestrator exits on this very read and offers nothing at all.
@@ -307,6 +313,17 @@ if [ "$CONFIG_STATUS" = "OK" ]; then
     fi
     HAS_CODEX="$(bash "$LOADER" get-flag has_codex 2>/dev/null)" || HAS_CODEX=0
     HAS_GEMINI="$(bash "$LOADER" get-flag has_gemini 2>/dev/null)" || HAS_GEMINI=0
+    # `get-flag has_grok` VALIDATES the section before answering, unlike the bare has_codex and
+    # has_gemini probes above — so a MALFORMED section makes it exit non-zero instead of
+    # printing 0. Falling back to 0 there would report a config error as "the user never asked
+    # for grok" and print MISSING; 1 means "section present, not valid", which lets the row
+    # below reach its own get-grok probe and surface the validator's own first line — the same
+    # way the claude-models row does.
+    HAS_GROK="$(bash "$LOADER" get-flag has_grok 2>/dev/null)" || HAS_GROK=1
+    # The catalog feeds the SUMMARY line, which must spell reviewer names exactly as the
+    # orchestrators do: grok:grok-4.6, like claude:opus. A failed read leaves it empty and the
+    # row below reports the section as INVALID through the typed getter.
+    GROK_MODELS="$(bash "$LOADER" list-grok-models 2>/dev/null)" || GROK_MODELS=""
 else
     row claude-models SKIPPED "no usable config"
 fi
@@ -363,7 +380,13 @@ probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
 # echo the verdict: the caller would have to capture its stdout, and the row would vanish into
 # that same capture instead of reaching the report.
 CLI_STATUS=""
-cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_section flag
+cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_section flag, $5 = probe command (optional)
+                        # $5 is deliberately UNQUOTED at the call below: it must split into argv
+                        # ("grok models" -> two words). That makes word splitting part of this
+                        # function's public contract, so a caller may never pass a value
+                        # carrying spaces-in-one-argument, and glob characters must be disabled
+                        # around the expansion (`set -f` / `set +f`) or a probe like `foo *`
+                        # would expand against the cwd.
     if [ "$CONFIG_STATUS" != "OK" ]; then
         CLI_STATUS="SKIPPED"
         row "$1" SKIPPED "no usable config — the selection UI cannot offer it"
@@ -397,6 +420,36 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
         row "$1" MISSING "$2 not on PATH"
         return 0
     fi
+    # An OPTIONAL command probe replaces the HTTP one for a CLI whose reachability an HTTP
+    # request cannot answer. grok is the case: on a grok.com subscription the traffic goes
+    # through a relay, not through the public api.x.ai, so a curl there would report on an
+    # endpoint this CLI never calls — while `grok models` answers only with network AND a live
+    # login, and prints nothing secret. Same degrade-toward-UNKNOWN discipline as probe_http:
+    # the flag skips it, and only a clean exit is allowed to mean OK.
+    if [ -n "${5:-}" ]; then
+        if [ "$SKIP_NET" = 1 ]; then
+            CLI_STATUS="UNKNOWN"
+            row "$1" UNKNOWN "CLI present, skipped by PREFLIGHT_SKIP_NETWORK"
+        elif ! command -v timeout >/dev/null 2>&1; then
+            CLI_STATUS="UNKNOWN"
+            row "$1" UNKNOWN "CLI present, no timeout(1) — \`$5\` not run (brew install coreutils)"
+        else
+            local rc
+            echo "probing $1 (\`$5\`)…" >&2
+            set -f                                   # see the contract note on $5 above
+            # shellcheck disable=SC2086
+            timeout "$HTTP_TIMEOUT" $5 >/dev/null 2>&1; rc=$?
+            set +f                                   # restored on BOTH paths, before any branch
+            if [ "$rc" -eq 0 ]; then
+                CLI_STATUS="OK"
+                row "$1" OK "CLI present, \`$5\` answered (checks login as well as network)"
+            else
+                CLI_STATUS="NO-NETWORK"
+                row "$1" NO-NETWORK "CLI present, \`$5\` failed or timed out after ${HTTP_TIMEOUT}s — no network, or not logged in (\`$2 login\`)"
+            fi
+        fi
+        return 0
+    fi
     # Announce only a probe that will actually happen — same order as the provider loop below.
     # "probing codex…" followed by an UNKNOWN row would describe work the probe never did.
     if [ "$SKIP_NET" = 0 ] && [ "$HAVE_CURL" = 1 ]; then
@@ -420,6 +473,9 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
 
 cli_row codex  "codex"  "https://api.openai.com/v1/models"           "$HAS_CODEX";  CODEX_STATUS="$CLI_STATUS"
 cli_row gemini "gemini" "https://generativelanguage.googleapis.com/" "$HAS_GEMINI"; GEMINI_STATUS="$CLI_STATUS"
+# The URL argument is unused when a command probe is given; pass the CLI's own docs host so the
+# row's shape stays uniform and a future reader can see what an HTTP fallback would target.
+cli_row grok   "grok"   "https://api.x.ai/v1/models"                 "$HAS_GROK" "grok models"; GROK_STATUS="$CLI_STATUS"
 
 # ---------------------------------------------------------------- providers
 # Models of one provider share an endpoint, so probe once per provider and let Task 4 expand
@@ -763,6 +819,21 @@ fi
 # spells out its progress gate rather than chaining it (SC2015).
 if [ "$CODEX_STATUS"  = "OK" ]; then add_avail codex;  else add_unavail "codex ($CODEX_STATUS)";   fi
 if [ "$GEMINI_STATUS" = "OK" ]; then add_avail gemini; else add_unavail "gemini ($GEMINI_STATUS)"; fi
+if [ "$GROK_STATUS" = "OK" ]; then
+    # One entry per catalog model, exactly as claude expands over claude.models above. The bare
+    # `grok` fallback cannot normally happen — the validator requires a non-empty catalog
+    # whenever the section exists — but a reader is better served by a name than by silence if
+    # some future config shape reaches here with an empty list.
+    if [ -n "$GROK_MODELS" ]; then
+        while IFS= read -r GM; do
+            [ -n "$GM" ] && add_avail "grok:$GM"
+        done <<< "$GROK_MODELS"
+    else
+        add_avail grok
+    fi
+else
+    add_unavail "grok ($GROK_STATUS)"
+fi
 
 if [ -n "$MODELS" ]; then
     while IFS='|' read -r MID _LABEL; do
@@ -796,12 +867,22 @@ fi
 for PRESET in design_review code_review; do
     DLIST="—"
     if [ "$CONFIG_STATUS" = "OK" ] && DJ="$(bash "$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
+        # grok is expanded over grok_models exactly as claude is over claude_models, and for a
+        # harder reason: SUMMARY available spells this reviewer grok:<model>, so a bare `grok`
+        # here would print two different names for one reviewer and break the very membership
+        # check this line exists for. The validator guarantees a non-empty grok_models whenever
+        # `grok` is in builtin, so the expansion is always defined.
         DLIST="$("$JQ_BIN" -r '
-            ((.builtin // []) | map(select(. != "claude"))) +
+            ((.builtin // []) | map(select(. != "claude" and . != "grok"))) +
             (if ((.builtin // []) | index("claude")) then
                  (if ((.claude_models // []) | length) > 0
                   then (.claude_models | map("claude:" + .))
                   else ["claude"] end)
+             else [] end) +
+            (if ((.builtin // []) | index("grok")) then
+                 (if ((.grok_models // []) | length) > 0
+                  then (.grok_models | map("grok:" + .))
+                  else ["grok"] end)
              else [] end) +
             (.models // []) | join(", ")' <<<"$DJ")"
         # "—" alone would be read as "not answered", which is what the no-config case above
