@@ -140,101 +140,11 @@
 
 ### Task 14: Acceptance — a live review with grok
 
-The suites prove the parts. This proves the chain: config → UI → agent → skill → CLI → run dir
-→ guard → findings.
-
-**Files:** none modified. This task either passes or sends you back to a specific task.
-
-- [ ] **Step 1: Configure the live plugin**
-
-**Ask the user to add this to their `config.yaml`; do not edit it yourself.** The file is
-user-owned — the first Global Constraint of this plan says validators report and agents never
-fix, and "or have them do it" leaves the wrong door open. The commands below only print and
-check; the edit is the user's:
-
-```bash
-cd /opt/github/zinin/claude-mesh
-DATA="$(bash skills/shared/config-loader.sh data-dir)"
-echo "$DATA/config.yaml"
-grep -n 'grok' "$DATA/config.yaml" || printf '%s\n' "no grok section yet — add:" "grok:" "  models: [grok-4.6, grok-4.5]" "  reasoning_effort: xhigh"
-```
-
-Then verify:
-
-```bash
-bash skills/shared/config-loader.sh validate; echo "rc=$?"
-bash skills/shared/config-loader.sh list-grok-models
-bash skills/shared/preflight-env.sh 2>/dev/null | grep -E '^grok|SUMMARY available'
-```
-
-Expected: `rc=0`, both models listed, `grok OK`, and `grok:grok-4.6` on the available line.
-
-- [ ] **Step 2: Run one grok reviewer end to end**
-
-In a session with the plugin loaded, run `/claude-mesh:mesh-review` and select **only** the
-grok reviewer with one model. Let it finish.
-
-- [ ] **Step 3: Verify the run on disk**
-
-```bash
-cd /opt/github/zinin/claude-mesh
-DATA="$(bash skills/shared/config-loader.sh data-dir)"
-RD="$(ls -td "$DATA"/runs/grok/*/*/ 2>/dev/null | head -1)"
-echo "RUN=$RD"
-ls -la "$RD"
-echo "--- terminal event:"; grep -c '"type":"result"' "$RD/raw.jsonl"
-echo "--- num_turns:"; grep '"type":"result"' "$RD/raw.jsonl" | jq -r 'select(.is_error==false)|.num_turns' | sort -n | tail -1
-echo "--- review size:"; tr -d '[:space:]' < "$RD/output.txt" | wc -c
-```
-
-Expected: a run directory two levels under `runs/grok/` (model, then timestamp), one or more
-`result` events, `num_turns` well above 1, and an `output.txt` far above the 400-byte floor.
-
-- [ ] **Step 4: Verify the guard agrees**
-
-```bash
-cd /opt/github/zinin/claude-mesh
-DATA="$(bash skills/shared/config-loader.sh data-dir)"
-RD="$(ls -td "$DATA"/runs/grok/*/*/ 2>/dev/null | head -1)"
-MODEL="$(basename "$(dirname "$RD")")"
-SINCE="$(( $(date +%s) - 7200 ))"
-bash skills/shared/verify-delegation.sh grok "$MODEL" "$SINCE" "$DATA"; echo "rc=$?"
-```
-
-Expected: `REAL` on stdout, `rc=0`. Any other verdict is a real finding — read the reason on
-stderr and fix the task it points at (`FLIP` → the agent never called the skill, Task 7;
-`STALLED` with no result event → the flag set in Task 6; `BROKEN` → the model answered without
-reading code, which is a prompt problem, not a plumbing one).
-
-- [ ] **Step 5: Run every suite one last time**
-
-The loop must ACCUMULATE failures and exit non-zero. As written before this fix it printed
-`FAILED` and moved on, so an acceptance step could end green with three suites broken:
-
-```bash
-cd /opt/github/zinin/claude-mesh
-FAILED=0
-for t in test-config-loader test-verify-delegation test-watch-runs test-preflight-env test-command-sync test-extract-result test-render-template test-loader-resolution test-check-context-size; do
-    printf '%-28s ' "$t"
-    if bash "skills/shared/tests/$t.sh" >/tmp/"$t".log 2>&1; then echo OK
-    else echo FAILED; FAILED=$((FAILED+1)); tail -5 /tmp/"$t".log; fi
-done
-GROK_SMOKE=1 bash skills/shared/tests/test-grok-exec-smoke.sh > /tmp/smoke.txt 2>&1 \
-    || FAILED=$((FAILED+1))
-tail -2 /tmp/smoke.txt
-echo "suites failed: $FAILED"
-[ "$FAILED" -eq 0 ] || { echo "ACCEPTANCE NOT MET"; exit 1; }
-```
-
-Expected: `OK` on every line, `0 failed` from the smoke test, `suites failed: 0`, rc 0. If the
-smoke test SKIPs because `GROK_SMOKE` was forgotten or `grok` is absent, that is not a pass —
-read its output and say which.
-
-- [ ] **Step 6: Commit the acceptance record**
-
-```bash
-git commit --allow-empty -m "test(grok): live /mesh-review acceptance run verified REAL"
-```
+✅ Done — see commit(s): `d8bfb7b` (the acceptance record). The run also produced three
+branch fixes: `56f9a22` (the example's grok catalog could not run beside its own effort
+value), `f8edb51` (four auto-fixes plus the trailing-line loss in every stream consumer)
+and `8c8583f` (a referenced broken grok catalog now degrades grok instead of grounding the
+environment). Full evidence in the SDD ledger.
 
 ---
 
