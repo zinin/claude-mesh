@@ -185,7 +185,7 @@ grok:
   # Catalog of grok models offered when you pick the built-in `grok` reviewer. REQUIRED when
   # this section exists, and it must hold at least one entry: the grok reviewer agent refuses
   # to start without a model, so an empty catalog would offer a reviewer that cannot run.
-  # (This is the one place grok differs from claude:, whose catalog is optional.)
+  # (claude:'s catalog is optional; this one is not — and note the narrower CHARSET below.)
   #
   # Each entry becomes ONE independent reviewer, exactly as under claude: — same diff, same
   # prompt, different model.
@@ -223,12 +223,14 @@ grok:
 # is [optional] too.
 defaults:
   code_review:                                 # used by: /mesh-review default
-    builtin: [claude, codex, gemini]           # [optional] list; subset of { claude, codex, gemini }.
+    builtin: [claude, codex, gemini, grok]     # [optional] list; subset of { claude, codex, gemini, grok }.
                                                #   claude  — your own Claude Code via superpowers:requesting-code-review
                                                #             (needs NO config section; see claude: above to fan it
                                                #             out over several models).
                                                #   codex   — requires the codex: section above.
                                                #   gemini  — requires the gemini: section above.
+                                               #   grok    — requires the grok: section above AND a non-empty
+                                               #             grok_models below; see that key for why.
     claude_models: [opus, fable]               # [optional] list; each entry must be in the claude.models
                                                #   catalog above, and "claude" must be present in builtin.
                                                #   In `default` mode: one reviewer per entry, each overriding
@@ -238,6 +240,19 @@ defaults:
                                                #   Omit it and `default` mode runs exactly ONE claude reviewer,
                                                #   on runtime.dispatch_model — or on your current session model
                                                #   when that is unset — i.e. the behaviour from before this feature.
+    grok_models: [grok-4.6, grok-4.5]          # [optional] list; each entry must be in the grok.models
+                                               #   catalog above. Same reviewer-per-entry and ★-recommended
+                                               #   semantics as claude_models — but the pairing with builtin
+                                               #   is REQUIRED IN BOTH DIRECTIONS, and each direction is a
+                                               #   hard error, never a silent skip:
+                                               #     grok_models without "grok" in builtin  -> config invalid
+                                               #     "grok" in builtin without grok_models  -> config invalid
+                                               #   There is no single-reviewer fallback the way claude has one:
+                                               #   the grok reviewer agent cannot start without a model, so
+                                               #   there is nothing to fall back TO.
+                                               #   COST, as under claude:. This preset as shipped is TEN
+                                               #   reviewers of one diff: 2 claude + codex + gemini + 2 grok
+                                               #   + 4 external. Trim the lists before using it as-is.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # [optional] list; each entry must be a model id from section 2.
     run_mode: background                       # [optional] valid: background | team
@@ -249,9 +264,11 @@ defaults:
                                                #         works poorly — prefer 'background' (the default).
 
   design_review:                               # used by: /mesh-design-review default
-    builtin: [claude, codex, gemini]           # [optional] same valid set { claude, codex, gemini }.
+    builtin: [claude, codex, gemini, grok]     # [optional] same valid set { claude, codex, gemini, grok }.
     claude_models: [opus]                      # [optional] deliberately narrower than code_review's —
                                                #   the two presets are independent.
+    grok_models: [grok-4.6]                    # [optional] narrower than code_review's for the same reason.
+                                               #   Still required, because "grok" is in builtin above.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # NOTE: design_review has NO run_mode field (ignored if present).
 
@@ -271,7 +288,7 @@ runtime:
                                                #   150k milestone, so a lower STOP could never fire).
                                                #   `/do-plan <N>` overrides this for a single invocation.
 
-  # /mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/ext-claude)
+  # /mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/grok/ext-claude)
   # flips to self-review (no run dir) or stalls mid-flight, re-dispatch it up to this many
   # rounds. Three verdicts are never retried, because a second identical run cannot differ:
   # BROKEN (the engine finished having done no work — swap the model instead), DEGRADED (the
@@ -296,8 +313,8 @@ runtime:
     stall_sec: 600                             # no output for this long → supervised mode kills and retries;
                                                #   the /mesh-review and /mesh-design-review watcher
                                                #   (shared/watch-runs.sh) reports the run SILENT. default 600.
-                                               #   The watcher floors this at 600: codex-exec and gemini-exec
-                                               #   hardcode HARD_ZERO_TIMEOUT=600 and ignore this key, so a
+                                               #   The watcher floors this at 600: codex-exec, gemini-exec and
+                                               #   grok-exec hardcode HARD_ZERO_TIMEOUT=600 and ignore it, so a
                                                #   lower value would call a live run silent before its own
                                                #   watchdog acts on it.
     global_sec: 3600                           # supervised mode: overall wall-clock budget. default 3600
