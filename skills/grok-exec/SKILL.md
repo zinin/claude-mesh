@@ -137,9 +137,24 @@ echo "OK: python3 found"
 
 # Soft gate: warn (don't STOP) if the optional grok: block is unconfigured. grok handles its
 # own auth, so an absent block is non-fatal for a direct call — it only means no catalog and
-# no configured effort. get-flag emits 1/0 — compare to "1".
-if [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_grok 2>/dev/null)" != "1" ]; then
-    echo "WARN: grok: block not configured in config.yaml (grok uses its own auth — continuing)"
+# no configured effort. But BRANCH ON THE rc, never on stdout alone: has_grok VALIDATES the
+# section (unlike the bare has_codex / has_gemini probes), so a MALFORMED catalog exits 1 with
+# an empty stdout, and a bare `!= "1"` then reports "not configured" for a section that is
+# right there — the user hunts for something that is not missing while this run silently falls
+# back to whatever ~/.grok/config.toml names as default, which need not even be a grok model.
+# rc=2 is the separate "no config.yaml at all", which IS unconfigured, so it keeps the warning.
+# The review path states the same rule at skills/grok-code-review/SKILL.md:102-108; it STOPs on
+# every non-zero rc because a review cannot start without a model, while a direct call can.
+if [ -x "$LOADER" ]; then
+    GROK_ERR=$(mktemp) || { echo "STOP: mktemp failed"; exit 1; }
+    FLAG_RC=0
+    HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GROK_ERR") || FLAG_RC=$?
+    if [ "$FLAG_RC" -eq 1 ]; then
+        echo "STOP: the grok: section in config.yaml does not validate — config.yaml is user-owned; agents never edit it. The loader says:"
+        cat "$GROK_ERR"; rm -f "$GROK_ERR"; exit 1
+    fi
+    rm -f "$GROK_ERR"
+    [ "$HAS_GROK" = "1" ] || echo "WARN: grok: block not configured in config.yaml (grok uses its own auth — continuing)"
 fi
 ```
 
@@ -289,7 +304,7 @@ PIPELINE_RC=0
     --output-format streaming-messages-json \
     --permission-mode bypassPermissions \
     --no-plan \
-    ${GROK_ARGS[@]+"${GROK_ARGS[@]}"} 2>"$WORK_DIR/stderr.txt" | while IFS= read -r line; do
+    ${GROK_ARGS[@]+"${GROK_ARGS[@]}"} 2>"$WORK_DIR/stderr.txt" | while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line" >> "$RAW_FILE"
     TYPE=$(printf '%s' "$line" | jq -r '.type // empty' 2>/dev/null)
     case "$TYPE" in

@@ -69,8 +69,17 @@ OUTPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/n
     echo "---"
     echo ""
 
-    # Process each message
-    while IFS= read -r line; do
+    # Process each message.
+    # `|| [ -n "$line" ]` keeps the LAST line when the log ends without a trailing newline: a
+    # bare `read` returns non-zero on that final partial line and the loop drops it silently.
+    # Here that costs the last assistant/user message — this loop has no `result` arm, so it is
+    # the message text that goes missing, not the terminal event. The same truncation is far
+    # more expensive one layer down, in the exec skills that WRITE this log: their loop appends
+    # each line to raw.jsonl, so a dropped final line removes the `result` event from the file
+    # itself, and verify-delegation.sh scores a completed run STALLED for want of it.
+    # ext-claude's own stream consumer has always handled this case explicitly
+    # (ext-claude-exec/progress-monitor.sh: "EOF — process any trailing partial line").
+    while IFS= read -r line || [ -n "$line" ]; do
         TS=$(echo "$line" | sed 's/^\[\([^]]*\)\].*/\1/')
         JSON=$(echo "$line" | sed 's/^\[[^]]*\] //')
         TYPE=$(echo "$JSON" | jq -r '.type' 2>/dev/null)

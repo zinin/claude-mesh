@@ -238,7 +238,7 @@ PIPELINE_RC=0
     -m "$MODEL" \
     -c "model_reasoning_effort=\"$REASONING_LEVEL\"" \
     -o "$OUTPUT_FILE" \
-    - 2>"$WORK_DIR/stderr.txt" | while IFS= read -r line; do
+    - 2>"$WORK_DIR/stderr.txt" | while IFS= read -r line || [ -n "$line" ]; do
     TS=$(date +%H:%M:%S)
     echo "[$TS] $line" >> "$LOG_FILE"
     TYPE=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)

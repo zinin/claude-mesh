@@ -266,6 +266,8 @@ assert_eq "design review never dispatches grok-code-reviewer" "0" \
     "$(grep -c 'claude-mesh:grok-code-reviewer' "$DESIGN_SKILL")"
 assert_ge "mesh-review dispatches grok-code-reviewer" "1" \
     "$(grep -c 'claude-mesh:grok-code-reviewer' "$MESH_REVIEW")"
+assert_eq "mesh-review never dispatches grok-executor" "0" \
+    "$(grep -c 'claude-mesh:grok-executor' "$MESH_REVIEW")"
 
 # The per-model selection list, in BOTH files. 4 is a floor, not a measurement: each
 # orchestrator has to default it to empty, fill it from the config or the selection page,

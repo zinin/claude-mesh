@@ -1429,11 +1429,17 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$
 assert_exit "has_grok exits 1 on a malformed section" "1" "$RC"
 
 # The same must hold for the PRESET read, which every orchestrator and preflight-env.sh runs
-# before anything else. Both get-defaults assertions below pass TRIVIALLY today, because
-# validate_defaults does not touch grok yet — that is deliberate. They are the standing
-# regression for the LAZY grok check the next task wires into validate_defaults: the day the
-# full catalog check creeps onto that path, a typo in grok.models grounds every codex and
-# gemini row, and these two assertions are what go red.
+# before anything else. Since Task 3 validate_defaults DOES reach the grok catalog — but only
+# when a preset references grok, which this fixture's `builtin: [codex]` deliberately does not.
+# So the assertion below pins the UNREFERENCED half of the lazy check, and that half holds: a
+# typo in grok.models must not ground the codex and gemini rows of a config that never asked
+# for grok.
+# The REFERENCED half is not covered by any fixture. Measured 2026-08-29 on a config of
+# config.example.yaml's own shape (grok in both presets' builtin): both get-defaults calls exit
+# 1 and preflight-env.sh prints `config INVALID` with EVERY row SKIPPED and `SUMMARY available:
+# —`. The earlier wording here predicted exactly that ("the day the full catalog check creeps
+# onto that path … these two assertions are what go red") and was wrong about one thing only:
+# they cannot go red, because the fixture holds the one shape the defect cannot reach.
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-defaults still answers with a malformed grok section" "0" "$RC"
 
