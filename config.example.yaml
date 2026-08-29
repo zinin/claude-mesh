@@ -205,13 +205,23 @@ grok:
   # CHARSET: [A-Za-z0-9._-] (first char alphanumeric), narrower than claude.models. A grok
   # model id becomes a directory name (runs/grok/<model>/) and a roster entry for the run
   # watcher, and neither accepts ':'.
-  models: [grok-4.6, grok-4.5]                 # [required when grok: present, >=1 entry]
+  models: [grok-4.6]                           # [required when grok: present, >=1 entry]
 
-  # [optional] known values as of 2026-08 (grok 1.0.5): low | medium | high | xhigh | max.
-  # NOT an enum — the set goes stale as xAI ships levels, so `grok --help` is the current
-  # source. Unknown values pass through with a WARN (the grok CLI validates them). One value
-  # for the whole section, not per model. Omit it and the CLI's own default applies
-  # (~/.grok/config.toml, [models] default_reasoning_effort).
+  # [optional] values this loader passes without a WARN, as of 2026-08 (grok 1.0.5):
+  # low | medium | high | xhigh | max. NOT an enum — the set goes stale as xAI ships levels,
+  # so unknown values pass through with a WARN and the grok CLI decides.
+  #
+  # One value for the whole section — but the CLI validates it PER MODEL, and rejects at
+  # ARGUMENT PARSING with rc=1, before any API call, so an unsupported pair costs you the
+  # whole reviewer run and no diagnostic from here. Measured 2026-08-29 on grok 1.0.5:
+  # grok-4.6 accepts xhigh|high|medium|low, grok-4.5 only high|medium|low, and that CLI's
+  # own default model all five — three different sets behind one binary. So the value must
+  # be valid for EVERY entry of the catalog above, which is why this example ships one
+  # model beside `xhigh` rather than two. To read a model's own set for free (it fails on
+  # the flag, never reaching the API): `grok -m <id> --effort __bogus__ -p x`.
+  #
+  # Omit the key and the CLI's own default applies (~/.grok/config.toml, [models]
+  # default_reasoning_effort) — which is per-CLI, not per-model, and may well be `low`.
   reasoning_effort: xhigh
 
 
@@ -240,7 +250,7 @@ defaults:
                                                #   Omit it and `default` mode runs exactly ONE claude reviewer,
                                                #   on runtime.dispatch_model — or on your current session model
                                                #   when that is unset — i.e. the behaviour from before this feature.
-    grok_models: [grok-4.6, grok-4.5]          # [optional] list; each entry must be in the grok.models
+    grok_models: [grok-4.6]                    # [optional] list; each entry must be in the grok.models
                                                #   catalog above. Same reviewer-per-entry and ★-recommended
                                                #   semantics as claude_models — but the pairing with builtin
                                                #   is REQUIRED IN BOTH DIRECTIONS, and each direction is a
@@ -250,8 +260,8 @@ defaults:
                                                #   There is no single-reviewer fallback the way claude has one:
                                                #   the grok reviewer agent cannot start without a model, so
                                                #   there is nothing to fall back TO.
-                                               #   COST, as under claude:. This preset as shipped is TEN
-                                               #   reviewers of one diff: 2 claude + codex + gemini + 2 grok
+                                               #   COST, as under claude:. This preset as shipped is NINE
+                                               #   reviewers of one diff: 2 claude + codex + gemini + 1 grok
                                                #   + 4 external. Trim the lists before using it as-is.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # [optional] list; each entry must be a model id from section 2.
