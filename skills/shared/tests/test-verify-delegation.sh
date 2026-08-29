@@ -1352,6 +1352,26 @@ assert_eq "exit 1 (usage error, no verdict)" "1" "$RC"
 assert_eq "no verdict printed" "" "$VERDICT"
 rm -rf "$TDIR"
 
+echo "=== Test: grok rejects a model that is not a catalog id ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/grok"
+# `<provider>/<short>` is ext-claude's spelling, and both orchestrators TEMPLATE this call, so
+# it is the copy-paste that actually happens. It used to pass the guard and resolve
+# runs/grok/zai/glm — a path nothing ever writes — reported as FLIP, i.e. "this reviewer never
+# delegated", about a reviewer that ran and delivered. Usage error, not a verdict.
+run grok zai/glm 1 "$TDIR"
+assert_eq "slashed model: exit 1 (usage error)" "1" "$RC"
+assert_eq "slashed model: no verdict printed" "" "$VERDICT"
+# Anchored at the first character, like GROK_IDENT_RE: a leading dot would climb out of the
+# runs tree once joined to a path.
+run grok .hidden 1 "$TDIR"
+assert_eq "leading dot: exit 1 (usage error)" "1" "$RC"
+# The positive control that stops the new pattern from rejecting everything: a real catalog id
+# reaches a VERDICT. There is no run dir, so that verdict is FLIP (exit 3), not a usage error.
+run grok grok-4.6 1 "$TDIR"
+assert_eq "a real catalog id still reaches a verdict" "3" "$RC"
+assert_eq "…and that verdict is FLIP" "FLIP" "$VERDICT"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

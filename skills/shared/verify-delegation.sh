@@ -133,6 +133,14 @@ case "$ENGINE" in
     grok)
         case "$MODEL" in
             ''|'-') echo "verify-delegation: engine grok requires a model argument (e.g. grok-4.6), got '${MODEL:-}'" >&2; exit 1 ;;
+            # Same charset as GROK_IDENT_RE in config-loader.sh, and for the same reason: this
+            # value becomes a path component. A config-sourced model cannot fail it — the loader
+            # already rejected anything else — but this script is also a CLI entry point and BOTH
+            # orchestrators TEMPLATE the call, so the spelling that actually arrives wrong is
+            # ext-claude's <provider>/<short>. That resolved runs/grok/<provider>/<short>, a path
+            # nothing ever writes, and was then reported as FLIP — "this reviewer never
+            # delegated" — about a reviewer that ran and delivered its review.
+            *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "verify-delegation: engine grok model '$MODEL' is not a catalog id (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. grok-4.6; <provider>/<short> is ext-claude's spelling)" >&2; exit 1 ;;
         esac
         BASE="$DATA_DIR/runs/grok/$MODEL" ;;
     codex)      BASE="$DATA_DIR/runs/codex" ;;

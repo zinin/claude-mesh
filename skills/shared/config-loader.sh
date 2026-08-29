@@ -1140,8 +1140,8 @@ cmd_get_flag() {
     #         documented getters. The exact contract is per-case.
     # Exit:   0 for every documented feature once the config loads — load_or_die
     #         still owns rc=2 ("no config.yaml"). die() fires (rc=1) on an unknown
-    #         feature name AND from the three validator-backed cases
-    #         (has_claude_models, do_plan_default_stop_tokens, dispatch_model),
+    #         feature name AND from the four validator-backed cases
+    #         (has_claude_models, has_grok, do_plan_default_stop_tokens, dispatch_model),
     #         which surface the validator's own message on a malformed section:
     #         a consumer telling "absent" from "broken" must check rc, not stdout.
     local feature="${1:-}"
@@ -1301,9 +1301,22 @@ cmd_get_defaults() {
     # grok_degraded: true means the preset named grok but its catalog would not validate, so
     # grok has been REMOVED from builtin and grok_models emptied — the caller must not dispatch
     # a grok reviewer, and in `default` mode must say out loud that it is not running one.
-    # False on every healthy config, including one whose broken grok: section no preset touches.
+    # False on every healthy config, including one whose broken grok: section no preset touches
+    # — and on a preset that does not itself reference grok while its SIBLING does.
+    # GROK_CATALOG_BROKEN is ONE variable for the whole run, because validate_defaults walks both
+    # presets in a single pass; the flag alone therefore cannot say which preset asked for grok.
+    # Emitted unfiltered it told a code_review caller that a reviewer was not running when
+    # code_review had never asked for one — spending the only signal that reports a MISSING
+    # REQUESTED reviewer on a reviewer nobody requested, and sending the user to edit a user-owned
+    # config.yaml over a review that was not degraded at all. $category is already restricted to
+    # code_review|design_review at the top of this function, so it is safe to interpolate here
+    # exactly as it is in the jq below.
+    local grok_refs
+    grok_refs=$(jq "([(.defaults.${category}.builtin // [])[] | select(. == \"grok\")] | length) + ((.defaults.${category}.grok_models // []) | length)" "$CONFIG_JSON" 2>/dev/null) || grok_refs=0
     local gd=false
-    [ "$GROK_CATALOG_BROKEN" -eq 1 ] && gd=true
+    if [ "$GROK_CATALOG_BROKEN" -eq 1 ] && [ "${grok_refs:-0}" -gt 0 ]; then
+        gd=true
+    fi
     jq -c --argjson gd "$gd" "{builtin: ((.defaults.${category}.builtin // []) | if \$gd then map(select(. != \"grok\")) else . end), claude_models: (.defaults.${category}.claude_models // []), grok_models: (if \$gd then [] else (.defaults.${category}.grok_models // []) end), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null), grok_degraded: \$gd}" "$CONFIG_JSON"
 }
 

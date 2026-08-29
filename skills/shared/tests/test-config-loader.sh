@@ -1434,12 +1434,12 @@ assert_exit "has_grok exits 1 on a malformed section" "1" "$RC"
 # So the assertion below pins the UNREFERENCED half of the lazy check, and that half holds: a
 # typo in grok.models must not ground the codex and gemini rows of a config that never asked
 # for grok.
-# The REFERENCED half is not covered by any fixture. Measured 2026-08-29 on a config of
-# config.example.yaml's own shape (grok in both presets' builtin): both get-defaults calls exit
-# 1 and preflight-env.sh prints `config INVALID` with EVERY row SKIPPED and `SUMMARY available:
-# —`. The earlier wording here predicted exactly that ("the day the full catalog check creeps
-# onto that path … these two assertions are what go red") and was wrong about one thing only:
-# they cannot go red, because the fixture holds the one shape the defect cannot reach.
+# The REFERENCED half is covered further down, by broken-grok-referenced.yaml — and the
+# CROSS-PRESET half by broken-grok-one-preset.yaml. Both fixtures postdate this comment's
+# earlier wording, which described the referenced case as uncovered and recorded what it then
+# did: both get-defaults calls exited 1 and preflight-env.sh printed `config INVALID` with
+# EVERY row SKIPPED. That is no longer the behaviour — the referenced case now degrades grok
+# alone — so read those three blocks together: this one owns the UNREFERENCED half only.
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-defaults still answers with a malformed grok section" "0" "$RC"
 
@@ -1469,6 +1469,19 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
 assert_exit "validate still rejects a referenced broken catalog" "1" "$RC"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "has_grok still exits 1 on it, so the grok row reads INVALID" "1" "$RC"
+# The CROSS-PRESET case, the third shape of the same invariant. GROK_CATALOG_BROKEN is ONE
+# variable for the whole run while validate_defaults iterates BOTH presets, so a catalog broken
+# for design_review must not be reported to code_review, which never named grok. The two
+# fixtures above cannot catch this: one has grok in NEITHER preset, the other in BOTH.
+cp "$FIXTURES/broken-grok-one-preset.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "get-defaults answers for the preset that never names grok" "0" "$RC"
+assert_eq_str "…and does NOT flag that preset degraded" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…its builtin is untouched" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "…while the preset that DOES name grok still answers" "0" "$RC"
+assert_eq_str "…and that one IS flagged degraded" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…with grok dropped from its builtin" "claude" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
 # The UNREFERENCED fixture must not be flagged: nothing read its catalog, so nothing degraded.
 cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"

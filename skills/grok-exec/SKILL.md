@@ -356,7 +356,7 @@ echo "=== Generating report ==="
 # 2026-08-29: unprojected, rc=141 for every answer >=16 KB (10/10 runs at 16 KB, 20 KB and
 # 200 KB) and rc=0 at 5 KB; projected, rc=0 at all four sizes. Review answers routinely clear
 # 16 KB, so the unprojected form would cry wolf on most real runs and train the reader to
-# ignore the one signal that catches a wire-format change. verify-delegation.sh:400 shares the
+# ignore the one signal that catches a wire-format change. verify-delegation.sh:430 shares the
 # `fromjson? | objects | select(...)` prefix but is NOT exposed to this: it pipes into `tail -1`,
 # which drains jq's output, and projects `.is_error` — a few bytes either way.
 if [ -s "$RAW_FILE" ] && ! jq -Rr 'fromjson? | objects | select(.type=="result") | "1"' "$RAW_FILE" \

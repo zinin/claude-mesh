@@ -255,10 +255,10 @@ HAS_GEMINI=$("$LOADER" get-flag has_gemini)
 # grok: BOTH reads below VALIDATE the `grok:` catalog before answering, unlike the bare probes
 # has_codex / has_gemini beside them. That is a difference in what the flag PROMISES, not an
 # inconsistency: `has_grok` is consumed as "a grok reviewer can be dispatched", which needs a
-# non-empty catalog because the grok agent stops without a MODEL (config-loader.sh:1127-1138).
+# non-empty catalog because the grok agent stops without a MODEL (config-loader.sh:1156-1168).
 # So either call can exit 1 on a malformed section. WARN and degrade grok ALONE rather than
 # exiting: a broken `grok:` section must not kill a codex-only design review — that is the
-# `ultra` incident (config-loader.sh:985, 2026-07-10: one codex setting killed every ext-claude
+# `ultra` incident (config-loader.sh:1014, 2026-07-10: one codex setting killed every ext-claude
 # executor) in a new costume. Report it, drop the flag, let everything else run.
 GM_ERR=$(mktemp)
 if ! HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GM_ERR") \
@@ -332,7 +332,7 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
     `gemini-executor` / `ext-claude-executor`. Each gets `MODEL=<entry>` on the FIRST non-blank
     line and the tooling-constraint paragraph appended to the composed prompt — both shapes are
     written out in Step 6. Name them `grok:<model>` everywhere downstream. The validator
-    guarantees a non-empty list whenever `grok` is in `builtin` (`config-loader.sh:828` — "a grok
+    guarantees a non-empty list whenever `grok` is in `builtin` (`config-loader.sh:852` — "a grok
     reviewer cannot start without a model"), so this branch has no fallback and cannot dispatch
     nothing.
   - **If `.grok_degraded` is `true`, dispatch no grok executor and SAY SO.** The loader sets it when this preset names grok while the `grok:` catalog does not validate: it strips `grok` from `.builtin` and empties `.grok_models` instead of failing the read, so one typo cannot ground the codex, gemini, claude and ext-claude executors this run also asked for. The flag is the only signal that a requested executor is absent, so print it: `grok: каталог grok.models не валидируется — grok-исполнитель не запущен; остальные движки работают. config.yaml правит пользователь, агенты его не трогают.` Do not stop and do not substitute another engine.
@@ -432,7 +432,7 @@ Every selected model gets the SAME composed prompt — model diversity is the po
 
 #### Step 5.2.6: Grok-model selection
 
-Runs ONLY when Step 5.2.1 selected `grok`. There is no `HAS_GROK_MODELS` gate: a `grok:` section without a non-empty catalog does not validate, so `HAS_GROK=1` already guarantees `GROK_MODELS` is non-empty — that is the promise `has_grok` makes and the reason no separate flag exists (`config-loader.sh:1127-1138`).
+Runs ONLY when Step 5.2.1 selected `grok`. There is no `HAS_GROK_MODELS` gate: a `grok:` section without a non-empty catalog does not validate, so `HAS_GROK=1` already guarantees `GROK_MODELS` is non-empty — that is the promise `has_grok` makes and the reason no separate flag exists (`config-loader.sh:1156-1168`).
 
 - `grok` NOT selected in Step 5.2.1 → skip this step; **bind `SELECTED_GROK_MODELS` to the empty list** and run no grok reviewer at all.
 

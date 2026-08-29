@@ -74,7 +74,7 @@ STOPs on it, report the STOP; do not retry with an edited id.
 ## Output
 
 You will return:
-- Work directory path: `${CLAUDE_PLUGIN_DATA}/runs/grok/<model>/YYYY-MM-DD-HH-MM-SS-taskname/`
+- Work directory path: `${CLAUDE_PLUGIN_DATA}/runs/grok/<model>/YYYY-MM-DD-HH-MM-SS-<pid>-taskname/`
   — that is the SHAPE of the path, not a string to paste into a shell. `${CLAUDE_PLUGIN_DATA}`
   is EMPTY in a Bash call (Task 2.5), so expanding it there searches `/runs/grok` and finds
   nothing — reporting a run that happened as one that did not. Name the path the skill printed,

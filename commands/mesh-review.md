@@ -58,7 +58,7 @@ defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bou
        preset branch and on its model page, and the design doc states it once. Change all five or
        none: a copy that still promises a fallback would have the orchestrator dispatch a
        reviewer the agent then refuses to start for want of a MODEL. -->
-  - `grok` in `defaults.code_review.builtin` → **one `grok-code-reviewer` per entry of `defaults.code_review.grok_models`**, each dispatched with `MODEL=<entry>` alone on the FIRST line of its prompt (and `BASE_BRANCH=<branch>` on the line directly under it when that argument was given — the exact shape is in Step 5a's grok bullet). Name them `grok:<model>` everywhere downstream. The config validator guarantees that list is non-empty whenever `grok` is in `builtin` (`config-loader.sh:828` — "a grok reviewer cannot start without a model"), so there is no fallback branch here: a preset that names grok and validates always dispatches at least one reviewer. There is exactly ONE case where it dispatches none — a `grok:` catalog that does not validate — and it is never silent; see the next bullet.
+  - `grok` in `defaults.code_review.builtin` → **one `grok-code-reviewer` per entry of `defaults.code_review.grok_models`**, each dispatched with `MODEL=<entry>` alone on the FIRST line of its prompt (and `BASE_BRANCH=<branch>` on the line directly under it when that argument was given — the exact shape is in Step 5a's grok bullet). Name them `grok:<model>` everywhere downstream. The config validator guarantees that list is non-empty whenever `grok` is in `builtin` (`config-loader.sh:852` — "a grok reviewer cannot start without a model"), so there is no fallback branch here: a preset that names grok and validates always dispatches at least one reviewer. There is exactly ONE case where it dispatches none — a `grok:` catalog that does not validate — and it is never silent; see the next bullet.
   - **If `.grok_degraded` is `true`, run no grok reviewer and SAY SO.** The loader sets it when the preset names grok while the `grok:` catalog does not validate: rather than failing the whole read, it removes `grok` from `.builtin` and empties `.grok_models`, so one typo in a user-owned file cannot ground the claude, codex and gemini reviewers this same run asked for. That removal is invisible in the data — the flag is the ONLY thing saying a reviewer you asked for is not running — so print it verbatim: `grok: каталог grok.models не валидируется — grok-ревьюер не запущен; остальные движки работают. config.yaml правит пользователь, агенты его не трогают.` Do not stop the run, do not retry, and never substitute another engine for it.
   - **Bind `SELECTED_GROK_MODELS` to `defaults.code_review.grok_models` here** (the empty list when `grok` is not in `builtin`), for the same reason `SELECTED_CLAUDE_MODELS` is bound just above: Step 5a and Step 5b consume it unconditionally, the interactive path fills it in Step 2.45, and an unbound name in a prompt raises nothing at all — the reader improvises.
   - For each model id in `defaults.code_review.models`, spawn `ext-claude-code-reviewer` with `MODEL=<id>`.
@@ -96,10 +96,10 @@ rm -f "$LOADER_ERR"
 HAS_GEMINI=$("$LOADER" get-flag has_gemini)
 # grok: BOTH reads below VALIDATE the `grok:` catalog before answering — `has_grok` promises
 # "a grok reviewer can be dispatched", which needs a non-empty catalog because the reviewer
-# agent stops without a MODEL (config-loader.sh:1127-1138), unlike the bare probes has_codex /
+# agent stops without a MODEL (config-loader.sh:1156-1168), unlike the bare probes has_codex /
 # has_gemini above — so either one can exit 1 on a malformed section. Guard both, and WARN
 # rather than exit: a broken grok: section must not stop a codex-only review — that is the
-# `ultra` incident (config-loader.sh:985, 2026-07-10: a codex setting killed every ext-claude
+# `ultra` incident (config-loader.sh:1014, 2026-07-10: a codex setting killed every ext-claude
 # executor) in a new costume, and the reason has_codex is a bare probe. The same rule is
 # spelled out at config-loader.sh:420-430. Degrade grok alone: report it, drop the flag, let
 # everything else run.
@@ -283,7 +283,7 @@ Each selected model becomes an independent reviewer with the same diff and the s
 Runs ONLY when Step 2.1 selected `grok` (i.e. `grok` is in `SELECTED_TYPES`). There is no
 `HAS_GROK_MODELS` gate: a `grok:` section without a non-empty catalog does not validate, so
 `HAS_GROK=1` already guarantees `GROK_MODELS` is non-empty — that is the promise `has_grok`
-makes and the reason no separate flag exists (`config-loader.sh:1127-1138`).
+makes and the reason no separate flag exists (`config-loader.sh:1156-1168`).
 
 - `grok` NOT selected in Step 2.1 → skip this step; **bind `SELECTED_GROK_MODELS` to the empty
   list** and run no grok reviewer at all.
@@ -345,9 +345,16 @@ the point is model diversity, so never differentiate their prompts.
 
 Mirror Step 3.5 (model confirmation): after Q1 (and Steps 2.1, 2.4 and 2.45, each when it ran), show the full SELECTED_TYPES list (one per line) and ask. **Expand `claude` in that list into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case — the user must see how many Claude reviewers they are about to pay for.
 
-**Expand `grok` the same way**, one bullet per entry of `SELECTED_GROK_MODELS` (`grok:grok-4.6`).
-When that list is empty, show `grok: модели не выбраны — ревьюер не запускается` instead of a
-bullet, so a user who selected grok and then skipped its models sees why nothing will run. There
+**When `grok` is in `SELECTED_TYPES`, expand it the same way**, one bullet per entry of
+`SELECTED_GROK_MODELS` (`grok:grok-4.6`). When `grok` is selected and that list is empty, show
+`grok: модели не выбраны — ревьюер не запускается` instead of a bullet, so a user who picked grok
+in Step 2.1 and then checked nothing in Step 2.45 sees why nothing will run. **When `grok` is NOT
+in `SELECTED_TYPES`** — Step 2.1 did not pick it, or `HAS_GROK=0` and it was never on offer — the
+page says nothing about grok at all: no bullet and no such line, exactly as it says nothing about
+an unconfigured codex. That line reports on a selection the user made; it is not a standing
+notice. Without that gate it prints on EVERY review, because both paths that skip Step 2.45 —
+Q1 without «внешние CLI», and Step 2.1 without grok — bind `SELECTED_GROK_MODELS` to the empty
+list, which is exactly the state the line describes. There
 is no fallback bullet here: unlike `claude`, an empty grok list dispatches nothing at all
 (Step 2.45). A pair that shows no bullet contributes nothing further either — not to Step 5a's
 dispatch, not to its watcher roster, not to Step 6.0's guard. A roster entry with no dispatch

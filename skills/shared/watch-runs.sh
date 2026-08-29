@@ -140,7 +140,7 @@ if [ -z "$STALL_SEC" ]; then
     }
 fi
 if [ "$STALL_SEC" -lt "$STALL_FLOOR" ]; then
-    echo "watch-runs: stall threshold $STALL_SEC raised to $STALL_FLOOR — codex-exec, gemini-exec and grok-exec hardcode HARD_ZERO_TIMEOUT=600, so a lower threshold would call a live run silent before its own watchdog acts" >&2
+    echo "watch-runs: stall threshold $STALL_SEC raised to $STALL_FLOOR — every exec skill that pins its own stall budget hardcodes HARD_ZERO_TIMEOUT=600 (codex, gemini and grok today; ext-claude reads the configured threshold instead), so a lower threshold would call a live run silent before its own watchdog acts" >&2
     STALL_SEC="$STALL_FLOOR"
 fi
 

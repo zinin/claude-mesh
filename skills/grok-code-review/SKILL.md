@@ -127,9 +127,9 @@ If any pre-flight check fails, STOP and report the error to the user verbatim. D
 BASE_BRANCH="<the BASE_BRANCH argument, or leave empty to auto-detect>" && \
 BASE_REF=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') && \
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}" && \
-BASE_SHA=$(git merge-base origin/$BASE_BRANCH HEAD 2>/dev/null || git merge-base $BASE_BRANCH HEAD 2>/dev/null || git rev-parse HEAD~1) && \
+BASE_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD 2>/dev/null || git merge-base "$BASE_BRANCH" HEAD 2>/dev/null || git rev-parse HEAD~1) && \
 HEAD_SHA=$(git rev-parse HEAD) && \
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' || echo "unknown") && \
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-') && BRANCH="${BRANCH:-unknown}" && \
 echo "Review range: $BASE_SHA..$HEAD_SHA" && \
 echo "Branch: $BRANCH" && \
 echo "" && \

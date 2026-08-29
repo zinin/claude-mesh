@@ -353,7 +353,8 @@ assert_eq "exit 0" "0" "$RC"
 rm -rf "$TDIR"
 
 # === Test 23: the stall threshold is floored at 600 and says so ===
-# codex-exec, gemini-exec and grok-exec hardcode HARD_ZERO_TIMEOUT=600, so a lower watcher
+# every exec skill that pins its own stall budget hardcodes HARD_ZERO_TIMEOUT=600 — codex,
+# gemini and grok today, ext-claude reads the configured one — so a lower watcher
 # threshold would call a live run silent 300s before its own watchdog would act on it.
 echo "=== Test 23: --stall-sec below 600 is floored, with a warning ==="
 TDIR=$(mktemp -d)
