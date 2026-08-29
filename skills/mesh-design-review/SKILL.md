@@ -412,6 +412,8 @@ Both bindings are mandatory, for the same reason Step 5.1 binds it in `default` 
 
 For each chunk of 4 entries from `CLAUDE_MODELS` (config order) — same pagination and the same ★ convention as Step 5.3, because AskUserQuestion has no `preSelected` API:
 
+**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — claude на модели по умолчанию`. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide which model the single claude reviewer runs on — this catalog's only entry, or `DISPATCH_MODEL` through the fallback below on the user's behalf, silently, in the one configuration where the question matters most.
+
 AskUserQuestion (multiSelect, max 4):
 ```
 header: "Claude"
@@ -439,6 +441,8 @@ Runs ONLY when Step 5.2.1 selected `grok`. There is no `HAS_GROK_MODELS` gate: a
 The recommended set is `GROK_DEFAULT_IDS`, already parsed out of `DEFAULTS_JSON` in Step 5.0 — no second loader read here, and no loader-resolution fence: this skill resolves the loader from `SKILL_BASE`, not from a placeholder the harness substitutes into a command file, so a fence copied from `/mesh-review` would resolve nothing (see "Locating plugin files" at the top, and point (1) of the "Never mirror these four" note in Step 6).
 
 For each chunk of 4 entries from `GROK_MODELS` (config order) — the same pagination and the same ★ convention as Steps 5.2.5 and 5.3, because AskUserQuestion has no `preSelected` API. Unlike Step 5.2.1, whose option list is at most three, this catalog is the user's and can exceed 4:
+
+**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — grok не запускать`. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide whether a grok reviewer runs at all — the one thing this page exists to ask on the user's behalf, silently, in the one configuration where the question matters most.
 
 AskUserQuestion (multiSelect, max 4):
 ```
@@ -471,6 +475,8 @@ Every selected model gets the SAME composed prompt — model diversity is the po
 Only if "external models" was selected in Q1. AskUserQuestion `options` has no `preSelected`/`checked` flag — pre-recommended ids are marked visually in the `label` instead.
 
 Build `DEFAULT_IDS` from `defaults.design_review.models`. For each chunk of 4 models from `MODELS` (`<id>|<label>` lines, in config order):
+
+**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — внешние модели не запускать`. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide that the user wants this model, when the alternative is this step's own empty-selection outcome on the user's behalf, silently, in the one configuration where the question matters most.
 
 - AskUserQuestion (multiSelect: true, max 4, header: "Models"):
   ```

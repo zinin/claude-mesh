@@ -260,6 +260,8 @@ echo "CLAUDE_DEFAULT_IDS=[$(echo "$CLAUDE_DEFAULT_IDS" | tr '\n' ' ')]"   # empt
 
 For each chunk of 4 entries from `CLAUDE_MODELS` (in config order) — same pagination mechanics as Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API):
 
+**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — claude на модели по умолчанию`. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide which model the single claude reviewer runs on — this catalog's only entry, or `DISPATCH_MODEL` through the fallback below on the user's behalf, silently, in the one configuration where the question matters most.
+
 AskUserQuestion (multiSelect, max 4):
 ```
 header: "Claude"
@@ -307,6 +309,8 @@ echo "GROK_DEFAULT_IDS=[$(echo "$GROK_DEFAULT_IDS" | tr '\n' ' ')]"   # empty = 
 For each chunk of 4 entries from `GROK_MODELS` (in config order) — same pagination mechanics as
 Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API). Unlike
 Step 2.1, whose option list is at most three, this catalog is the user's and can exceed 4:
+
+**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — grok не запускать`. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide whether a grok reviewer runs at all — the one thing this page exists to ask on the user's behalf, silently, in the one configuration where the question matters most.
 
 AskUserQuestion (multiSelect, max 4):
 ```
@@ -383,6 +387,8 @@ AskUserQuestion `options` schema (verified in iteration 1) does NOT support a `p
 Read the default set from `defaults.code_review.models` (if exists). Build a set `DEFAULT_IDS` of model ids that should appear pre-recommended.
 
 For each chunk of 4 models from `models[]` (in config order):
+
+**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — внешние модели не запускать`. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide that the user wants this model, when the alternative is the STOP in Step 3.5 on the user's behalf, silently, in the one configuration where the question matters most.
 - AskUserQuestion (multiSelect, max 4):
   ```
   header: "Models"
