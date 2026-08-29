@@ -1469,6 +1469,30 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
 assert_exit "validate still rejects a referenced broken catalog" "1" "$RC"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "has_grok still exits 1 on it, so the grok row reads INVALID" "1" "$RC"
+
+# A scalar `grok:` section — the same invariant, one KIND of breakage over. `grok: false` is
+# how a user tries to switch a section off without deleting it, and the type gate used to die
+# on the preset path, so preflight printed CONFIG INVALID and SKIPPED every row: codex and
+# gemini taken down by a grok typo, which is the `ultra` incident's shape and the one thing
+# `preflight-env.sh` forbids in so many words. It now degrades exactly as a broken catalog
+# does. `validate` stays strict, and no raw jq noise may reach stderr — the reason the gate
+# was unconditional in the first place is that `(.grok.models // [])[]` cannot index a boolean.
+cp "$FIXTURES/scalar-grok-referenced.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "get-defaults answers on a SCALAR grok section a preset references" "0" "$RC"
+assert_eq_str "…with grok dropped from builtin" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…grok_models emptied" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…and flagged degraded for default mode" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…the other engines untouched" "opus fable" "$(jq -r '.claude_models | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_stderr_lacks "no raw jq noise on the preset path" "Cannot index" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "…the preset that never names grok answers too" "0" "$RC"
+assert_eq_str "…and is NOT flagged degraded" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+assert_exit "validate still rejects a scalar grok section" "1" "$RC"
+assert_stderr_contains "…naming the type it got" "must be a mapping" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok still exits 1 on it" "1" "$RC"
 # The CROSS-PRESET case, the third shape of the same invariant. GROK_CATALOG_BROKEN is ONE
 # variable for the whole run while validate_defaults iterates BOTH presets, so a catalog broken
 # for design_review must not be reported to code_review, which never named grok. The two

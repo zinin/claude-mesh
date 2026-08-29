@@ -1,0 +1,27 @@
+# `grok: false` — the natural way to try to switch a section off without deleting it — while a
+# preset still names grok. The section is malformed, so `validate` must reject it; the PRESET
+# read must not, because grounding it takes codex and gemini down with grok over a typo in a
+# user-owned file. That is the same invariant broken-grok-referenced.yaml holds for a broken
+# CATALOG, one type of breakage over. design_review names no grok and must come back clean.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+grok: false
+codex:
+  model: gpt-5.5
+claude:
+  models: [opus, fable]
+defaults:
+  code_review:
+    builtin: [claude, codex, grok]
+    claude_models: [opus, fable]
+    grok_models: [grok-4.6]
+  design_review:
+    builtin: [claude, codex]
+    claude_models: [opus]

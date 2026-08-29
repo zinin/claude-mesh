@@ -13,7 +13,8 @@
 #   * The loader VALIDATES the whole file on load. ANY error → the command refuses
 #     to start and prints, on stderr, the exact yaml location + how to fix it.
 #     ONE deliberate exception, on the preset-read path only: if a preset names `grok`
-#     while the `grok:` catalog does not validate, the read DEGRADES grok alone —
+#     while the `grok:` section does not validate — a broken catalog, or a section that is
+#     not a mapping at all, such as `grok: false` — the read DEGRADES grok alone —
 #     that reviewer is not offered, the orchestrator says so out loud, and every other
 #     engine runs. `config-loader.sh validate` still rejects the file.
 #   * Sections are independent: omit an optional section to disable that feature.

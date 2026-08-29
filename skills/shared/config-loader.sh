@@ -618,9 +618,19 @@ validate_defaults() {
     # validate_grok. Unconditional because the catalog READ below is conditional: on
     # `grok: false`, `(.grok.models // [])[]` dies with raw jq "Cannot index boolean" noise,
     # and WHETHER jq meets that scalar would otherwise depend on which preset is being
-    # validated. A scalar section is a config error on every path, so it must produce the same
-    # clean message on every path; the gate is one `jq type` call and is cheap enough to pay
-    # for on every run, which is the whole reason it is a function of its own.
+    # validated. The gate is one `jq type` call, cheap enough to pay for on every run, which is
+    # the whole reason it is a function of its own.
+    #
+    # Run in a SUBSHELL so its die() ends that subshell rather than this process. On THIS path a
+    # malformed section degrades grok alone (the branch below), because grounding the preset read
+    # takes codex and gemini down with grok over a typo in a user-owned file — the `ultra`
+    # incident's shape, and the one thing preflight-env.sh forbids in so many words. `grok: false`
+    # is how a user tries to switch a section OFF without deleting it, so it is a likely typo, not
+    # an exotic one. The same reasoning already governs a broken CATALOG (8c8583f); a section of
+    # the wrong TYPE is the other half of that breakage and now shares its treatment. Strictness
+    # is unchanged where it belongs: validate_all still runs the full validate_grok, and has_grok
+    # / list-grok-models / get-grok still exit 1 — which is what makes preflight-env.sh print
+    # INVALID on the grok row rather than a MISSING one.
     # The GATE HALF ONLY because this validator is what cmd_get_defaults runs, preflight-env.sh
     # derives CONFIG_STATUS from `get-defaults design_review`, and both orchestrators read
     # get-defaults before anything else: validating the grok CATALOG here would make one typo
@@ -629,7 +639,8 @@ validate_defaults() {
     # is checked per preset below, only for a preset that actually references grok. And never
     # validate_grok here: it can warn, this call site is reached twice per run (validate_all,
     # then cmd_get_defaults), so its unknown-effort warning would print twice.
-    validate_grok_section_type
+    local grok_type_err grok_type_broken=0
+    grok_type_err=$(validate_grok_section_type 2>&1) || grok_type_broken=1
 
     local claude_catalog
     claude_catalog=$(jq -r '(.claude.models // [])[]' "$CONFIG_JSON" | tr '\n' ' ')
@@ -639,6 +650,19 @@ validate_defaults() {
     # never mention grok (see the gate call above). Both are done inside the preset loop, and
     # grok_catalog_read memoises them so two grok-using presets pay for the catalog once.
     local grok_catalog="" grok_catalog_read=0
+    # grok_catalog_read=1 is the load-bearing half of the type degrade: it is what stops the
+    # conditional catalog read below from ever reaching `(.grok.models // [])[]` on a scalar
+    # section — precisely the raw jq noise the gate exists to prevent. Note it cannot be left to
+    # validate_grok_catalog's own `jq -e '.grok' || return 0` probe: `jq -e` exits 1 on the value
+    # `false`, so a scalar section would read there as ABSENT and the read would proceed.
+    # GROK_CATALOG_BROKEN=1 then does the rest, exactly as for a catalog that will not parse: the
+    # membership test is skipped, and cmd_get_defaults drops grok from the preset it emits and
+    # reports grok_degraded to the preset that asked for it.
+    if [ "$grok_type_broken" -eq 1 ]; then
+        GROK_CATALOG_BROKEN=1
+        grok_catalog_read=1
+        warn "the grok: section does not validate — grok is disabled for this read, every other engine is unaffected. The section says: ${grok_type_err#config-loader: }"
+    fi
 
     local has_codex has_gemini has_grok
     has_codex=$(jq -e '.codex' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0)
@@ -689,7 +713,16 @@ validate_defaults() {
                     [ "$has_gemini" = "1" ] || die "defaults.$preset.builtin lists \"gemini\" but no gemini: section"
                     ;;
                 grok)
-                    [ "$has_grok" = "1" ] || die "defaults.$preset.builtin lists \"grok\" but no grok: section"
+                    # The `|| [ "$grok_type_broken" -eq 1 ]` arm is not a hole in the fail-closed
+                    # rule: it separates "no grok: section at all", which this rule exists to
+                    # catch, from "a section that is present but malformed", which the type
+                    # degrade above has already reported and whose grok entries cmd_get_defaults
+                    # is already stripping. $has_grok cannot tell them apart — it comes from
+                    # `jq -e '.grok'`, and `jq -e` exits 1 on the value `false` — so without this
+                    # the degrade would be undone one screen later, by a die that grounds every
+                    # other engine and prints a second, wronger message about the same typo.
+                    [ "$has_grok" = "1" ] || [ "$grok_type_broken" -eq 1 ] \
+                        || die "defaults.$preset.builtin lists \"grok\" but no grok: section"
                     ;;
                 *) die "defaults.$preset.builtin: unknown value \"$v\" (valid: claude, codex, gemini, grok)" ;;
             esac
