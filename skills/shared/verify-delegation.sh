@@ -303,6 +303,14 @@ fail() {   # fail <verdict> <reason> <exit-code>
 # on a later attempt — so one re-dispatch is a fair use of the budget, and a signalled run stays
 # KILLED.
 MIN_REVIEW_BYTES=400
+# "Read×2, Bash×1" — which tools were refused says whether the reviewer lost source files,
+# searches, or both, and a bare count does not. One function because both the BROKEN promotion
+# and the DEGRADED emit print it, from the same $DENIED_TOOLS.
+denial_breakdown() {
+    printf '%s\n' "$DENIED_TOOLS" | grep '[^[:space:]]' | sort | uniq -c |
+        sort -rn | awk '{printf "%s%s×%s", (n++ ? ", " : ""), $2, $1}'
+}
+
 out_bytes() { tr -d '[:space:]' < "$1" 2>/dev/null | wc -c | tr -d ' '; }
 
 # --- 2. did it finalize? (died mid-flight = no final symlink AND no root output.txt) ---
@@ -440,31 +448,14 @@ case "$ENGINE" in
             # finalized dir but no successful result event carried an integer num_turns
             fail STALLED "no usable result event in raw.jsonl — killed mid-flight" 2
         fi
-        # `fail`, not `emit`, and this is the one BROKEN that a signal DOES move. A run that
-        # dispatches a background subagent answers "started" with num_turns 1 and delivers the
-        # review in a later segment of the same stream; a kill landing between the two leaves
-        # exactly this shape. BROKEN is terminal — mesh-review never retries it — and its reason
-        # tells the user to swap a model that did nothing wrong, so on a signalled run the honest
-        # verdict is KILLED. Unsignalled, it stays BROKEN.
-        if [ "$NT" -le 1 ]; then
-            fail BROKEN "num_turns=$NT: model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)" 4
-        fi
-        # The floor is one number for both engines; the sentence that explains it is not.
-        # ext-claude's cites its own archive (336 runs); grok has no archive yet, and quoting
-        # one would be a measurement nobody made.
-        case "$ENGINE" in
-            grok) FLOOR_NOTE="the floor is $MIN_REVIEW_BYTES non-space bytes" ;;
-            *)    FLOOR_NOTE="the shortest genuine review in the archive is 460" ;;
-        esac
-        # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
-        OUT_BYTES="$(out_bytes "$OUT")"
-        if [ "$OUT_BYTES" = 0 ]; then
-            fail STALLED "num_turns=$NT but output.txt has no content — retry" 2
-        elif [ "$OUT_BYTES" -lt "$MIN_REVIEW_BYTES" ]; then
-            fail STALLED "num_turns=$NT but output.txt holds only $OUT_BYTES non-space bytes — the run worked and then delivered a notice, not a review ($FLOOR_NOTE)" 2
-        fi
-
-        # --- was it allowed to READ what it reviewed? ---
+        # Read the denials HERE, above the BROKEN promotion, because BOTH verdicts consume them.
+        # A run can be refused its very first tool call and stop after one turn: the promotion
+        # below then calls it BROKEN — rightly, a single turn is not a review whatever caused it
+        # — but its own text says "retry futile", i.e. swap the model, about a model that did
+        # nothing wrong, while the branch that knows better sits past the floor checks and is
+        # never reached. Reading the field once, before both, is what lets the BROKEN reason name
+        # the refusal while the DEGRADED reason below keeps its own wording. The EMIT stays down
+        # there: a denied run that did review must still pass the floor checks first.
         # Every check above can pass on a run that never got outside its own cwd. Under `-p`
         # a permission prompt has nobody to answer it, so the CLI auto-denies: the reviewer
         # loses the sibling repositories it needs to check an API signature against real
@@ -496,11 +487,41 @@ case "$ENGINE" in
             | jq -Rr 'fromjson? | objects | select(.type == "result" and .is_error == false)
                       | .permission_denials | arrays | .[] | .tool_name // "unknown"' 2>/dev/null)"
         DENIED="$(printf '%s\n' "$DENIED_TOOLS" | grep -c '[^[:space:]]')"
+
+        # `fail`, not `emit`, and this is the one BROKEN that a signal DOES move. A run that
+        # dispatches a background subagent answers "started" with num_turns 1 and delivers the
+        # review in a later segment of the same stream; a kill landing between the two leaves
+        # exactly this shape. BROKEN is terminal — mesh-review never retries it — and its reason
+        # tells the user to swap a model that did nothing wrong, so on a signalled run the honest
+        # verdict is KILLED. Unsignalled, it stays BROKEN.
+        if [ "$NT" -le 1 ]; then
+            BROKEN_WHY="model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)"
+            if [ "$DENIED" -gt 0 ]; then
+                BROKEN_WHY="the CLI refused $DENIED tool call(s) ($(denial_breakdown)) and the model stopped after one turn — a permission problem, not an unsuitable model. Check the CLI's own permission configuration before swapping the model; the verdict stays terminal because one turn is not a review"
+            fi
+            fail BROKEN "num_turns=$NT: $BROKEN_WHY" 4
+        fi
+        # The floor is one number for both engines; the sentence that explains it is not.
+        # ext-claude's cites its own archive (336 runs); grok has no archive yet, and quoting
+        # one would be a measurement nobody made.
+        case "$ENGINE" in
+            grok) FLOOR_NOTE="the floor is $MIN_REVIEW_BYTES non-space bytes" ;;
+            *)    FLOOR_NOTE="the shortest genuine review in the archive is 460" ;;
+        esac
+        # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
+        OUT_BYTES="$(out_bytes "$OUT")"
+        if [ "$OUT_BYTES" = 0 ]; then
+            fail STALLED "num_turns=$NT but output.txt has no content — retry" 2
+        elif [ "$OUT_BYTES" -lt "$MIN_REVIEW_BYTES" ]; then
+            fail STALLED "num_turns=$NT but output.txt holds only $OUT_BYTES non-space bytes — the run worked and then delivered a notice, not a review ($FLOOR_NOTE)" 2
+        fi
+
+        # --- was it allowed to READ what it reviewed? ---
+        # DENIED and DENIED_TOOLS are computed above, before the BROKEN promotion, because that
+        # promotion consumes them too — see the comment there. This branch owns only what to DO
+        # about a refusal on a run that WAS agentic.
         if [ "$DENIED" -gt 0 ]; then
-            # "Read×2, Bash×1" — which tools were refused says whether the reviewer lost source
-            # files, searches, or both, and a bare count does not.
-            BREAKDOWN="$(printf '%s\n' "$DENIED_TOOLS" | grep '[^[:space:]]' | sort | uniq -c |
-                         sort -rn | awk '{printf "%s%s×%s", (n++ ? ", " : ""), $2, $1}')"
+            BREAKDOWN="$(denial_breakdown)"
             # The refusal is the same event on both engines; what to DO about it is not.
             # ext-claude's remedy is the missing flag — grok-exec already passes it, so naming
             # it here would send the reader after a setting that cannot be the cause.

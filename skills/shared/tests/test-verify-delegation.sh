@@ -1345,6 +1345,24 @@ assert_no_match "does not prescribe the ext-claude remedy" "the ext-claude run n
 assert_match "names the grok remedy" "grok-exec already passes" "$REASON"
 rm -rf "$TDIR"
 
+echo "=== Test: grok BROKEN — a single turn because the CLI refused the first tool call ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-30-00-1000-denied-first)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"permission_denials":[{"tool_name":"Bash"},{"tool_name":"Read"}]}' > "$rd/raw.jsonl"
+run_full grok grok-4.6 1 "$TDIR"
+# The VERDICT does not move: one turn is not a review whatever caused it, and BROKEN is
+# terminal for the right reason. What must move is the DIAGNOSIS. BROKEN's own text says
+# "retry futile" — swap the model — about a model that did nothing wrong, while the DEGRADED
+# branch that knows better is 45 lines further down and unreachable from here.
+assert_eq "verdict stays BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+assert_match "names the refusal and its count" "refused 2 tool call" "$REASON"
+assert_match "…and which tools" "Bash" "$REASON"
+assert_no_match "does not send the user off to swap the model" "retry futile" "$REASON"
+rm -rf "$TDIR"
+
 echo "=== Test: grok requires a model argument ==="
 TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/grok"
 run grok - 1 "$TDIR"
