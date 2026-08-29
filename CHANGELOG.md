@@ -24,6 +24,32 @@ All notable changes to claude-mesh will be documented here.
   rendered as the literal `API Error: {}` with the message lost.
 
 ### Changed
+- **The reviewer-type question of both orchestrators is three options, not five.** `claude`,
+  one option for the external CLIs, and one for the Anthropic-API models; picking the CLI
+  option opens a second page listing the engines actually configured, skipped when there is
+  only one. `AskUserQuestion` accepts four options at most, so a fourth engine had nowhere to
+  go — and a fifth one still will not need this question to change. A catalog holding exactly
+  one entry is still asked about rather than chosen for you: the second option is that page's
+  own "run none of them".
+- **A broken optional section fails its own row, not the environment.** A `grok:` section that
+  does not validate — a malformed catalog, or a section that is not a mapping at all, such as
+  `grok: false` — now degrades grok alone on the preset-read path: it is dropped from the
+  preset, `get-defaults` reports `grok_degraded`, and the orchestrator says out loud that the
+  reviewer you asked for is not running. Before, one typo made `preflight-env.sh` print
+  `config INVALID` and skip EVERY row, codex and gemini included. `config-loader.sh validate`
+  is unchanged and still rejects the file, and the flag is now reported to the preset that
+  actually named grok rather than to both.
+- **`report.md` shows the whole run again.** The shared renderer read only the first content
+  block of each message, so a message beginning with a `thinking` block — the ordinary shape
+  for a reasoning model — vanished from the report entirely, tool call included. Measured on a
+  real grok review: 22 of 23 assistant messages began that way, and the 904 KB report held
+  none of the run's 79 tool calls, only their outputs. It now renders every block, and has a
+  regression suite of its own (`shared/tests/test-stream-json-report.sh`) — its first.
+- `verify-delegation.sh` reads a refused tool call before it decides a run is `BROKEN`, so a
+  reviewer that was denied its very first call is no longer told to swap a model that did
+  nothing wrong. It also rejects a grok model that is not a catalog id: the `<provider>/<short>`
+  spelling belongs to ext-claude, and it used to resolve a path nothing writes and come back
+  as `FLIP` — "this reviewer never delegated" — about a reviewer that had just delivered.
 - `skills/ext-claude-exec/generate-md.sh` moved to `skills/shared/stream-json-report.sh`. Two
   engines render reports from the same stream format; the renderer had been living inside one
   of them. Same signature, same output.
