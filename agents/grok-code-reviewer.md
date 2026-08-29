@@ -79,9 +79,9 @@ You will return:
 - Assessment (Ready to merge or not)
 - The run directory path and links to `output.txt` and `report.md` inside it
 
-Report what Grok actually produced, and read `output.txt` for it: `report.md` renders only the
-first content block of each message, so a reasoning model's answer can be missing from it
-entirely. Never summarise a run from `report.md`.
+Report what Grok actually produced, and read `output.txt` for it: `report.md` is the whole run
+rendered and runs to hundreds of KB against `output.txt`'s ten. Never summarise a run from
+`report.md`.
 
 ## Supervised Mode
 

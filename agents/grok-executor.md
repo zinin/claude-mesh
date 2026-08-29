@@ -83,8 +83,8 @@ You will return:
 - Files inside: `prompt.md`, `raw.jsonl`, `raw.json`, `output.txt`, `report.md`, `stderr.txt`
 - The final output content from Grok
 
-Report what Grok actually produced. `output.txt` is the answer — `report.md` is a rendering
-that shows only the first content block of each message, so never summarise a run from it.
+Report what Grok actually produced. `output.txt` is the answer — `report.md` is the whole run
+rendered, hundreds of KB against its ten, so never summarise a run from it.
 
 ## WARNING
 

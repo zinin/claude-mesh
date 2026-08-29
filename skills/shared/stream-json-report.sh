@@ -86,39 +86,58 @@ OUTPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/n
 
         case "$TYPE" in
             "assistant")
-                # Check content type
-                CONTENT_TYPE=$(echo "$JSON" | jq -r '.message.content[0].type // empty' 2>/dev/null)
+                # EVERY content block, not index 0 alone. One assistant message carries a LIST
+                # — the wire format's own shape is [thinking?, text?, tool_use*] — and this
+                # branch used to read `.message.content[0]` six times over: a message whose
+                # FIRST block was `thinking` matched neither arm and vanished from the report
+                # whole, tool call included, while any block after the first was dropped
+                # whatever its type. That is the ordinary shape for a reasoning model, which is
+                # what grok is, and this renderer serves grok since the file moved into shared/.
+                # No verdict is taken from report.md — every one of them comes from output.txt —
+                # but a trace that omits a tool call reads as a tool that was never called.
+                NBLOCKS=$(echo "$JSON" | jq -r '(.message.content // []) | length' 2>/dev/null)
+                # Never let a jq hiccup turn into an unbounded or erroring loop: a non-numeric
+                # answer means "render nothing from this message", not "abort the report".
+                case "$NBLOCKS" in ''|*[!0-9]*) NBLOCKS=0 ;; esac
+                BI=0
+                while [ "$BI" -lt "$NBLOCKS" ]; do
+                    CONTENT_TYPE=$(echo "$JSON" | jq -r ".message.content[$BI].type // empty" 2>/dev/null)
 
-                if [ "$CONTENT_TYPE" = "tool_use" ]; then
-                    TOOL_NAME=$(echo "$JSON" | jq -r '.message.content[0].name' 2>/dev/null)
-                    # For Bash tool, get the command
-                    if [ "$TOOL_NAME" = "Bash" ]; then
-                        TOOL_CMD=$(echo "$JSON" | jq -r '.message.content[0].input.command // empty' 2>/dev/null)
-                        echo "## Tool: $TOOL_NAME [$TS]"
+                    if [ "$CONTENT_TYPE" = "tool_use" ]; then
+                        TOOL_NAME=$(echo "$JSON" | jq -r ".message.content[$BI].name" 2>/dev/null)
+                        # For Bash tool, get the command
+                        if [ "$TOOL_NAME" = "Bash" ]; then
+                            TOOL_CMD=$(echo "$JSON" | jq -r ".message.content[$BI].input.command // empty" 2>/dev/null)
+                            echo "## Tool: $TOOL_NAME [$TS]"
+                            echo ""
+                            echo '```bash'
+                            echo "$TOOL_CMD"
+                            echo '```'
+                        else
+                            TOOL_INPUT=$(echo "$JSON" | jq -r ".message.content[$BI].input | tostring" 2>/dev/null)
+                            echo "## Tool: $TOOL_NAME [$TS]"
+                            echo ""
+                            echo '```json'
+                            echo "$TOOL_INPUT"
+                            echo '```'
+                        fi
                         echo ""
-                        echo '```bash'
-                        echo "$TOOL_CMD"
-                        echo '```'
-                    else
-                        TOOL_INPUT=$(echo "$JSON" | jq -r '.message.content[0].input | tostring' 2>/dev/null)
-                        echo "## Tool: $TOOL_NAME [$TS]"
+                        echo "---"
                         echo ""
-                        echo '```json'
-                        echo "$TOOL_INPUT"
-                        echo '```'
+                    elif [ "$CONTENT_TYPE" = "text" ]; then
+                        TEXT=$(echo "$JSON" | jq -r ".message.content[$BI].text" 2>/dev/null)
+                        echo "## Response [$TS]"
+                        echo ""
+                        echo "$TEXT"
+                        echo ""
+                        echo "---"
+                        echo ""
                     fi
-                    echo ""
-                    echo "---"
-                    echo ""
-                elif [ "$CONTENT_TYPE" = "text" ]; then
-                    TEXT=$(echo "$JSON" | jq -r '.message.content[0].text' 2>/dev/null)
-                    echo "## Response [$TS]"
-                    echo ""
-                    echo "$TEXT"
-                    echo ""
-                    echo "---"
-                    echo ""
-                fi
+                    # `thinking`, and any block type xAI or Anthropic add later, fall through on
+                    # purpose: they are skipped exactly as before. What changed is that skipping
+                    # one no longer skips its siblings.
+                    BI=$((BI+1))
+                done
                 ;;
 
             "user")

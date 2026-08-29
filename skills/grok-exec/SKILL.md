@@ -385,18 +385,19 @@ echo "=== OUTPUT ==="
 cat "$WORK_DIR/output.txt"
 ```
 
-> **`report.md` renders only the FIRST content block of each message — decide from
-> `output.txt`.** `shared/stream-json-report.sh` reads `.message.content[0]` and nothing else,
-> so an assistant message that mixes blocks loses everything after the first one. Worse, when
-> `content[0]` is neither `text` nor `tool_use` — a `thinking` block, say, which any reasoning
-> model may emit — it matches no branch at all and the ENTIRE message is dropped, tool call
-> included. Verified by feeding this renderer a `thinking` + `tool_use` message: the report
-> showed the tool's *result* and no trace of the call that produced it. The defect predates
-> grok, affects ext-claude identically, and fixing it for every engine is out of scope here; it
-> is recorded at the call site so nobody debugs a run by reading a report that quietly dropped
-> half of it. Nothing in this plugin decides anything from `report.md`: every verdict is made
-> from `output.txt`, which `shared/extract-result.py` builds independently from `raw.jsonl`,
-> and `raw.jsonl` itself is kept whole.
+>
+> **`report.md` is the whole run rendered — decide from `output.txt`.** Not because the
+> rendering is lossy: `shared/stream-json-report.sh` used to read `.message.content[0]` and
+> nothing else, so a message mixing blocks lost everything after the first and a message
+> STARTING with `thinking` — the ordinary shape for a reasoning model, which grok is — matched
+> no branch and was dropped whole, tool call included. Measured on this skill's own acceptance
+> run: 22 of 23 assistant messages began with `thinking`, and the 904 KB report contained none
+> of the run's 79 tool calls, only their outputs — consequences with no causes. The renderer now
+> iterates every block and is pinned by `shared/tests/test-stream-json-report.sh`. What remains
+> true is the SIZE: `report.md` is ~930 KB against `output.txt`'s 10 KB on that same run. Nothing
+> in this plugin decides anything from it either way: every verdict is made from `output.txt`,
+> which `shared/extract-result.py` builds independently from `raw.jsonl`, and `raw.jsonl` itself
+> is kept whole.
 
 #### Supervised execution (SUPERVISED_MODE=shell)
 
