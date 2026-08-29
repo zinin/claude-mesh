@@ -353,8 +353,8 @@ assert_eq "exit 0" "0" "$RC"
 rm -rf "$TDIR"
 
 # === Test 23: the stall threshold is floored at 600 and says so ===
-# codex-exec and gemini-exec hardcode HARD_ZERO_TIMEOUT=600, so a lower watcher threshold would
-# call a live run silent 300s before its own watchdog would act on it.
+# codex-exec, gemini-exec and grok-exec hardcode HARD_ZERO_TIMEOUT=600, so a lower watcher
+# threshold would call a live run silent 300s before its own watchdog would act on it.
 echo "=== Test 23: --stall-sec below 600 is floored, with a warning ==="
 TDIR=$(mktemp -d)
 a=$(mk_run "$TDIR" codex -700); : > "$a/raw.jsonl"; touch -d '300 seconds ago' "$a/raw.jsonl" "$a"
@@ -620,6 +620,32 @@ theirs=$(mk_run "$TDIR" gemini -60 100003); sid_stamp "$theirs" sid-B
 run_as sid-A --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" gemini
 assert_match "follows the own retry" "$(basename "$retry")" "$(row gemini)"
 assert_match "row is DONE" "DONE" "$(row gemini)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 40: a grok roster entry follows runs/grok/<model>/"
+TDIR="$(mktemp -d)"
+a="$(mk_run "$TDIR" grok/grok-4.6)"
+wd_log "$a" 0; printf 'findings\n' > "$a/output.txt"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" grok/grok-4.6
+assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_match "grok row is DONE" "DONE" "$(row grok/grok-4.6)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 41: two grok models are watched independently"
+TDIR="$(mktemp -d)"
+a="$(mk_run "$TDIR" grok/grok-4.6)"
+wd_log "$a" 0; printf 'findings\n' > "$a/output.txt"
+b="$(mk_run "$TDIR" grok/grok-4.5 0 100001)"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" grok/grok-4.6 grok/grok-4.5
+assert_match "4.6 is DONE" "DONE" "$(row grok/grok-4.6)"
+assert_match "4.5 is still RUN" "RUN" "$(row grok/grok-4.5)"
+# RUN is also what an entry that resolved NOTHING reports inside the MISSING grace, so the
+# status alone stays green against a watcher blind to runs/grok/ — mutating resolve_run_dir to
+# skip grok entries leaves it passing, with an em dash where the dir name belongs. The dir name
+# is what proves the 4.5 run was found on its own, one directory over from the 4.6 one.
+assert_match "4.5 row names its own dir" "$(basename "$b")" "$(row grok/grok-4.5)"
 rm -rf "$TDIR"
 
 echo ""
