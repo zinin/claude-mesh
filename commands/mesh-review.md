@@ -131,7 +131,26 @@ CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
 rm -f "$CM_ERR"
 echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
 echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
+# The preset, READ HERE because Q1 and Step 2.1 draw ★ markers from it and this fence is the
+# only thing standing between the config and those two pages. Without it those stars come from
+# a list nothing has loaded — the sibling orchestrator has always read it up front (SKILL.md
+# Step 5.0 binds DEFAULTS_JSON and says in as many words that its model page "needs no loader
+# read of its own"), and this file simply never did. rc-aware and never through a pipe, for the
+# reason Step 2.4 gives: get-defaults is what runs validate_defaults, so a fail-closed preset
+# error now surfaces on the FIRST screen instead of two steps in.
+CR_ERR=$(mktemp)
+CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CR_ERR") \
+    || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CR_ERR" >&2; rm -f "$CR_ERR"; exit 1; }
+rm -f "$CR_ERR"
+echo "CR_DEFAULTS=$CR_DEFAULTS"
 ```
+
+Parse `CR_DEFAULTS` with jq (`.builtin`, `.claude_models`, `.grok_models`, `.models`) into the ★
+sets the pages below mark with: the recommended built-in set for Q1 and Step 2.1,
+`CLAUDE_DEFAULT_IDS` for Step 2.4, `GROK_DEFAULT_IDS` for Step 2.45 and `DEFAULT_IDS` for Step 3.
+Those later steps re-read the preset in their own fences anyway — each runs in a fresh shell where
+`$LOADER` no longer exists, and re-resolving it costs one local script call — but the ★ decisions
+on Q1 and Step 2.1 have no fence of their own and are made from THIS read.
 
 rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it) (iter-3 CRITICAL-3).
 
@@ -206,7 +225,8 @@ options:
     description: "внешнее ревью через <engine> CLI"
 ```
 
-The ★ comes from the same `defaults.code_review.builtin` list Q1's own ★ markers came from — no
+The ★ comes from the same `defaults.code_review.builtin` list Q1's own ★ markers came from,
+which Step 1's fence read into `CR_DEFAULTS` — no
 new loader read here. AskUserQuestion has no `preSelected` API, which is why the recommendation
 travels in the label text, exactly as in Step 2.4 and Step 3.
 
@@ -246,8 +266,11 @@ Build `CLAUDE_DEFAULT_IDS` from the preset — **rc-aware, and never through a p
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
-# This is the FIRST get-defaults call on the interactive path, so it is the first thing
-# that runs validate_defaults — which means a bad `claude_models` surfaces exactly here.
+# NOT the first get-defaults call on the interactive path any more — Step 1 reads the preset
+# for Q1's and Step 2.1's ★ markers, so validate_defaults has already run and a bad
+# `claude_models` has already surfaced there. This read stands for the fresh-shell reason
+# above, and its rc handling stays: a config the user edited between the two screens is a
+# state this page must still survive.
 # `"$LOADER" get-defaults … | jq …` would take its status from jq and swallow the new
 # fail-closed guard (rc=1) entirely, turning a hard error into an empty list.
 CD_ERR=$(mktemp)
