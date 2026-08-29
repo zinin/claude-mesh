@@ -293,8 +293,18 @@ echo ""
 # No stdbuf, unlike the three sibling skills: the grok binary is statically linked
 # (`file -L "$(command -v grok)"` reports "static-pie linked"), and stdbuf works by preloading
 # libstdbuf through a dynamic loader that is not there — it would be a silent no-op. It is not
-# needed either: the stream was measured reaching a redirected file unbuffered. Keep this
-# comment; without it the next reader "restores parity" with codex/gemini and reintroduces it.
+# needed either, and that holds for BOTH shapes this skill uses — which is worth spelling out,
+# because the block right below sends stdout into a PIPE while supervised mode redirects it to a
+# file, and a claim measured on only one of them would not cover the other. Measured on grok
+# 1.0.5: to a redirected file, the stream grows while the run is live; through a pipe into
+# `while read`, a five-event agentic run delivered its events at 3.44s, 5.89s, 7.35s, 7.70s and
+# 7.71s against a process that exited at 8.13s — spread across the run, not delivered in one
+# burst at exit, which is what block buffering would look like. Reproduce with:
+#   grok --prompt-file <(echo 'List the files here, then reply DONE.') \
+#        --output-format streaming-messages-json --permission-mode bypassPermissions --no-plan \
+#        -m <model> | while IFS= read -r l; do date +%s.%N; done
+# Keep this comment; without it the next reader "restores parity" with codex/gemini and
+# reintroduces stdbuf, or "fixes" a pipe-buffering problem this binary does not have.
 # ${GROK_ARGS[@]+"${GROK_ARGS[@]}"}, not "${GROK_ARGS[@]}": under `set -u` bash 4.2 treats the
 # plain form on an EMPTY array as an unbound variable and aborts, and this project supports
 # bash 4.2. Do not "simplify" it back.
