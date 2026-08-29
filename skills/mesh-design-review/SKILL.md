@@ -1108,6 +1108,7 @@ iteration file:
 | `config.yaml` not found (loader rc=2) | Copy `config.example.yaml` into the dir `"$LOADER" data-dir` prints, fill tokens, retry (a literal placeholder here is substituted by the harness and points at the wrong dir under a `--plugin-dir` load) |
 | `config.yaml` invalid (loader rc=1) | Surface the validator stderr to the user; the USER edits config.yaml (agents never modify it); retry after the user confirms |
 | `defaults.design_review` missing (with `default` arg) | Run without `default`, or add the preset to `config.yaml` |
+| A CLI engine's own section does not validate while a preset names it (`get-defaults` returns `grok_degraded: true`) | Not an error to stop on: the loader has already degraded that engine ALONE — dropped from `builtin`, its model list emptied — so every other reviewer this run asked for still runs. That flag is the only thing saying a reviewer you asked for is not running, so announce it verbatim per Step 5.1, continue, and never substitute another engine for it. The USER edits `config.yaml`; agents never do |
 | One agent fails, others succeed | Continue with available results, note failure in merged output |
 | All agents fail | Show error, save progress, allow retry |
 | `claude-mesh:review-discussion` fails | Show error, save progress |
