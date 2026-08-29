@@ -132,7 +132,12 @@ names one, `-m` is omitted and `~/.grok/config.toml` decides. A hardcoded fallba
 silently override the user's own setting. This applies to a direct `/claude-mesh:grok-exec`
 call; review dispatch always carries a model.
 
-**A broken `grok:` section fails its own row, never the environment.** The catalog check that
+**A broken `grok:` section fails its own row, never the environment.** (Implemented in two
+halves. The UNREFERENCED half is the laziness described below. The REFERENCED half — a preset
+that names grok while the catalog is broken — was found by Task 14's own acceptance review to
+still ground everything, because `validate_defaults` died there; it now DEGRADES instead,
+dropping grok from the preset it emits and reporting `grok_degraded: true` so `default` mode
+can announce the missing reviewer. `validate` stays strict on the full path.) The catalog check that
 runs on the `validate_defaults` path — the one `cmd_get_defaults` triggers, and through it
 `preflight-env.sh`'s `CONFIG_STATUS` and the first read of both orchestrators — is LAZY: an
 unconditional type gate (so `jq` never meets `grok: false`), and the full catalog check only

@@ -1448,6 +1448,32 @@ assert_exit "get-defaults still answers with a malformed grok section" "0" "$RC"
 cp "$FIXTURES/unreferenced-broken-grok.yaml" "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate rejects a catalog-less grok section no preset references" "1" "$RC"
+
+# The REFERENCED case, the other half of the same invariant. `grok` is named by BOTH presets
+# while the catalog is broken — config.example.yaml's own shape with one typo. The preset read
+# must DEGRADE grok alone and keep answering: a typo in a user-owned file must not ground the
+# claude and codex rows of a run that never asked for grok (the `ultra` incident's shape).
+# `validate` stays strict on the full path, and has_grok still exits 1 so preflight-env.sh
+# prints INVALID on the grok row rather than a MISSING one.
+GD_OUT=$(mktemp)
+cp "$FIXTURES/broken-grok-referenced.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "get-defaults answers when a REFERENCED grok catalog is broken" "0" "$RC"
+assert_eq_str "…with grok dropped from builtin" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…grok_models emptied" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…the degradation flagged for default mode" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…and the other engines untouched" "opus fable" "$(jq -r '.claude_models | join(" ")' "$GD_OUT" 2>/dev/null)"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "…the second preset degrades the same way" "0" "$RC"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+assert_exit "validate still rejects a referenced broken catalog" "1" "$RC"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok still exits 1 on it, so the grok row reads INVALID" "1" "$RC"
+# The UNREFERENCED fixture must not be flagged: nothing read its catalog, so nothing degraded.
+cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"
+assert_eq_str "grok_degraded is false when no preset references grok" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+rm -f "$GD_OUT"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-defaults ignores a grok section no preset references" "0" "$RC"
 

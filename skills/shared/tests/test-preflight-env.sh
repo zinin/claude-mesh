@@ -564,6 +564,25 @@ run_probe broken-grok-valid-codex.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
 assert_eq   "malformed grok section -> INVALID" INVALID "$(field grok "$OUT")"
 assert_match "…with the validator's own reason" "grok.models" "$OUT"
 
+# The REFERENCED broken catalog — config.example.yaml's own shape with one typo, and the case
+# the fixture above cannot reach: there `builtin: [codex]` never mentions grok. Here BOTH
+# presets do. The invariant under test is the whole point of the lazy check: CONFIG stays OK
+# and every other row keeps its own verdict, while grok alone reports INVALID. Until the
+# loader degraded instead of dying, this printed `config INVALID` with SKIPPED on every row —
+# claude and codex included — off one typo in a user-owned file, which is the `ultra`
+# incident's shape. The defaults line is asserted SCOPED: an unscoped "no grok" over the whole
+# report is false by construction, because the grok row itself says grok.
+run_probe broken-grok-referenced.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_eq   "referenced broken grok catalog -> config stays OK" OK "$(field config "$OUT")"
+assert_eq   "…and grok alone is INVALID"        INVALID "$(field grok "$OUT")"
+assert_eq   "…claude-models keeps its verdict"  OK      "$(field claude-models "$OUT")"
+# NB: $OUT holds the report TEXT, not a path — grep it with a here-string. `grep … "$OUT"`
+# reads it as a FILENAME, and the resulting error message becomes the haystack: the no_match
+# below then passes against grep's own "No such file or directory", asserting nothing.
+assert_match "…claude survives into available"  "claude:opus" "$(grep 'SUMMARY available' <<<"$OUT")"
+assert_no_match "…and the preset dispatches no grok" "grok" "$(grep 'SUMMARY defaults code_review' <<<"$OUT")"
+
 # PREFLIGHT_SKIP_NETWORK must skip the command probe too, not run it silently. TWO assertions
 # are needed and neither is redundant. The message is matched against the grok ROW, not the
 # whole report: provider:zai and git-remote print that same sentence in this very scenario, so

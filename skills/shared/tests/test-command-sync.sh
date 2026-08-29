@@ -269,6 +269,14 @@ assert_ge "mesh-review dispatches grok-code-reviewer" "1" \
 assert_eq "mesh-review never dispatches grok-executor" "0" \
     "$(grep -c 'claude-mesh:grok-executor' "$MESH_REVIEW")"
 
+# `grok_degraded` is the loader's only signal that a preset asked for grok and got nothing —
+# it emits the preset with grok stripped, so the absence is otherwise invisible. Both preset
+# branches must read it, or `default` mode silently runs one reviewer short of what was asked.
+assert_ge "mesh-review honours grok_degraded" "1" \
+    "$(grep -c 'grok_degraded' "$MESH_REVIEW")"
+assert_ge "design review honours grok_degraded" "1" \
+    "$(grep -c 'grok_degraded' "$DESIGN_SKILL")"
+
 # The per-model selection list, in BOTH files. 4 is a floor, not a measurement: each
 # orchestrator has to default it to empty, fill it from the config or the selection page,
 # expand it into one reviewer per entry, and carry it into its own status accounting. A file

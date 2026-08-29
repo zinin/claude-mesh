@@ -299,7 +299,7 @@ echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
 echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
 ```
 
-rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.grok_models`, `.models`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models), `GROK_DEFAULT_IDS` (recommended grok models — the ★ set Step 5.2.6 marks with, so that page needs no loader read of its own) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_GROK` / `HAS_MODELS` / `HAS_CLAUDE_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
+rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.grok_models`, `.models`, `.grok_degraded`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models), `GROK_DEFAULT_IDS` (recommended grok models — the ★ set Step 5.2.6 marks with, so that page needs no loader read of its own) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_GROK` / `HAS_MODELS` / `HAS_CLAUDE_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
 
 #### Step 5.1: `default` argument → use the preset
 
@@ -335,6 +335,7 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
     guarantees a non-empty list whenever `grok` is in `builtin` (`config-loader.sh:828` — "a grok
     reviewer cannot start without a model"), so this branch has no fallback and cannot dispatch
     nothing.
+  - **If `.grok_degraded` is `true`, dispatch no grok executor and SAY SO.** The loader sets it when this preset names grok while the `grok:` catalog does not validate: it strips `grok` from `.builtin` and empties `.grok_models` instead of failing the read, so one typo cannot ground the codex, gemini, claude and ext-claude executors this run also asked for. The flag is the only signal that a requested executor is absent, so print it: `grok: каталог grok.models не валидируется — grok-исполнитель не запущен; остальные движки работают. config.yaml правит пользователь, агенты его не трогают.` Do not stop and do not substitute another engine.
   - **Bind `SELECTED_GROK_MODELS` to that list here** (the empty list when `grok` is absent from
     `builtin`), exactly as `SELECTED_CLAUDE_MODELS` is bound above. Step 5.4 remembers it for
     iterations 2..N and the Step 6 dispatch consumes it unconditionally, so in `default` mode it
