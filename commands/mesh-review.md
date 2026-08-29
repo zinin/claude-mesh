@@ -38,7 +38,7 @@ defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bou
 **If `default` is among the arguments** — in any order, alone or combined with `BASE_BRANCH=` and
 `autodecide` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
 - Skip Steps 1-3 entirely.
-- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
+- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.grok_models`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
 - Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly; rc=1 ⇒ surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it).
 - If `defaults.code_review` not configured → STOP with error:
   `defaults.code_review not configured in config.yaml. Use /claude-mesh:mesh-review without argument or add the preset.`
@@ -49,6 +49,13 @@ defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bou
     - list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the behaviour from before this feature and stays the default.
   - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (it is `defaults.code_review.claude_models`, or empty in the fallback case). Step 5a and Step 5b both dispatch "one Task per entry of `SELECTED_CLAUDE_MODELS`" **unconditionally** — the interactive path fills it in Step 2.4, and without this line the variable would simply be undefined in `default` mode. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises, and `default` mode quietly dispatches one reviewer instead of N.
   - `codex` / `gemini` in `defaults.code_review.builtin` → spawn the corresponding agent.
+  <!-- SYNC: the "no fallback" rule in the next bullet is ONE rule living in four places — this
+       bullet, this file's Step 2.45 ("An empty selection runs no grok reviewer"), the same
+       paragraph in the sibling orchestrator, and the design's §1 note that grok_models is
+       required whenever grok is in builtin. This is the twin of the marker Step 2.45 carries,
+       worded from this site exactly as the claude fallback rule's own two markers are. Change
+       all four or none: a copy that still promises a fallback would have the orchestrator
+       dispatch a reviewer the agent then refuses to start for want of a MODEL. -->
   - `grok` in `defaults.code_review.builtin` → **one `grok-code-reviewer` per entry of `defaults.code_review.grok_models`**, each dispatched with `MODEL=<entry>` alone on the FIRST line of its prompt (and `BASE_BRANCH=<branch>` on the line directly under it when that argument was given — the exact shape is in Step 5a's grok bullet). Name them `grok:<model>` everywhere downstream. The config validator guarantees that list is non-empty whenever `grok` is in `builtin` (`config-loader.sh:828` — "a grok reviewer cannot start without a model"), so there is no fallback branch here and no case where `grok` in the preset dispatches nothing.
   - **Bind `SELECTED_GROK_MODELS` to `defaults.code_review.grok_models` here** (the empty list when `grok` is not in `builtin`), for the same reason `SELECTED_CLAUDE_MODELS` is bound just above: Step 5a and Step 5b consume it unconditionally, the interactive path fills it in Step 2.45, and an unbound name in a prompt raises nothing at all — the reader improvises.
   - For each model id in `defaults.code_review.models`, spawn `ext-claude-code-reviewer` with `MODEL=<id>`.
@@ -159,6 +166,11 @@ as it did when Q1 named the engines directly; no other step changes shape.
   list** — Step 2.45 never runs on this path and Step 5a consumes the name unconditionally.
 - "external models" not selected → skip Step 3 entirely.
 
+**Bind `SELECTED_TYPES` here**, to Q1's answer with «внешние CLI» replaced by whatever Step 2.1
+selects — by nothing at all when that option was not chosen and the page is skipped. Q1 and
+Step 2.1's fold are the ONLY two writes to this set in the file; Step 2.45's gate, Step 2.5's
+list and Step 5a / Step 5b's dispatch only ever read it.
+
 ## Step 2.1: CLI-engine selection
 
 (No `Q1.x` label, for the same reason Step 2.4 carries none: this page runs *before* Step 2.5's
@@ -171,8 +183,9 @@ offer an engine whose flag is `0` — it has no config section to run from, and 
 also mean Step 1 degraded it after a validator error it already printed.
 
 **Exactly one engine configured → skip the page and select that engine implicitly**, saying so in
-one line (`Внешний CLI: codex (единственный настроенный)`). Without this, every single-engine
-user pays an extra screen for a problem they do not have.
+one line (`Внешний CLI: codex (единственный настроенный)`) — the engine enters `SELECTED_TYPES`
+exactly as a page selection would, per the fold below. Without this, every single-engine user
+pays an extra screen for a problem they do not have.
 
 Otherwise ask ONE page — **not** a pagination loop. `AskUserQuestion` caps options at 4 and there
 are three CLI engines, so a `chunk of 4` loop would have exactly one iteration today and still
@@ -194,8 +207,11 @@ The ★ comes from the same `defaults.code_review.builtin` list Q1's own ★ mar
 new loader read here. AskUserQuestion has no `preSelected` API, which is why the recommendation
 travels in the label text, exactly as in Step 2.4 and Step 3.
 
-**Fold the answer into `SELECTED_TYPES` as the individual engine names** — `codex`, `gemini`,
-`grok` — and never as the «внешние CLI» option itself. That set is what Step 2.5 lists, what
+**Fold the selection — the page's answer, or the single engine chosen implicitly above — into
+`SELECTED_TYPES` as the individual engine names** (`codex`, `gemini`, `grok`), and never as the
+«внешние CLI» option itself. The implicit path folds exactly as the page does; skipping the
+question is not skipping the write, and an engine that never reaches `SELECTED_TYPES` is silently
+dropped at Step 2.45's gate and dispatched by nothing. That set is what Step 2.5 lists, what
 Step 5a and Step 5b dispatch from, and what Step 6.0 builds its roster from.
 
 **Selecting no engine is not an error** — the same rule the model pages already follow. It means
