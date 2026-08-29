@@ -27,6 +27,10 @@
 # record. That record lives under docs/superpowers/, which is `git rm`'d before any PR — so on
 # master the file is absent and assertion 3 SKIPS with a note. It must never fail for absence;
 # assertions 1-2 read only commands/*.md and stay hard everywhere.
+#
+# Test 6 is the odd one out and deliberately so: it reads the two ORCHESTRATORS, not the
+# generators, and asserts absolute facts about each rather than equality between them. Its own
+# header says why an equality check would be the wrong tool there.
 set -u
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$TESTS_DIR/../../.." && pwd)"
@@ -59,6 +63,23 @@ assert_identical() {
     else
         FAIL=$((FAIL+1)); echo "  FAIL: $desc"
         diff <(printf '%s\n' "$a") <(printf '%s\n' "$b") | sed 's/^/        /'
+    fi
+}
+
+# Numeric floor, for a fact whose exact count is not a contract: a phrase that legitimately
+# occurs several times, where zero is the failure and 7-versus-5 is not. A non-numeric actual
+# (grep on a file that moved prints nothing) is a FAILURE, not a silent pass.
+assert_ge() {
+    local desc="$1" min="$2" actual="$3"
+    case "$actual" in
+        ''|*[!0-9]*)
+            FAIL=$((FAIL+1)); echo "  FAIL: $desc (expected a count >= $min, got '$actual' — did the file move?)"
+            return ;;
+    esac
+    if [ "$actual" -ge "$min" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $desc ($actual >= $min)"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $desc (expected >= $min, got $actual)"
     fi
 }
 
@@ -183,8 +204,14 @@ fi
 #      lone `code span`.
 # The prohibition line in each file is prose and is the ONLY permitted mention — pattern 1 does
 # not match it (a backtick follows the name, not a subcommand) and pattern 2 is what it is.
+#
+# LOADER_SUBCMDS is the loader's full vocabulary — the alternation pattern 1 looks for AFTER
+# the script name. It does NOT pin what the orchestrators may call; it widens what these two
+# GENERATORS are forbidden to invoke. A subcommand missing from it is a hole of exactly that
+# width: a generator could write `config-loader.sh get-grok` and pattern 1 would not see it.
+# Keep it equal to the case arms at the bottom of config-loader.sh.
 echo "=== Test 5: the generators never read the local config ==="
-LOADER_SUBCMDS='validate|data-dir|export|get-flag|list-models|list-claude-models|list-providers|get-defaults|get-runtime|get-codex|get-gemini'
+LOADER_SUBCMDS='validate|data-dir|export|get-flag|list-models|list-claude-models|list-grok-models|list-providers|get-defaults|get-runtime|get-codex|get-gemini|get-grok'
 for CMD_FILE in "$DESIGN_CMD" "$CODE_CMD"; do
     CMD_NAME="$(basename "$CMD_FILE")"
     assert_eq "$CMD_NAME: no config-loader.sh <subcommand> invocation" "0" \
@@ -199,6 +226,74 @@ for CMD_FILE in "$DESIGN_CMD" "$CODE_CMD"; do
     # legitimate, raise the number on purpose rather than deleting the assertion.
     assert_eq "$CMD_NAME: …and the prohibition itself is still in the file" "1" "$QUOTED"
 done
+
+# === Test 6: the grok orchestrator contract, asserted per file ===
+# Tests 1-5 hold the two GENERATORS against EACH OTHER. The two ORCHESTRATORS
+# (commands/mesh-review.md and skills/mesh-design-review/SKILL.md) are a different kind of
+# pair: they are deliberately not interchangeable, so equality between them would be the wrong
+# assertion — and a mistake made identically in both would satisfy it anyway. Every
+# orchestrator defect this branch's review surfaced was of that shape: the wrong agent type in
+# design review, a missing SELECTED_GROK_MODELS binding, an enumeration left at three engines.
+# So this test asserts ABSOLUTE facts, one file at a time.
+#
+# The positive assertions are PRESENCE checks (>= 1), never exact counts. The design skill
+# names grok-executor five times and mesh-review spells `grok:grok-4.6` seven; those are
+# illustrative occurrences — the dispatch pair list, the guard spec, the status table, the
+# attribution rule — and not a contract, so pinning the number would fail on the next
+# legitimate paragraph. The NEGATIVE assertions stay an exact 0: absence IS the contract.
+echo "=== Test 6: the grok orchestrator contract ==="
+MESH_REVIEW="$CMD_DIR/mesh-review.md"
+DESIGN_SKILL="$REPO/skills/mesh-design-review/SKILL.md"
+
+# First, that both files are where this test thinks they are. Without it the `0` assertions
+# below would pass on a moved file — grep prints no count and finds no forbidden string, which
+# is indistinguishable from the file being correct. This is the vacuity the rest depends on.
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    if [ -f "$f" ]; then
+        PASS=$((PASS+1)); echo "  PASS: ${f#"$REPO"/} is where this test reads it"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: ${f#"$REPO"/} not found — every assertion below would read nothing"
+    fi
+done
+
+# Agent type per orchestrator. /mesh-design-review dispatches EXECUTORS, because it composes
+# its own document-review prompt; /mesh-review dispatches the code-reviewer wrappers, which
+# build a diff-review prompt of their own. Cross them and grok reviews a git diff during a
+# design review — a run that looks entirely healthy while answering the wrong question.
+assert_ge "design review dispatches grok-executor" "1" \
+    "$(grep -c 'claude-mesh:grok-executor' "$DESIGN_SKILL")"
+assert_eq "design review never dispatches grok-code-reviewer" "0" \
+    "$(grep -c 'claude-mesh:grok-code-reviewer' "$DESIGN_SKILL")"
+assert_ge "mesh-review dispatches grok-code-reviewer" "1" \
+    "$(grep -c 'claude-mesh:grok-code-reviewer' "$MESH_REVIEW")"
+
+# The per-model selection list, in BOTH files. 4 is a floor, not a measurement: each
+# orchestrator has to default it to empty, fill it from the config or the selection page,
+# expand it into one reviewer per entry, and carry it into its own status accounting. A file
+# naming it fewer than four times has dropped one of those steps.
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_ge "${f#"$REPO"/} binds SELECTED_GROK_MODELS" "4" \
+        "$(grep -c 'SELECTED_GROK_MODELS' "$f")"
+done
+
+# Two spellings that are never interchangeable: `grok:<model>` names a reviewer and a dispatch
+# pair, `grok/<model>` is a watch-runs.sh roster entry (and the shape of the run directory).
+# Swap them and the watcher waits on a roster entry no run will ever create, or the attribution
+# table names a reviewer the orchestrator never dispatched. Both files use both; both must keep
+# both — `grok-4.6` is the worked example each of them carries.
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_ge "${f#"$REPO"/}: watcher roster spells grok/<model>" "1" \
+        "$(grep -c 'grok/grok-4\.6' "$f")"
+    assert_ge "${f#"$REPO"/}: reviewer name spells grok:<model>" "1" \
+        "$(grep -c 'grok:grok-4\.6' "$f")"
+done
+
+# No enumeration of the dispatchable engines left at three. This is the defect class a sweep
+# for `grok` cannot find: a list that names every engine BUT the new one contains no token you
+# would grep for. Pinned as the exact phrase because that is what such a list reads like once
+# the fourth engine exists and the sentence was not touched.
+assert_eq "no stale 'codex / gemini / ext-claude' enumeration" "0" \
+    "$(cat "$MESH_REVIEW" "$DESIGN_SKILL" | grep -c 'codex / gemini / ext-claude')"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="

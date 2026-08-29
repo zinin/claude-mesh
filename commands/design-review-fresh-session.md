@@ -125,12 +125,12 @@ bash "$PF"
 
 Print the table verbatim. Do not soften a verdict into "probably fine". `OK` on the codex /
 gemini rows is a heuristic — binary present, section valid, endpoint answered; NOT an auth
-check, and it does not prove the CLI points at that endpoint. `OK` on gh / glab means
-presence on PATH only. If the script is not
-found, say so and ask the user whether to update the plugin in this sandbox first or proceed
-on the built-in `claude` reviewer alone — and before offering that, check a `config.yaml`
-exists in the plugin data dir: claude needs no config section, but the review skills refuse
-to start without a usable config.yaml at all.
+check, and it does not prove the CLI points at that endpoint. `OK` on grok is stronger: the
+probe runs the CLI itself, which answers only when a login is live. `OK` on gh / glab means
+presence on PATH only. If the script is not found, say so and ask the user whether to update
+the plugin in this sandbox first or proceed on the built-in `claude` reviewer alone — and
+before offering that, check a `config.yaml` exists in the plugin data dir: claude needs no
+config section, but the review skills refuse to start without a usable config.yaml at all.
 
 ## CONTEXT
 
@@ -153,7 +153,8 @@ whether that endpoint answered, not whether the orchestrator starts. With a reje
 section, `provider:*` rows can read `OK` next to `SUMMARY available: —`, and both orchestrators
 exit on the catalog read before offering anything. **The ROWS carry the caveats** the summary
 has no room for: `OK` on codex / gemini is a heuristic — binary present, section valid,
-endpoint answered — and says nothing about auth.
+endpoint answered — and says nothing about auth, while `OK` on grok also means a live login:
+its probe runs the CLI itself.
 
 Whether the `default` argument is safe here is a membership check between two SUMMARY lines.
 Split both on `, ` and compare WHOLE entries — never substrings: a bare `claude` is a substring

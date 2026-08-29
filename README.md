@@ -15,7 +15,9 @@ daemon), and session helpers.
   takes the same `autodecide` argument
 - **`ext-claude-code-reviewer` / `ext-claude-executor` agents** — Anthropic-API-compatible
   models on alt providers (one agent, any provider, any model)
-- **`codex-*`, `gemini-*` agents** — wrappers for OpenAI Codex CLI and Gemini CLI
+- **`codex-*`, `gemini-*`, `grok-*` agents** — wrappers for the OpenAI Codex, Gemini and xAI
+  Grok CLIs. The grok wrappers take a `MODEL` from the `grok.models` catalog, so one
+  `/mesh-review` can run several grok models as independent reviewers
 - **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
   `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
   `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`
@@ -57,7 +59,8 @@ cp ~/.claude/plugins/cache/*/claude-mesh/*/config.example.yaml \
 2. Edit `~/.claude/plugins/data/claude-mesh-zinin/config.yaml`:
    - Add your providers (URL + token) under `providers:`
    - Add your models under `models:` with id format `<provider>/<short>`
-   - Optionally configure `codex:` / `gemini:` sections
+   - Optionally configure `codex:` / `gemini:` / `grok:` sections (`grok:` also needs a
+     non-empty `models:` catalog — see the schema table below)
    - Adjust `defaults:` for `/claude-mesh:mesh-review default` and `/claude-mesh:mesh-design-review default`
 
 3. Verify config:
@@ -124,11 +127,11 @@ value before the harness intervenes — which is exactly the runaway the default
 
 The plugin requires:
 - `claude` CLI (this plugin runs on top of Claude Code). Mesh agents pin no model — subagents inherit your session model by default. To force a specific tier (e.g. `opus`, `fable`), set `runtime.dispatch_model` in config.yaml; if you name a model your Claude Code build does not support, dispatch fails at runtime — pick a supported alias/id.
-  - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once) — whether the models come from the preset or from the interactive selection page — and those reviewers ignore `dispatch_model`. Leave the section out (or leave the list empty) and — whenever `claude` is selected at all (interactively, or via the preset's `builtin`) — you get exactly one claude reviewer on `dispatch_model` — as before for `/mesh-review`, and one more than before for `/mesh-design-review`, where `claude` used to be silently dropped. Without `claude` in play no claude reviewer runs, catalog or no catalog. **Cost scales linearly:** N Claude models = N full reviews of the same diff, on top of codex/gemini and every external model — three Claude models plus codex plus five external models is nine reviewers for one `/mesh-review`. Catalog entries are not checked against your Claude Code build: a name it does not accept fails that reviewer's dispatch — the run continues with the others, and the model is never silently substituted.
+  - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / grok / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once) — whether the models come from the preset or from the interactive selection page — and those reviewers ignore `dispatch_model`. Leave the section out (or leave the list empty) and — whenever `claude` is selected at all (interactively, or via the preset's `builtin`) — you get exactly one claude reviewer on `dispatch_model` — as before for `/mesh-review`, and one more than before for `/mesh-design-review`, where `claude` used to be silently dropped. Without `claude` in play no claude reviewer runs, catalog or no catalog. **Cost scales linearly:** N Claude models = N full reviews of the same diff, on top of codex/gemini and every external model — three Claude models plus codex plus five external models is nine reviewers for one `/mesh-review`. Catalog entries are not checked against your Claude Code build: a name it does not accept fails that reviewer's dispatch — the run continues with the others, and the model is never silently substituted.
 - `yq` — **either flavor**: Python-yq (`kislyuk/yq`) or Go-yq v4+ (`mikefarah/yq`). `config-loader.sh` does not identify the binary: it runs the transcode, keeps whichever invocation produced JSON, and — when the config contains a value that could have been mis-resolved — checks that `off`/`on`/`yes`/`no` came through as strings before trusting it. A `yq` that fails either check is refused by name, and your `config.yaml` is not blamed for it.
 - `jq` — for JSON parsing in stream-json mode
 - `bc`, `curl` — for `ext-claude-exec` skill
-- `python3` — for `ext-claude-exec` and for prompt templating (`shared/render-template.py`) in ALL review skills (`ext-claude-`, `codex-`, `gemini-code-review`)
+- `python3` — for `ext-claude-exec` and for prompt templating (`shared/render-template.py`) in ALL review skills (`ext-claude-`, `codex-`, `gemini-`, `grok-code-review`); also for `shared/extract-result.py`, which `ext-claude-exec` and `grok-exec` both use to pull the final answer out of the stream
 - `codex` CLI (only if using codex agents)
 - `gemini` CLI (only if using gemini agents)
 - `grok` CLI (only if using grok agents). It authenticates itself (`grok login`); claude-mesh never handles a grok token. Unlike codex and gemini, grok also reads your `~/.claude/CLAUDE.md` and every installed claude-* plugin — a grok reviewer starts with your project rules in context, and its review prompt forbids it from invoking any of those skills
@@ -161,7 +164,7 @@ See `config.example.yaml` for the canonical example. Sections:
 | `claude:` | no | `models:` — catalog of Claude model aliases offered for the built-in `claude` reviewer; each selected entry becomes one independent reviewer. Omit it (together with any `defaults.*.claude_models`) for the previous single-reviewer behaviour |
 | `codex:` | no | model + reasoning_level for codex CLI — the default for `/codex-*` skills and reviews unless the caller overrides; unknown levels pass through with a WARN (known set as of 2026-07 is listed in `config.example.yaml`) |
 | `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
-| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer (required when the section exists); `reasoning_effort:` — one of low/medium/high/xhigh/max (run `grok --help` for the current set), unknown values pass through with a WARN. Each selected entry becomes one independent reviewer |
+| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer. Required when the section exists, **and it must hold at least one entry**: both a missing `models:` and an empty `models: []` are hard errors, because the grok reviewer agent refuses to start without a model (`claude:`'s catalog is optional; this one is not, and its charset is narrower — see `config.example.yaml`). `reasoning_effort:` — one of low/medium/high/xhigh/max (run `grok --help` for the current set), unknown values pass through with a WARN. Each selected entry becomes one independent reviewer, and **cost scales the same way it does for `claude.models`**. Entries are never checked against your CLI's own list and never substituted: an id your `grok` does not accept fails that reviewer's run, and the others carry on |
 | `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |
 | `runtime:` | no | UI defaults + timeouts |
 
@@ -185,6 +188,9 @@ to a safe location before uninstalling.
 | `config.yaml not found at ...` | See "Configure" section above |
 | `models[X] references missing provider "Y"` | Add a `providers[]` entry with `id: Y` |
 | `Token expired or invalid for ...` | Update `token:` in the corresponding `providers[]` entry |
+| `grok: command not found` | Install Grok Build, then `grok login` |
+| `grok` row reads `NO-NETWORK` in the probe | `grok models` failed: no network, or the CLI is signed out — run `grok login` |
+| A grok reviewer's `output.txt` reads `API Error: Couldn't set model to <id>` | The id in `grok.models` is not one this machine's CLI accepts — claude-mesh does not check ids and never substitutes one. Run `grok models`: it prints `Default model:` and then `Available models:`, one `  - <id>` per line with `*` marking the default — copy an id from there verbatim |
 | `Ollama daemon not running` | `ollama serve` or `systemctl start ollama` |
 | `Daemon up but /api/tags returns error` | `ollama signin` |
 | `HTTP 404 / 501 from LiteLLM provider` | LiteLLM is in OpenAI-compat mode — enable Anthropic mode in your LiteLLM config, or pass `SKIP_TOKEN_PRECHECK=1` to `ext-claude-exec` |

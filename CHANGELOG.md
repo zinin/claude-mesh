@@ -2,6 +2,46 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Added
+- **grok is a third CLI reviewer engine**, alongside codex and gemini: `grok-exec` /
+  `grok-code-review` skills, `grok-executor` / `grok-code-reviewer` agents, a gated `grok:`
+  config section, a row in the environment probe, and a place in the selection UI of both
+  `/mesh-review` and `/mesh-design-review`. Unlike codex and gemini, grok carries a model
+  CATALOG — `grok.models`, with `defaults.<preset>.grok_models` choosing which entries a
+  preset runs — so one review can cross-check itself across several grok models, exactly as
+  `claude.models` already allows for the built-in reviewer. Cost scales the same way: each
+  entry is one more full review of the same diff.
+- The grok runs speak the Claude Code wire format (`--output-format streaming-messages-json`),
+  so the report renderer serves them unchanged and `verify-delegation.sh` judges them on the
+  same branch as `ext-claude` — which is why grok reaches the `DEGRADED` verdict, a state
+  codex and gemini cannot express. Sharing that branch was not free in two places: it now
+  carries a grok-specific remedy for a refused tool call (`grok-exec` already passes
+  `--permission-mode bypassPermissions`, so ext-claude's "add the flag" advice would be
+  wrong), and `shared/extract-result.py` learned grok's TOP-LEVEL
+  `{"type":"error","message":…}` shape — the one a bad `-m` produces, which until now
+  rendered as the literal `API Error: {}` with the message lost.
+
+### Changed
+- `skills/ext-claude-exec/generate-md.sh` moved to `skills/shared/stream-json-report.sh`. Two
+  engines render reports from the same stream format; the renderer had been living inside one
+  of them. Same signature, same output.
+- The model-catalog validator is now one function serving `claude:` and `grok:`. Its error
+  messages for `claude.models` are unchanged, byte for byte — pinned by a golden fixture.
+- `preflight-env.sh` probes a CLI with a command when an HTTP request cannot answer for it:
+  `grok models` reports network and login together, while a curl against `api.x.ai` would
+  describe an endpoint a grok.com subscription never calls. Read the table accordingly — `OK`
+  on the codex and gemini rows remains a heuristic that says nothing about auth, while `OK` on
+  the grok row means the CLI answered, so the login is live.
+
+### Requirements
+- `grok` CLI (only when using the grok agents). It authenticates itself; claude-mesh never
+  handles a grok token, and never checks or substitutes a model id — an id your CLI does not
+  accept fails that one reviewer's run. Note that grok also reads `~/.claude/CLAUDE.md` and
+  every installed claude-* plugin — the review prompt therefore forbids it from invoking any
+  skill.
+
 ## [0.11.0] - 2026-08-26
 
 ### Requirements
