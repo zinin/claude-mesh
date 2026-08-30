@@ -1763,7 +1763,7 @@ for FX in broken-grok-preset-no-models broken-grok-preset-orphan-models; do
         "$(jq '[.builtin[] | select(. == "grok")] | length' "$GD_OUT" 2>/dev/null)"
     assert_eq_str "$FX: grok_models emptied while degraded" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
     # Reported, not silenced: the preset error still reaches the user, as a WARN.
-    assert_stderr_contains "$FX: the preset error is still reported" "NOT fatal here" "$ERR"
+    assert_stderr_contains "$FX: the preset error is still reported" "NOT fatal for that preset" "$ERR"
     # And the strict path is untouched — validate_grok runs before validate_defaults in
     # validate_all and dies there, so the gate above is unreachable from `validate`.
     CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?

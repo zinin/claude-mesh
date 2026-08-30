@@ -939,7 +939,7 @@ validate_defaults() {
             else
                 GROK_CATALOG_BROKEN=1
                 grok_catalog=""
-                warn "defaults.$preset references grok but the grok: section does not validate — grok is disabled for this read, every other engine is unaffected. The loader says: ${grok_catalog_err#config-loader: }"
+                warn "defaults.$preset references grok but the grok: section does not validate — grok is disabled in defaults.$preset, every other engine is unaffected, and a preset that does not name grok is untouched. (validate_defaults walks the whole defaults: block on every read, so this line can name a preset you did not ask for.) The loader says: ${grok_catalog_err#config-loader: }"
             fi
             grok_catalog_read=1
         fi
@@ -966,7 +966,7 @@ validate_defaults() {
         # still exits 1 from `config-loader.sh validate`.
         grok_preset_die() {
             if [ "$GROK_CATALOG_BROKEN" -eq 1 ]; then
-                warn "$1 — reported and NOT fatal here: the grok: section does not validate either, so grok is dropped from this read whatever the preset says. Fix both; \`config-loader.sh validate\` still rejects the file."
+                warn "$1 — reported and NOT fatal for that preset: the grok: section does not validate either, so grok is dropped from it whatever the preset says. Fix both; \`config-loader.sh validate\` still rejects the file."
             else
                 die "$1"
             fi
