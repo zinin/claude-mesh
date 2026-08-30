@@ -210,7 +210,7 @@ grok:
   # CHARSET: [A-Za-z0-9._-] (first char alphanumeric), narrower than claude.models. A grok
   # model id becomes a directory name (runs/grok/<model>/) and a roster entry for the run
   # watcher, and neither accepts ':'.
-  models: [grok-4.6]                           # [required when grok: present, >=1 entry]
+  models: [grok-4.6, grok-4.5]                 # [required when grok: present, >=1 entry]
 
   # [optional] values this loader passes without a WARN, as of 2026-08 (grok 1.0.5):
   # low | medium | high | xhigh | max. NOT an enum — the set goes stale as xAI ships levels,
@@ -218,18 +218,43 @@ grok:
   # canonical copy — keep config-loader.sh's known-value case and the README row in sync
   # with it, and re-read `grok --help` whenever you touch any of the three.
   #
-  # One value for the whole section — but the CLI validates it PER MODEL, and rejects at
+  # The SECTION-WIDE default — but the CLI validates the flag PER MODEL, and rejects at
   # ARGUMENT PARSING with rc=1, before any API call, so an unsupported pair costs you the
-  # whole reviewer run and no diagnostic from here. Measured 2026-08-29 on grok 1.0.5:
+  # whole reviewer run and no diagnostic from here. Measured 2026-08-30 on grok 1.0.5:
   # grok-4.6 accepts xhigh|high|medium|low, grok-4.5 only high|medium|low, and that CLI's
-  # own default model all five — three different sets behind one binary. So the value must
-  # be valid for EVERY entry of the catalog above, which is why this example ships one
-  # model beside `xhigh` rather than two. To read a model's own set for free (it fails on
-  # the flag, never reaching the API): `grok -m <id> --effort __bogus__ -p x`.
+  # own default model all five — three different sets behind one binary. So this value must
+  # be valid for every catalog entry that `model_efforts` below does not override. To read a
+  # model's own set for free (it fails on the flag, never reaching the API):
+  # `grok -m <id> --effort __bogus__ -p x`.
   #
   # Omit the key and the CLI's own default applies (~/.grok/config.toml, [models]
   # default_reasoning_effort) — which is per-CLI, not per-model, and may well be `low`.
   reasoning_effort: xhigh
+
+  # [optional] PER-MODEL overrides of the level above — the key that lets one catalog hold
+  # models with different accepted sets. That is why grok-4.5 can sit beside grok-4.6 here:
+  # the section default `xhigh` is not a level grok-4.5 accepts, and without the override
+  # below every grok-4.5 run would die at argument parsing.
+  #
+  # Keys must be entries of `models:` above — a key outside the catalog is a HARD ERROR, not
+  # a no-op, because a silent no-op would leave you believing a model ran at a level it never
+  # got. Values follow `reasoning_effort`'s rules exactly: unknown ones pass through with a
+  # WARN, an empty one means "use the section default".
+  #
+  # Write only the EXCEPTIONS. Most models accept the top level, so one or two entries beside
+  # a section default usually cover a whole catalog. To regenerate the table when your catalog
+  # or your CLI changes — it never reaches the API, every probe fails on the flag:
+  #
+  #   for m in $(grok models | sed -n 's/^ *[-*] \([A-Za-z0-9._-]*\).*/\1/p'); do
+  #       printf '%-28s %s\n' "$m" "$(grok -m "$m" --effort __bogus__ -p x 2>&1 |
+  #           sed -n 's/.*use one of: //p' | head -1)"
+  #   done
+  #
+  # Rank each printed set by low < medium < high < xhigh < max and take the top one: the CLI
+  # prints them in different ORDERS per model, so position is not rank. A model that prints no
+  # set at all does not validate the flag — leave it out and it will ignore whatever it gets.
+  model_efforts:
+    grok-4.5: high
 
 
 # ============================================================================

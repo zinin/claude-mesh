@@ -1621,6 +1621,103 @@ else
 fi
 rm -rf "$TDIR" "$ACTUAL"
 
+# === Test 60: grok.model_efforts — per-model reasoning effort ===
+# `reasoning_effort` is ONE value for the whole section, but the CLI validates --effort PER
+# MODEL and rejects a bad pair at argument parsing (rc=1), before any API call. Measured
+# 2026-08-30 against grok 1.0.5: grok-4.6 accepts xhigh|high|medium|low, grok-4.5 only
+# high|medium|low, and most proxied entries all five. A catalog of more than one model
+# therefore cannot be served by a single level, and `model_efforts` overrides the section
+# default per model.
+#
+# It is validated exactly where `reasoning_effort` is — inside validate_grok, so `validate`,
+# `get-grok` and through it preflight's grok row see it, while `has_grok` and
+# `list-grok-models` do not. Deliberate, not a weaker gate: a new key does not invent a
+# stricter path than the key it sits beside, and that laziness is what keeps a broken grok
+# section from grounding a codex-only review.
+echo "=== Test 60: grok.model_efforts ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+ME_BASE='providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
+
+cp "$FIXTURES/valid-grok-model-efforts.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a well-formed model_efforts table" "0" "$RC"
+assert_stderr_lacks "…silently, its levels being known ones" "unknown value" "$ERR"
+
+assert_eq_str "get-grok <model> reads the table" \
+    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+assert_eq_str "…per model, not one value handed to every model" \
+    "high" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+assert_eq_str "a model absent from the table falls back to the section default" \
+    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok dks-ultra 2>/dev/null)"
+# The no-argument contract must not move: grok-exec passes "$MODEL", which is legitimately
+# empty on a direct call that names no model, and that call has to behave as it did before
+# this key existed.
+assert_eq_str "get-grok with no argument still prints the section default" \
+    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok 2>/dev/null)"
+assert_eq_str "…and an empty argument is that same case, not a lookup of the empty id" \
+    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok "" 2>/dev/null)"
+
+# A section carrying no table at all: the argument is accepted and changes nothing.
+cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
+assert_eq_str "get-grok <model> falls back when the section has no table" \
+    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+
+# An entry for a model outside the catalog is a HARD error, the twin of the rule that every
+# defaults.<preset>.grok_models entry must be a catalog member. A silent no-op is the failure
+# this key exists to prevent: the user believes that model runs at the level they wrote.
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.7: max\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects an entry for a model outside the catalog" "1" "$RC"
+assert_stderr_contains "names the offending key" "grok-4.7" "$ERR"
+assert_stderr_contains "…and says which list it must belong to" "grok.models" "$ERR"
+# The laziness pin: this is a validate_grok error, so the catalog-only gates must NOT see it.
+# Without this, a later "restore parity" edit could move the check up and take a codex-only
+# review down with a grok typo — the `ultra` incident's shape.
+assert_eq_str "has_grok still answers 1 — it validates the catalog, not the table" \
+    "1" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-grok is where it fails, so grok-exec STOPs on it" "1" "$RC"
+
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts: [xhigh]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a model_efforts that is not a mapping" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "grok.model_efforts: must be a mapping" "$ERR"
+assert_stderr_lacks "no raw jq indexing noise" "Cannot index" "$ERR"
+
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.6: 3\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a non-string effort value" "1" "$RC"
+assert_stderr_contains "names the model whose value is wrong" "grok-4.6" "$ERR"
+assert_stderr_contains "…and the type it got" "got number" "$ERR"
+
+# Unknown levels WARN and pass, exactly as reasoning_effort does — xAI adds levels with new
+# models and the CLI is the final validator. Never an enum.
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.6: "ludicrous"\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts an unknown per-model level" "0" "$RC"
+assert_stderr_contains "…warning about it and naming the model" "grok.model_efforts" "$ERR"
+assert_stderr_contains "…and quoting the value" "ludicrous" "$ERR"
+assert_eq_str "…and passes it through to the CLI" \
+    "ludicrous" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+
+# An empty value means "unset", the reasoning_effort semantics: a user who comments a level out
+# and leaves the key behind means "let the section default decide", not "pass --effort ''".
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  reasoning_effort: high\n  model_efforts:\n    grok-4.6: ""\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts an empty per-model value" "0" "$RC"
+assert_eq_str "…and treats it as unset, falling back to the section default" \
+    "high" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+
+# The table alone, with no section default: a model outside it resolves to nothing at all, and
+# grok-exec then passes no --effort and lets ~/.grok/config.toml decide.
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6, grok-4.5]\n  model_efforts:\n    grok-4.6: xhigh\n'; } > "$TDIR/config.yaml"
+assert_eq_str "the table works without a section default" \
+    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+assert_eq_str "…and an unlisted model resolves to nothing, so no --effort is passed" \
+    "" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+
+rm -rf "$TDIR" "$ERR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

@@ -261,8 +261,9 @@ SUPERVISED_MODE=shell
 ```
 
 **Model:** always pass it through — this skill refuses to run without one, so there is
-nothing to resolve. Do NOT pass `REASONING_EFFORT` unless the caller explicitly named one;
-`grok-exec` reads `grok.reasoning_effort` from config by itself.
+nothing to resolve. Do NOT pass `REASONING_EFFORT` unless the caller explicitly named one:
+`grok-exec` resolves the level for the model it was handed by itself — `grok.model_efforts` for
+that model, then the section-wide `grok.reasoning_effort`.
 
 The run lands in `${CLAUDE_PLUGIN_DATA}/runs/grok/<model>/{timestamp}-review-{branch}/`:
 

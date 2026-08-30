@@ -14,7 +14,7 @@ Execute arbitrary prompts via the Grok Build CLI with streaming progress and ful
 > grok is NOT an anthropic-api provider: the `grok` CLI logs in by itself (`grok login`).
 > This skill does NOT call `config-loader.sh export` and does NOT source `ANTHROPIC_*`. The
 > loader is used ONLY to (a) find the plugin data dir for run logs, (b) gate on the `has_grok`
-> config flag, and (c) resolve the default reasoning effort via `get-grok`.
+> config flag, and (c) resolve the reasoning effort for the model at hand via `get-grok <model>`.
 
 > **Grok reads the Claude Code world.** `grok inspect` shows it loading `~/.claude/CLAUDE.md`
 > and every installed claude-* plugin with its skills, and the `system`/`init` event repeats
@@ -88,9 +88,12 @@ Optional:
   would be wrong. The review path always passes a model, chosen from the `grok.models`
   catalog.
 - **REASONING_EFFORT** — `low` | `medium` | `high` | `xhigh` | `max` (the set known today).
-  When the caller passes none, the skill reads `grok.reasoning_effort` from config via
-  `get-grok`; when that is unset too, `--effort` is omitted and the CLI's
-  `default_reasoning_effort` applies. Unknown values are passed through — the CLI validates.
+  When the caller passes none, the skill asks the loader for the level THIS MODEL should run at
+  (`get-grok "$MODEL"`): `grok.model_efforts[<model>]` first, then the section-wide
+  `grok.reasoning_effort`. When both are unset, `--effort` is omitted and the CLI's
+  `default_reasoning_effort` applies. Unknown values are passed through — the CLI validates, and
+  it validates PER MODEL, which is why the table exists: measured 2026-08-30 against grok 1.0.5,
+  grok-4.6 accepts `xhigh` but not `max`, and grok-4.5 accepts neither.
 - **SUPERVISED_MODE** — `none` (default) or `shell`. Under `shell` the run is wrapped by
   `shared/watchdog.sh` (`$SKILL_BASE/../shared/watchdog.sh`), which restarts the CLI when the
   stream stops growing for `HARD_ZERO_TIMEOUT` seconds (600) up to `MAX_RETRIES=2` times,
@@ -242,8 +245,8 @@ echo "WORK_DIR=$WORK_DIR"
 Replace before execution:
 - `{WORK_DIR}` → path from Step 1
 - `{REASONING_EFFORT}` → leave EMPTY unless the caller explicitly supplied a level. The block
-  then resolves `grok.reasoning_effort` from config, and omits `--effort` when that is unset
-  too.
+  then resolves the level for its OWN model from config — `grok.model_efforts[<model>]`, then
+  `grok.reasoning_effort` — and omits `--effort` when both are unset.
 
 `{MODEL}` is **not** substituted again here: Step 1 validated it and wrote it to
 `$WORK_DIR/.model`, and this block reads that file.
@@ -270,11 +273,13 @@ LOADER="$SKILL_BASE/../shared/config-loader.sh"
 TASK_NAME=$(cat "$WORK_DIR/.task_name" 2>/dev/null || basename "$WORK_DIR")
 PROMPT_FILE="$WORK_DIR/prompt.md"
 RAW_FILE="$WORK_DIR/raw.jsonl"
-# Resolve the effort from config when the caller left it empty. Gated on has_grok; a get-grok
-# rc!=0 means a broken grok: section — STOP and surface it. config.yaml is user-owned: never
-# edit it.
+# Resolve the effort from config when the caller left it empty — for THIS model, not for the
+# section: the CLI validates --effort per model and the accepted sets differ, so "$MODEL" has to
+# reach the loader. It is legitimately empty on a call that names no model, and that is the
+# whole-section question get-grok has always answered. Gated on has_grok; a get-grok rc!=0 means
+# a broken grok: section — STOP and surface it. config.yaml is user-owned: never edit it.
 if [ -z "$EFFORT" ] && [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_grok 2>/dev/null)" = "1" ]; then
-    EFFORT=$("$LOADER" get-grok) || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
+    EFFORT=$("$LOADER" get-grok "$MODEL") || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
 fi
 # NO fallback model and NO fallback effort: an unset value means "let ~/.grok/config.toml
 # decide", which is the whole reason this skill differs from codex-exec and gemini-exec.
@@ -475,7 +480,7 @@ EFFORT=$(cat <<'__EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__'
 __EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__
 )
 if [ -z "$EFFORT" ] && [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_grok 2>/dev/null)" = "1" ]; then
-    EFFORT=$("$LOADER" get-grok) || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
+    EFFORT=$("$LOADER" get-grok "$MODEL") || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
 fi
 # NO fallback model and NO fallback effort — an unset value means "let ~/.grok/config.toml
 # decide". Same contract as the default branch above.

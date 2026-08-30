@@ -49,8 +49,9 @@ STOPs on it, report the STOP; do not retry with an edited id.
 - **MODEL** (required) — see above
 - **TASK_NAME** — short identifier for log files (default: "task")
 - **REASONING_EFFORT** — `low` | `medium` | `high` | `xhigh` | `max`. Omit it and the skill
-  resolves `grok.reasoning_effort` from config, then the CLI's own default. Pass one ONLY when
-  the caller explicitly asked for it — do NOT choose a level yourself.
+  resolves the level for its own model from config — `grok.model_efforts[<model>]`, then the
+  section-wide `grok.reasoning_effort`, then the CLI's own default. Pass one ONLY when the
+  caller explicitly asked for it — do NOT choose a level yourself.
 - **SUPERVISED_MODE** — `none` (default) or `shell`. Forward it as a named parameter; it is
   NOT part of `PROMPT`. `shell` wraps the run in `shared/watchdog.sh`, which restarts the CLI
   on a stall and writes a `watchdog.log` the caller can watch for liveness.

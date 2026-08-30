@@ -24,6 +24,21 @@ All notable changes to claude-mesh will be documented here.
   than the shared branch — `shared/extract-result.py` learned grok's TOP-LEVEL
   `{"type":"error","message":…}` shape, the one a bad `-m` produces, which until now
   rendered as the literal `API Error: {}` with the message lost.
+- **`grok.model_efforts` — per-model reasoning effort.** `grok.reasoning_effort` is one value
+  for the whole section, but the grok CLI validates `--effort` PER MODEL at argument parsing and
+  rejects a bad pair with rc=1 before any API call, and the accepted sets genuinely differ:
+  measured 2026-08-30 on grok 1.0.5, `grok-4.6` takes `xhigh` but not `max`, `grok-4.5` takes
+  neither, and most proxied entries take all five. A catalog of more than one model therefore
+  could not be served by a single level — the pairing `config.example.yaml` shipped was itself
+  unrunnable for half its own catalog, which is why that example had been cut to one model.
+  `model_efforts` maps a model id to the level that model runs at and overrides the section
+  default for it alone, so the example ships two models again. Keys must be catalog entries: a
+  key outside `models:` is a hard error rather than a silent no-op, because the point of the
+  key is being able to trust that a model ran at the level you wrote. `get-grok` takes an
+  optional model argument for this; called with none — as a direct `grok-exec` invocation
+  naming no model does — it answers the whole-section question exactly as before. Nothing in
+  the orchestrators, the wrapper agents or `grok-code-review` changed: `grok-exec` resolves the
+  level itself and already knew which model it was running.
 
 ### Changed
 - **The reviewer-type question of both orchestrators is three options, not five.** `claude`,

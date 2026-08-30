@@ -116,9 +116,9 @@ LOW` row carrying the exact value to set.
 **`BASH_DEFAULT_TIMEOUT_MS` — 300000 (5 min) is a sane middle.** This one governs ordinary
 commands that pass no timeout of their own: builds, test runs, `git log -S` sweeps over full
 history, `find` over large trees. The 2-minute stock value is tight enough that this plugin's
-own test suite does not fit: `skills/shared/tests/` runs 166 s end to end (2026-08-30, ten
-suites, 1000 assertions — `test-preflight-env.sh` 105 s, `test-config-loader.sh` 45 s,
-`test-watch-runs.sh` 21 s), so a foreground run of it dies partway through the longest
+own test suite does not fit: `skills/shared/tests/` runs 192 s end to end (2026-08-30, eleven
+suites, 1048 assertions — `test-preflight-env.sh` 112 s, `test-config-loader.sh` 50 s,
+`test-watch-runs.sh` 22 s), so a foreground run of it dies partway through the longest
 suite. 5 minutes clears that with room to spare. Do not push it near the max:
 it applies to *every* untimed command, so a genuinely wedged one holds the turn for the whole
 value before the harness intervenes — which is exactly the runaway the default exists to catch.
@@ -164,7 +164,7 @@ See `config.example.yaml` for the canonical example. Sections:
 | `claude:` | no | `models:` — catalog of Claude model aliases offered for the built-in `claude` reviewer; each selected entry becomes one independent reviewer. Omit it (together with any `defaults.*.claude_models`) for the previous single-reviewer behaviour |
 | `codex:` | no | model + reasoning_level for codex CLI — the default for `/codex-*` skills and reviews unless the caller overrides; unknown levels pass through with a WARN (known set as of 2026-07 is listed in `config.example.yaml`) |
 | `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
-| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer, **required and non-empty** while the section exists. `reasoning_effort:` — optional, one value per section. One reviewer per selected entry, so cost scales as for `claude.models`. Both keys have rules worth reading before you edit them — see below |
+| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer, **required and non-empty** while the section exists. `reasoning_effort:` — optional section-wide default; `model_efforts:` — optional per-model overrides of it, because the CLI validates the level per model. One reviewer per selected entry, so cost scales as for `claude.models`. All three keys have rules worth reading before you edit them — see below |
 | `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |
 | `runtime:` | no | UI defaults + timeouts |
 
@@ -186,15 +186,29 @@ current set; `config.example.yaml`'s `grok.reasoning_effort` comment is the cano
 the list, and this note and `config-loader.sh` follow it.
 
 **Those five are no single model's set.** The CLI validates the flag PER MODEL at argument
-parsing, before any API call, and rejects with rc=1. Measured 2026-08-29 on grok 1.0.5:
+parsing, before any API call, and rejects with rc=1. Measured 2026-08-30 on grok 1.0.5:
 `grok-4.6` accepts `xhigh|high|medium|low`, `grok-4.5` only `high|medium|low`, and that CLI's own
-default model all five — three sets behind one binary. So the value must be valid for EVERY entry
-of your catalog, or the entries that reject it lose their whole run with no diagnostic from this
-plugin. Reading a model's own set is free — it fails on the flag and never reaches the API:
+default model all five — three sets behind one binary. Reading a model's own set is free, since
+the probe fails on the flag and never reaches the API:
 
 ```sh
 grok -m <id> --effort __bogus__ -p x
 ```
+
+Rank each printed set by `low < medium < high < xhigh < max`: the CLI prints them in different
+orders per model, so position is not rank.
+
+**`model_efforts:` is how one catalog holds models with different sets.** It maps a model id to
+the level that model runs at, overriding `reasoning_effort` for it alone; the section-wide value
+still serves every entry the table does not name. Without it, the section default has to be valid
+for EVERY catalog entry, and the entries that reject it lose their whole run with no diagnostic
+from this plugin. Keys must be catalog entries — a key outside `models:` is a hard error rather
+than a silent no-op, since the whole point is that you can trust a model ran at the level you
+wrote. Write only the exceptions: most models accept the top level.
+
+The resolution order a run follows is: the level a caller passed explicitly, then
+`grok.model_efforts[<model>]`, then `grok.reasoning_effort`, then — with none of them set — no
+`--effort` at all, which hands the choice to `~/.grok/config.toml`.
 
 ## WARNING: Uninstall wipes config
 

@@ -486,6 +486,14 @@ validate_grok_catalog() {
 
 validate_grok() {
     validate_grok_catalog
+    validate_grok_effort
+    validate_grok_model_efforts
+}
+
+# The section-wide default. Split out of validate_grok for one reason only: its early returns
+# — an absent or empty key is a legal "let the CLI decide" — would otherwise skip the per-model
+# table that now follows it. The body below is unchanged; its messages are pinned by tests.
+validate_grok_effort() {
     # reasoning_effort mirrors codex.reasoning_level, including the pass-through: xAI adds
     # levels with new models, and the CLI rejects a truly invalid one by name.
     local ltype effort
@@ -511,6 +519,52 @@ validate_grok() {
         low|medium|high|xhigh|max) ;;
         *) warn "grok.reasoning_effort: unknown value \"$effort\" — passing through (the grok CLI will validate)" ;;
     esac
+}
+
+# Per-model overrides of the level above. The grok CLI validates --effort PER MODEL and rejects
+# a bad pair at argument parsing (rc=1) BEFORE any API call — measured 2026-08-30 against grok
+# 1.0.5: grok-4.6 accepts xhigh|high|medium|low, grok-4.5 only high|medium|low, and most proxied
+# entries all five — so one section-wide level cannot serve a catalog of several models.
+#
+# Validated HERE and not in validate_grok_catalog, which means `validate`, `get-grok` and
+# through it preflight's grok row see a broken table, while `has_grok` and `list-grok-models`
+# do not. Deliberate, and not a weaker gate: `reasoning_effort` sits on exactly that path, a new
+# key does not invent a stricter one than the key it sits beside, and the laziness is what keeps
+# a broken grok: section from grounding a codex-only review (see :1014, the `ultra` incident).
+validate_grok_model_efforts() {
+    local mtype count i=0 key vtype value
+    mtype=$(jq -r '.grok.model_efforts | type' "$CONFIG_JSON" 2>/dev/null)
+    case "$mtype" in
+        ""|null) return 0 ;;
+        object) ;;
+        *) die "grok.model_efforts: must be a mapping of <model id> to <effort> (got $mtype)" ;;
+    esac
+    count=$(jq '.grok.model_efforts | length' "$CONFIG_JSON")
+    while [ "$i" -lt "$count" ]; do
+        key=$(jq -r ".grok.model_efforts | keys_unsorted[$i]" "$CONFIG_JSON")
+        # Every key must name a catalog entry — the twin of the defaults.<preset>.grok_models
+        # membership rule. A key outside the catalog does nothing whatsoever, and a user who
+        # believes a model runs at the level they wrote is the exact failure this key exists to
+        # prevent. `index` yields 0 on a first-position match, which jq counts as true.
+        jq -e --arg m "$key" '(.grok.models // []) | index($m)' "$CONFIG_JSON" >/dev/null 2>&1 \
+            || die "grok.model_efforts: \"$key\" is not in grok.models — every key must name a catalog entry"
+        vtype=$(jq -r --arg m "$key" '.grok.model_efforts[$m] | type' "$CONFIG_JSON")
+        [ "$vtype" = "string" ] \
+            || die "grok.model_efforts[\"$key\"]: must be a string (got $vtype) — quote it, e.g. $key: \"xhigh\""
+        value=$(jq -r --arg m "$key" '.grok.model_efforts[$m]' "$CONFIG_JSON")
+        # Empty == unset, the reasoning_effort semantics: fall back to the section default.
+        if [ -n "$value" ]; then
+            [[ "$value" =~ $IDENT_RE ]] \
+                || die "grok.model_efforts[\"$key\"]: must start with a letter/digit and match [A-Za-z0-9._:@-], got \"$value\""
+            case "$value" in
+                # Same WARN-and-pass as reasoning_effort, for the same reason: the CLI is the
+                # final validator and its accepted set differs per model. Never an enum.
+                low|medium|high|xhigh|max) ;;
+                *) warn "grok.model_efforts[\"$key\"]: unknown value \"$value\" — passing through (the grok CLI will validate)" ;;
+            esac
+        fi
+        i=$((i+1))
+    done
 }
 
 # Shared by claude: and grok: — the two sections that expose a LIST of model names the
@@ -1310,11 +1364,24 @@ cmd_list_grok_models() {
 }
 
 cmd_get_grok() {
+    local model="${1:-}" per
     load_or_die
     validate_grok
     # Format: <reasoning_effort>, empty when unset. Deliberately NOT "<model>|<effort>" like
     # get-codex: grok carries a CATALOG, not one model — read it with list-grok-models. Callers
     # gate on `get-flag has_grok` first, exactly as they do for codex and gemini.
+    #
+    # With a MODEL argument, grok.model_efforts overrides that default for that one model,
+    # because the CLI validates --effort per model and its accepted set differs between them.
+    # The argument is OPTIONAL and legitimately EMPTY: grok-exec passes "$MODEL", which is empty
+    # on a direct call naming no model, and that asks the whole-section question this command
+    # has always answered — so an empty argument must not become a lookup of the empty id. The
+    # model is deliberately NOT checked against the catalog here: grok-code-review already
+    # refuses a MODEL outside it, and a direct grok-exec call may legitimately name any id.
+    if [ -n "$model" ]; then
+        per=$(jq -r --arg m "$model" '.grok.model_efforts[$m] // ""' "$CONFIG_JSON")
+        if [ -n "$per" ]; then printf '%s\n' "$per"; return 0; fi
+    fi
     jq -r '.grok.reasoning_effort // ""' "$CONFIG_JSON"
 }
 
@@ -1414,10 +1481,10 @@ case "${1:-}" in
         cmd_list_grok_models
         ;;
     get-grok)
-        cmd_get_grok
+        cmd_get_grok "${2:-}"
         ;;
     *)
-        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-grok-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini|get-grok}" >&2
+        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-grok-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini|get-grok [<model>]}" >&2
         exit 2
         ;;
 esac
