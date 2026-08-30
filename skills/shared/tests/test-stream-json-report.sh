@@ -127,6 +127,30 @@ assert_contains "…under the timestamp the prefix carried" "[12:34:56]" "$OUT"
 assert_contains "a prefixed user message renders its first result" "PREFIXED_ONE" "$OUT"
 assert_contains "…and its second" "PREFIXED_TWO" "$OUT"
 
+# === Test 10: a STRING `content` must not be counted by character ===
+# `jq '"abc" | length'` is 3, so before the type gate a string content passed the numeric guard
+# as a block COUNT and the loop spawned one jq per CHARACTER, rendering nothing: measured at
+# 11.8 s for 2000 characters against 0.17 s for the same payload as an array, and linear beyond
+# — an unbounded hang inside the supervised block, between the run and its caller. No producer
+# emits this shape today; the renderer is shared with a third-party CLI whose drift this file's
+# own comments anticipate, and the identical trap is already gated above validate_model_catalog.
+# The assertion is WALL TIME, because the visible output is "nothing rendered" either way.
+echo "=== Test 10: string content is not counted by character (both branches) ==="
+_t0=$(date +%s%N)
+OUT=$(render \
+    "{\"type\":\"assistant\",\"message\":{\"content\":\"$(printf 'x%.0s' $(seq 1 2000))\"}}" \
+    "{\"type\":\"user\",\"message\":{\"content\":\"$(printf 'y%.0s' $(seq 1 2000))\"}}")
+_ms=$(( ($(date +%s%N) - _t0) / 1000000 ))
+assert_lacks "a string content renders nothing rather than garbage" "xxxxxxxxxx" "$OUT"
+if [ "$_ms" -lt 3000 ]; then
+    echo "  PASS: 4000 characters of string content render in ${_ms}ms, not one jq per character"
+    PASS=$((PASS+1))
+else
+    echo "  FAIL: string content took ${_ms}ms — the per-character loop is back"
+    FAIL=$((FAIL+1))
+fi
+unset _t0 _ms
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

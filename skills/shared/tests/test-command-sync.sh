@@ -294,6 +294,21 @@ for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
         "$(grep -c 'SELECTED_GROK_MODELS' "$f")"
 done
 
+# Every `ни одной …` sentinel must carry its own drop clause. The sentinel exists because
+# AskUserQuestion refuses a one-option page, so each of the three model pages offers its empty
+# outcome AS an option — and the instruction 13 lines below is a bare "Collect the selections
+# into SELECTED_*". Read literally, that puts the sentinel STRING into the model list: the
+# claude page is worst, because a list holding it is non-empty and the documented empty-selection
+# fallback never fires, dispatching a reviewer whose `model:` is that sentence.
+# This is exactly the defect class Test 6 exists for and Tests 1-5 cannot see: both files carried
+# it identically, so comparing them to each other passed. Counted per file, and equal to the
+# number of sentinels in that file, so a seventh page added without a clause fails here.
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_eq "${f#"$REPO"/}: every sentinel drops before collecting" \
+        "$(grep -c 'ни одной' "$f")" \
+        "$(grep -c 'Selecting it IS the empty selection' "$f")"
+done
+
 # Two spellings that are never interchangeable: `grok:<model>` names a reviewer and a dispatch
 # pair, `grok/<model>` is a watch-runs.sh roster entry (and the shape of the run directory).
 # Swap them and the watcher waits on a roster entry no run will ever create, or the attribution

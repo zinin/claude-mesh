@@ -119,7 +119,13 @@ emit_tool_output() {
                 # what grok is, and this renderer serves grok since the file moved into shared/.
                 # No verdict is taken from report.md — every one of them comes from output.txt —
                 # but a trace that omits a tool call reads as a tool that was never called.
-                NBLOCKS=$(echo "$JSON" | jq -r '(.message.content // []) | length' 2>/dev/null)
+                NBLOCKS=$(echo "$JSON" | jq -r 'if (.message.content | type) == "array" then (.message.content | length) else 0 end' 2>/dev/null)
+                # TYPE-GATED to array first: `jq '"abc" | length'` is 3, so a STRING content
+                # would pass the numeric guard below as a block COUNT and spawn one jq per
+                # CHARACTER while rendering nothing — measured at 11.8 s for a 2000-char string
+                # against 0.17 s for the same payload as an array, and linear beyond that. The
+                # identical trap is already documented above validate_model_catalog in
+                # config-loader.sh, whose callers must type-gate for the same reason.
                 # Never let a jq hiccup turn into an unbounded or erroring loop: a non-numeric
                 # answer means "render nothing from this message", not "abort the report".
                 case "$NBLOCKS" in ''|*[!0-9]*) NBLOCKS=0 ;; esac
@@ -179,7 +185,9 @@ emit_tool_output() {
                 if [ -n "$OUTPUT" ] && [ "$OUTPUT" != "null" ]; then
                     emit_tool_output "$OUTPUT"
                 else
-                    NBLOCKS=$(echo "$JSON" | jq -r '(.message.content // []) | length' 2>/dev/null)
+                    NBLOCKS=$(echo "$JSON" | jq -r 'if (.message.content | type) == "array" then (.message.content | length) else 0 end' 2>/dev/null)
+                    # Type-gated to array for the same reason as the assistant branch above:
+                    # a string content would otherwise be counted by CHARACTER.
                     # Same guard as the assistant branch: a non-numeric answer means "render
                     # nothing from this message", never "abort the report".
                     case "$NBLOCKS" in ''|*[!0-9]*) NBLOCKS=0 ;; esac

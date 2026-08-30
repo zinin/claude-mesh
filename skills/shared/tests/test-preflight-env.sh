@@ -554,6 +554,24 @@ run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$
 assert_eq   "grok models fails -> NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
 assert_match "…and suggests logging in"       "grok login" "$OUT"
 
+# An UNUSABLE PREFLIGHT_CLI_TIMEOUT must not be able to invent a verdict. The budget is pasted
+# straight into `timeout "$CLI_TIMEOUT" $5`, so before it joined the normalisation block above
+# HTTP_TIMEOUT and GIT_TIMEOUT, `--help` made timeout(1) print its usage and exit 0 WITHOUT
+# running the probe — and the row then read `grok OK ... answered` about a CLI that was never
+# contacted, putting grok into SUMMARY available, which is exactly what the *-fresh-session
+# commands read to decide whether `default` is safe. The same three shapes the comment above
+# the normalisation block already records for PREFLIGHT_GIT_TIMEOUT. The shim FAILS throughout,
+# so OK is only reachable by not running it; the invocation log discriminates "probe ran and
+# failed" from "probe never ran", which the row text alone cannot.
+for _bad in --help abc 0; do
+    : > "$GROK_LOG"          # per-iteration, or the log accumulates and iteration 2 fails
+    run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
+              GROK_SHIM_FAIL=1 GROK_SHIM_LOG="$GROK_LOG" PREFLIGHT_CLI_TIMEOUT="$_bad"
+    assert_eq "unusable PREFLIGHT_CLI_TIMEOUT=$_bad -> still NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
+    assert_eq "…and the probe really was run once under $_bad" "models" "$(cat "$GROK_LOG")"
+done
+unset _bad
+
 # Section present, binary absent -> MISSING (the section gate passes, the CLI gate does not).
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli"
 assert_eq   "grok binary absent -> MISSING"  MISSING "$(field grok "$OUT")"

@@ -57,6 +57,7 @@ CLI_TIMEOUT="${PREFLIGHT_CLI_TIMEOUT:-15}"
 # a positive integer or the documented default, with nothing in between.
 case "$HTTP_TIMEOUT" in ''|*[!0-9]*|0) HTTP_TIMEOUT=5 ;; esac
 case "$GIT_TIMEOUT"  in ''|*[!0-9]*|0) GIT_TIMEOUT=8  ;; esac
+case "$CLI_TIMEOUT"  in ''|*[!0-9]*|0) CLI_TIMEOUT=15 ;; esac
 CURL_BIN="${PREFLIGHT_CURL_BIN:-curl}"
 GIT_BIN="${PREFLIGHT_GIT_BIN:-git}"
 YQ_BIN="${PREFLIGHT_YQ_BIN:-yq}"
