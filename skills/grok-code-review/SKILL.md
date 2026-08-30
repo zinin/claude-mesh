@@ -82,7 +82,7 @@ Run in ONE Bash call:
 ```bash
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
-command -v grok >/dev/null 2>&1 || { echo "STOP: grok CLI not found — install Grok Build and run 'grok login'"; exit 1; }
+command -v grok >/dev/null 2>&1 || { echo "STOP: grok CLI not found — install Grok Build with 'curl -fsSL https://x.ai/cli/install.sh | bash', then run 'grok login'"; exit 1; }
 echo "OK: grok found"
 command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found - required by shared/render-template.py (Step 3)"; exit 1; }
 echo "OK: python3 found"
@@ -346,7 +346,7 @@ Apply `superpowers:receiving-code-review` skill principles:
 
 | Error | Solution |
 |-------|----------|
-| `grok: command not found` | Install Grok Build, then run `grok login` |
+| `grok: command not found` | Install Grok Build — `curl -fsSL https://x.ai/cli/install.sh \| bash`, the installer xAI documents in the CLI's own README — then `grok login` |
 | `not authenticated` | `grok login` |
 | `unknown model id` | The MODEL is not one xAI serves — show `config-loader.sh list-grok-models` and let the caller choose; never substitute one |
 | `STOP: no grok: section` | The user adds a `grok:` block with a `models:` catalog — agents never edit config.yaml |

@@ -216,7 +216,7 @@ to a safe location before uninstalling.
 | `config.yaml not found at ...` | See "Configure" section above |
 | `models[X] references missing provider "Y"` | Add a `providers[]` entry with `id: Y` |
 | `Token expired or invalid for ...` | Update `token:` in the corresponding `providers[]` entry |
-| `grok: command not found` | Install Grok Build, then `grok login` |
+| `grok: command not found` | Install Grok Build — `curl -fsSL https://x.ai/cli/install.sh \| bash`, the installer xAI documents in the CLI's own README — then `grok login` |
 | `grok` row reads `NO-NETWORK` in the probe | `grok models` failed: no network, or the CLI is signed out — run `grok login` |
 | A grok reviewer's `output.txt` reads `API Error: Couldn't set model to <id>` | The id in `grok.models` is not one this machine's CLI accepts — claude-mesh does not check ids and never substitutes one. Run `grok models`: it prints `Default model:` and then `Available models:`, one `  - <id>` per line with `*` marking the default — copy an id from there verbatim |
 | `Ollama daemon not running` | `ollama serve` or `systemctl start ollama` |

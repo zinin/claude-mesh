@@ -128,7 +128,7 @@ absent from `config.yaml`.
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 
-command -v grok >/dev/null 2>&1 || { echo "STOP: grok CLI not found — install Grok Build and run 'grok login'"; exit 1; }
+command -v grok >/dev/null 2>&1 || { echo "STOP: grok CLI not found — install Grok Build with 'curl -fsSL https://x.ai/cli/install.sh | bash', then run 'grok login'"; exit 1; }
 echo "OK: grok found"
 command -v jq >/dev/null 2>&1 || { echo "STOP: jq not found — required to parse the stream"; exit 1; }
 echo "OK: jq found"
@@ -671,7 +671,7 @@ messages.
 
 | Error | Solution |
 |-------|----------|
-| `grok: command not found` | Install Grok Build, then `grok login` |
+| `grok: command not found` | Install Grok Build — `curl -fsSL https://x.ai/cli/install.sh \| bash`, the installer xAI documents in the CLI's own README — then `grok login` |
 | `not authenticated` | `grok login` |
 | `output.txt` reads `API Error: Couldn't set model to <x>` | The model id is not one this CLI accepts — `grok models` lists the real set. Fix `grok.models` in config.yaml (the user does this, not you) |
 | `STOP: MODEL must match …` | The caller passed a model id outside `[A-Za-z0-9][A-Za-z0-9._-]*`. It is rejected, never rewritten, because the same string is both a path component and a CLI argument |
