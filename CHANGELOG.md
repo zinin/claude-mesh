@@ -86,6 +86,38 @@ All notable changes to claude-mesh will be documented here.
   skill.
 
 ### Fixed
+These four are engine-agnostic: they were found while building grok, but every one of them had
+been costing codex, gemini and ext-claude runs the same way.
+
+- **A review split across stream segments was delivered as its wake-up line.** `output.txt` took
+  the LAST `result` event, and a run that dispatches a background subagent ends on a short
+  acknowledgement rather than on its review — so the report, the merge and the delegation guard
+  all saw the acknowledgement. Measured over the run archive on the development machine: of the
+  streams carrying more than one result event, 36 had a last event shorter than the longest, up
+  to 16817 of 17882 characters of review discarded — this plugin's own review of 2026-08-29
+  among them. The longest result now wins, ties going to the last so single-result runs stay
+  byte-identical to what they produced before. A failed segment never wins over a successful
+  one whatever its length; an error result is used only when the stream has no successful one,
+  which keeps a quota or balance message from being replaced by silence.
+- **A stream whose last line had no newline lost that line** — and the last line is the `result`
+  event. Measured: a three-event log ending without a newline reached `raw.jsonl` as two events,
+  the missing one being exactly what `verify-delegation.sh` requires to call a run finished. A
+  completed review was therefore one truncated line away from being scored `STALLED` — "killed
+  mid-flight" — and re-dispatched. Fixed in every stream consumer: `codex-exec`, `gemini-exec`,
+  `grok-exec` and the shared report renderer.
+- **A run that died before its first turn was called `STALLED`, which prescribes a retry.** It
+  is now `BROKEN`, the verdict that says the next identical run dies identically. The rule is
+  narrow on purpose: an archive sweep showed a non-empty `errors[]` is ordinary in healthy
+  ext-claude runs — dozens of them, 2 to 62 turns — so only a zero-turn result event carries
+  the new verdict. The turn count itself is now read from the last result EVENT rather than
+  from the last integer seen anywhere in the stream.
+- **A CLI that refused its own arguments produced an empty review and no reason.** When the
+  terminal `result` event carries its cause in `errors[]` and the stream holds no `error`
+  event — the shape an unsupported `--effort` value produces — `output.txt` was zero bytes, the
+  reason survived only in `stderr.txt` where nothing downstream reads it, and the guard scored
+  a deterministic 15-second death as a stall worth retrying. The reason now reaches
+  `output.txt`, every entry of it.
+
 - **An ext-claude reviewer dispatched with `BASE_BRANCH=` got the base in front of `MODEL=`.**
   `/mesh-review` prescribed a one-line `MODEL=<id> Review the changes…` prompt and then told
   the caller to prefix the whole thing with `BASE_BRANCH=<branch> ` — which puts the base at
