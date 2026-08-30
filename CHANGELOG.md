@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.12.0] - 2026-08-30
 
 ### Added
 - **grok is a third CLI reviewer engine**, alongside codex and gemini: `grok-exec` /
