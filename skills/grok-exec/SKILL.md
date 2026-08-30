@@ -350,8 +350,16 @@ fi
 if [ -z "$PROFILE" ]; then PROFILE="grok"; fi
 echo ""
 echo "=== Generating report ==="
-{ [ -s "$RAW_FILE" ] && "$SKILL_BASE/../shared/stream-json-report.sh" "$RAW_FILE" "$WORK_DIR/report.md" "$PROFILE" "Grok Execution Report" "$TASK_NAME" \
-    || echo "WARN: report generation skipped or failed — report.md may be missing" >&2 ; } || true
+# if/then, not `[ -s … ] && cmd || echo`: that is the SC2015 shape this file argues against
+# twice elsewhere, and here it also merged two different outcomes into one WARN — "there was
+# no stream" and "the renderer failed" want different sentences. Neither branch can exit
+# non-zero, so the `|| true` the old form needed is gone with it.
+if [ -s "$RAW_FILE" ]; then
+  "$SKILL_BASE/../shared/stream-json-report.sh" "$RAW_FILE" "$WORK_DIR/report.md" "$PROFILE" "Grok Execution Report" "$TASK_NAME" \
+    || echo "WARN: report generation failed — report.md may be missing" >&2
+else
+  echo "WARN: raw.jsonl is empty — no report generated" >&2
+fi
 
 # The stream is the evidence. A run with events but no terminal result event is a torn stream;
 # a run with no output at all is a failed launch. Both must be loud rather than empty.

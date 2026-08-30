@@ -482,7 +482,12 @@ case "$ENGINE" in
         # the same file by the same jq; a broken jq, an unreadable $RAW or a stream with no
         # parsable result event leaves NT empty and exits STALLED before reaching this line. A
         # result event that simply omits the field (an older build) yields no entries and stays
-        # REAL — absent is not denied.
+        # REAL — absent is not denied. Note what that costs in the other direction: DENIED=0 is
+        # "no denials" and "no such field" at once, and nothing here can tell them apart. On
+        # grok every measured run has been the second case — the field was absent from every
+        # result event observed while this branch was written — so a grok run scoring REAL is
+        # not evidence that its CLI refused nothing, and DEGRADED stays a verdict grok is
+        # eligible for rather than one it has been seen to reach. Read raw.jsonl to settle it.
         DENIED_TOOLS="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
             | jq -Rr 'fromjson? | objects | select(.type == "result" and .is_error == false)
                       | .permission_denials | arrays | .[] | .tool_name // "unknown"' 2>/dev/null)"

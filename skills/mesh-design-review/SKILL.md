@@ -361,7 +361,9 @@ Use AskUserQuestion (multiSelect: true, max 4, header: "Reviewers"):
 question: "Какие типы reviewers запустить? (★ = recommended, в defaults.design_review)"
 options:
   - "claude ★ default (свой Claude Code)"           — show ALWAYS; ★ if "claude" in defaults.builtin
-  - "внешние CLI (codex / gemini / grok) ★ default" — show only if HAS_CODEX=1 OR HAS_GEMINI=1 OR HAS_GROK=1; ★ if ANY of codex/gemini/grok is in defaults.builtin
+  - "внешние CLI (<the configured engines, " / "-joined>) ★ default" — show only if HAS_CODEX=1 OR HAS_GEMINI=1 OR HAS_GROK=1; ★ if ANY of codex/gemini/grok is in defaults.builtin.
+    Build the parenthesis from the flags that are 1, in the order codex / gemini / grok: a codex-only machine reads «внешние CLI (codex)», never a roster of two
+    engines it does not have. The ★ still fires on ANY of the three appearing in `builtin`, because it marks the OPTION, not an individual engine.
   - "external models (Anthropic-API) ★ default"     — show only if HAS_MODELS=1; ★ if defaults.models is non-empty
 ```
 

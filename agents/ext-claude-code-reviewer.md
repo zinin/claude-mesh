@@ -26,9 +26,13 @@ review prompt, runs `claude -p` against the configured model, and returns the fi
 **MODEL is REQUIRED on the first line of the prompt.** Format: `MODEL=<provider>/<short>`
 (e.g. `MODEL=zai/glm`, `MODEL=ollama/deepseek`).
 
-Pass MODEL through to the skill as its first argument. If the caller ALSO inlined review context
-(scope, diff, project invariants, focus areas), forward it to the skill as its `CONTEXT` argument —
-do **NOT** treat that context as a review task to perform yourself.
+Pass MODEL through to the skill as its first argument. A `BASE_BRANCH=<branch>` line — which the
+caller writes directly under `MODEL=` — goes through as the skill's `BASE_BRANCH` argument (it is
+documented there under "Arguments"): the skill diffs against it, and dropping it makes the review
+cover whatever `origin/HEAD` auto-detection lands on while looking entirely successful. If the
+caller ALSO inlined review context (scope, diff, project invariants, focus areas), forward it to
+the skill as its `CONTEXT` argument — do **NOT** treat that context as a review task to perform
+yourself.
 
 If the caller did not provide MODEL on the first line, STOP and return:
 

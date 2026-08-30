@@ -1390,6 +1390,7 @@ assert_stderr_contains "shows which charset applies" "\[A-Za-z0-9._-\]" "$ERR"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate grok model" "1" "$RC"
 assert_stderr_contains "names the duplicate" "duplicate model" "$ERR"
+assert_stderr_contains "…and names WHICH id repeats" "grok-4.6" "$ERR"
 
 # Unknown effort passes with a WARN — xAI adds levels without asking this plugin.
 cp "$FIXTURES/unknown-grok-effort.yaml" "$TDIR/config.yaml"
@@ -1416,6 +1417,7 @@ assert_eq_str "get-grok returns the effort" "xhigh" "$EFFORT"
 cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-grok rejects a malformed catalog" "1" "$RC"
+assert_stderr_contains "…and says what the catalog must be" "must be a list of grok model ids" "$ERR"
 # …while the codex getter beside it still answers: a broken grok section must not
 # ground the other engines (the `ultra` incident, 2026-07-10).
 CG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null); RC=$?

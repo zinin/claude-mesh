@@ -394,6 +394,29 @@ if [ "$GS" -gt 80000 ]; then
     echo "  FAIL: runtime.timeouts.global_sec=$GS leaves no room inside the --since plausibility window; Tests 25-27 cannot run"
 else
 
+# === Test 24b: SILENT with no stream file at all says so ===
+echo "=== Test 24b: SILENT before the first stream byte names its source ==="
+# The freshness fallback reads the run dir's own mtime, so a watchdog that died before writing
+# its first line is indistinguishable from a CLI that has not answered yet. The row now says
+# which of the two the number came from; without that a reader sees "quiet=700s" and assumes a
+# stream went silent, when nothing was ever written.
+TDIR="$(mktemp -d)"
+a=$(mk_run "$TDIR" grok/grok-4.6 -700); touch -d '700 seconds ago' "$a"
+run --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" grok/grok-4.6
+assert_match "no stream file -> SILENT" "SILENT" "$(row grok/grok-4.6)"
+assert_match "…and the row names the fallback" "no stream file" "$(row grok/grok-4.6)"
+# The counter-case: one byte on the stream and the note is gone, because freshness now has a
+# real source. Same age, same threshold — only the file differs.
+: > "$a/raw.jsonl"; touch -d '700 seconds ago' "$a/raw.jsonl" "$a"
+run --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" grok/grok-4.6
+assert_match "with a stream file -> still SILENT" "SILENT" "$(row grok/grok-4.6)"
+if [[ "$(row grok/grok-4.6)" == *"no stream file"* ]]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: the note survives a run that HAS a stream file"
+else
+    PASS=$((PASS+1)); echo "  PASS: the note is gone once the stream exists"
+fi
+rm -rf "$TDIR"
+
 # === Test 25: the watcher blocks while everything is RUN, and returns when one goes silent ===
 # The 2026-07-26 blind spot: nothing finishes, so a count-based watcher never wakes. There is no
 # race with the baseline here — the baseline is virtual, so a change landing before the first
@@ -505,6 +528,18 @@ TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
 run --since "$SINCE_OK" --once --data-dir "$TDIR" 'codex/.'
 assert_eq "exit 64" "64" "$RC"
 assert_match "stderr names the entry" "invalid roster entry" "$ERR"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 30c: the COLON spelling is a usage error — grok:grok-4.6 is a reviewer name, not a roster entry"
+# The two spellings are not interchangeable: `grok:grok-4.6` names a reviewer (dispatch tables,
+# verify-delegation, finding attribution) while `grok/grok-4.6` names a run directory, which is
+# what this watcher takes. Until now nothing pinned that, and the rejection happened only as a
+# side effect of the charset above — one widened bracket away from silently watching nothing.
+TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
+run --since "$SINCE_OK" --once --data-dir "$TDIR" 'grok:grok-4.6'
+assert_eq "exit 64" "64" "$RC"
+assert_match "stderr names the entry" "invalid roster entry 'grok:grok-4.6'" "$ERR"
 rm -rf "$TDIR"
 
 echo ""

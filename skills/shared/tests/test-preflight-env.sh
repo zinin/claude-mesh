@@ -426,7 +426,7 @@ assert_match "…naming the executor gap"       "ext-claude prerequisites absent
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
           SHIM_HTTP_CODE=000 PREFLIGHT_SKIP_NETWORK=1
 assert_eq "skip-network -> provider UNKNOWN"  UNKNOWN "$(field provider:zai "$OUT")"
-assert_match "…and says why"                  "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
+assert_match "…and says the network was skipped" "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
 
 # Secrets: the token from the fixture must not appear anywhere, and no exported env file
 # may survive the run (TMPDIR is private to this run, so a leftover is visible).
@@ -473,7 +473,7 @@ chmod +x "$WORK/cli-gemini/gemini"
 # thing that can produce MISSING, on this machine and on a bare CI box alike.
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/cli-gemini:$PATH"
 assert_eq   "no codex section -> MISSING"      MISSING "$(field codex "$OUT")"
-assert_match "and says why"                    "no codex: section" "$OUT"
+assert_match "and says the codex section is absent" "no codex: section" "$OUT"
 assert_eq   "no gemini section -> MISSING"     MISSING "$(field gemini "$OUT")"
 
 # A section that exists but that the typed getter rejects: the UI would offer it and then die
@@ -534,7 +534,7 @@ GROK_LOG="$WORK/grok-calls.log"
 # No grok: section -> MISSING, and the reason says the UI will not offer it.
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/cli-grok:$PATH"
 assert_eq   "no grok section -> MISSING"    MISSING "$(field grok "$OUT")"
-assert_match "and says why"                 "no grok: section" "$OUT"
+assert_match "and says the grok section is absent" "no grok: section" "$OUT"
 
 # Section present, CLI present, `grok models` answers -> OK, and the catalog reaches the summary.
 : > "$GROK_LOG"
