@@ -121,9 +121,17 @@ echo "OK: grok: section present ($(printf '%s' "$GROK_CAT" | tr '\n' ' '))"
 # The catalog is in hand, so check the caller's MODEL against it HERE — a typo then fails before
 # a run dir exists and before the CLI spends an invocation being told the id is unknown. `grep
 # -Fxq` matches whole lines only, so `grok-4` never passes for `grok-4.6`. Substitute the MODEL
-# argument into the line below; an empty value means the caller sent none, which is the
-# `ERROR: MODEL is required` case above.
-MODEL="<the MODEL argument this skill was called with>"
+# argument into the heredoc BODY below; an empty body means the caller sent none, which is
+# the `ERROR: MODEL is required` case above. A QUOTED heredoc, not a double-quoted
+# assignment: a substituted value lands in an executable context, and the catalog check
+# two lines down runs AFTER it — measured, a value carrying `"; cmd; x="` executed before
+# that check rejected it. Same binding grok-exec gives MODEL, and DESC / PLAN_REF /
+# WORK_DIR in this same file. `&&` cannot chain across a heredoc (it turns the body into
+# commands), which is why the assignment stands alone.
+MODEL=$(cat <<'__MODEL_BOUNDARY_4b7e2c19_MODEL_END__'
+<the MODEL argument this skill was called with>
+__MODEL_BOUNDARY_4b7e2c19_MODEL_END__
+)
 [ -n "$MODEL" ] || { echo "STOP: MODEL is required and was not substituted into this fence. Example: MODEL=grok-4.6"; exit 1; }
 printf '%s\n' "$GROK_CAT" | grep -Fxq -- "$MODEL" || { echo "STOP: MODEL '$MODEL' is not in the grok.models catalog ($(printf '%s' "$GROK_CAT" | tr '\n' ' ')) — pick one of those, or add it to config.yaml yourself. claude-mesh never substitutes a model of its own."; exit 1; }
 ```
@@ -135,7 +143,10 @@ If any pre-flight check fails, STOP and report the error to the user verbatim. D
 ### Step 1: Collect Git Context (SINGLE Bash call)
 
 ```bash
-BASE_BRANCH="<the BASE_BRANCH argument, or leave empty to auto-detect>" && \
+BASE_BRANCH=$(cat <<'__BASE_BOUNDARY_4b7e2c19_BASE_END__'
+<the BASE_BRANCH argument, or leave empty to auto-detect>
+__BASE_BOUNDARY_4b7e2c19_BASE_END__
+)
 BASE_REF=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') && \
 BASE_BRANCH="${BASE_BRANCH:-${BASE_REF:-master}}" && \
 BASE_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD 2>/dev/null || git merge-base "$BASE_BRANCH" HEAD 2>/dev/null || git rev-parse HEAD~1) && \
@@ -147,8 +158,10 @@ echo "" && \
 git diff --stat "$BASE_SHA" "$HEAD_SHA"
 ```
 
-**Fill in the first line before running it.** Put the caller's `BASE_BRANCH` argument there, or
-leave the string empty to auto-detect. It has to be substituted HERE, the way `SKILL_BASE` is:
+**Fill in the heredoc body before running it.** Put the caller's `BASE_BRANCH` argument on
+that line, or leave it empty to auto-detect. A QUOTED heredoc, for the reason the MODEL
+binding above states: a substituted value in a double-quoted assignment is an executable
+context. The `&&` chain therefore starts at `BASE_REF=` — it cannot cross a heredoc. It has to be substituted HERE, the way `SKILL_BASE` is:
 `BASE_BRANCH` does NOT arrive as a shell variable — the Bash tool starts a fresh shell for every
 call (see "Bash Variables" above) and the caller's value is prompt text, not environment. An
 unsubstituted line makes `${BASE_BRANCH:-…}` take the fallback every time, and the review then
