@@ -996,20 +996,45 @@ validate_defaults() {
         local seen_gm=""
         while [ "$g" -lt "$gm_count" ]; do
             local gmetype gmv
+            # EVERY rule in this loop goes through grok_preset_die, not bare die. When the
+            # catalog does not validate, grok has already been stripped from this preset and
+            # grok_degraded set, so these rules guard a dispatch that cannot happen — while a
+            # bare die grounded the whole read, one line after the WARN above promised "every
+            # other engine is unaffected". That is the `ultra` shape 8c8583f, eaf3ad4 and
+            # 0c7188a each removed from a neighbouring case; the per-ELEMENT rules were the
+            # half left behind. The earlier comment here argued they "need no catalog", which
+            # is true and beside the point: the question is not whether the rule CAN run
+            # without one, but whether it should be fatal for codex and gemini once grok is
+            # already switched off. With a healthy catalog every rule below stays fatal.
+            #
+            # `validate` is unaffected, measured not argued: validate_all runs validate_grok
+            # first and dies on the catalog itself, so all three broken shapes still exit 1
+            # from the strict path and never reach this loop.
+            #
+            # Each failed check skips the REST of this entry. grok_preset_die returns when it
+            # only warns, so without the skip one malformed entry would report itself two or
+            # three times over — a non-string that is then charset-checked as the text jq
+            # printed for it, an empty value that then fails the charset rule as well.
             gmetype=$(jq -r ".defaults.$preset.grok_models[$g] | type" "$CONFIG_JSON")
-            [ "$gmetype" = "string" ] \
-                || die "defaults.$preset.grok_models[$g]: must be a string (got $gmetype) — quote it, e.g. - \"grok-4.6\""
+            if [ "$gmetype" != "string" ]; then
+                grok_preset_die "defaults.$preset.grok_models[$g]: must be a string (got $gmetype) — quote it, e.g. - \"grok-4.6\""
+                g=$((g+1)); continue
+            fi
             gmv=$(jq -r ".defaults.$preset.grok_models[$g]" "$CONFIG_JSON")
             # MUST precede the membership test, same as in the claude twin: an empty $gmv
             # makes the glob *"  "* match an EMPTY catalog and silently accept the entry.
-            [ -n "$gmv" ] || die "defaults.$preset.grok_models[$g]: empty value"
+            if [ -z "$gmv" ]; then
+                grok_preset_die "defaults.$preset.grok_models[$g]: empty value"
+                g=$((g+1)); continue
+            fi
             # GROK_IDENT_RE, not IDENT_RE — the narrow charset the catalog itself is held to,
             # so both sides of the catalog⊇preset relation stay validated identically.
-            [[ "$gmv" =~ $GROK_IDENT_RE ]] \
-                || die "defaults.$preset.grok_models[$g]: must start with a letter/digit and match [A-Za-z0-9._-] (a grok model id), got \"$gmv\""
+            if ! [[ "$gmv" =~ $GROK_IDENT_RE ]]; then
+                grok_preset_die "defaults.$preset.grok_models[$g]: must start with a letter/digit and match [A-Za-z0-9._-] (a grok model id), got \"$gmv\""
+                g=$((g+1)); continue
+            fi
             # Skipped when the catalog did not validate: there is nothing to be a member OF,
-            # and this preset's grok entries are dropped by cmd_get_defaults anyway. The
-            # charset and duplicate rules above still apply — they need no catalog.
+            # and this preset's grok entries are dropped by cmd_get_defaults anyway.
             if [ "$GROK_CATALOG_BROKEN" -eq 0 ]; then
                 case " $grok_catalog " in
                     *" $gmv "*) ;;
@@ -1017,7 +1042,7 @@ validate_defaults() {
                 esac
             fi
             case " $seen_gm " in
-                *" $gmv "*) die "defaults.$preset.grok_models[$g]: duplicate model \"$gmv\"" ;;
+                *" $gmv "*) grok_preset_die "defaults.$preset.grok_models[$g]: duplicate model \"$gmv\"" ;;
             esac
             seen_gm="$seen_gm $gmv"
             g=$((g+1))

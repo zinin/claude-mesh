@@ -1472,6 +1472,37 @@ assert_exit "validate still rejects a referenced broken catalog" "1" "$RC"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "has_grok still exits 1 on it, so the grok row reads INVALID" "1" "$RC"
 
+# The same referenced-broken catalog with the preset entry ALSO malformed — the double typo, and
+# the half the degrade left behind. Every rule inside the grok_models loop (element type, empty
+# value, charset, duplicate) called a bare die, so this shape re-grounded get-defaults for BOTH
+# presets and preflight-env.sh then printed CONFIG INVALID with codex, gemini and claude all
+# SKIPPED — one line after the WARN above promised "every other engine is unaffected". The
+# fixture carries `[zai/glm, zai/glm]`: a slash breaks the charset rule and the repeat breaks the
+# duplicate rule, so one file exercises two of the four. The healthy-catalog case below proves
+# the rules did not simply go soft.
+cp "$FIXTURES/broken-grok-referenced-bad-preset.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "a broken catalog AND a malformed preset entry still answer" "0" "$RC"
+assert_eq_str "…grok dropped, other engines intact" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…and still flagged degraded" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_stderr_contains "…the charset rule is REPORTED, not silent" "must start with a letter/digit" "$ERR"
+# One report per bad ENTRY PER PRESET, not one per rule. Four is the right number and says so:
+# two malformed entries in each of the fixture's two presets, because validate_defaults walks
+# the whole defaults: block on every read — the property the WARN text itself names. Six would
+# mean the skip after each failed check is gone: grok_preset_die RETURNS when it only warns, so
+# without it the second entry is reported by the charset rule AND again by the duplicate rule,
+# the first having reached `seen_gm` on its way past.
+assert_eq_str "…once per entry per preset, not once per rule" "4" "$(grep -c 'grok_models\[' "$ERR")"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+assert_exit "…and validate still rejects it" "1" "$RC"
+
+# CONTROL: with a HEALTHY catalog the very same malformed preset entry stays FATAL. Without
+# this, deleting the rules outright would satisfy every assertion above.
+sed 's/^  models: grok-4.6$/  models: [grok-4.6]/' \
+    "$FIXTURES/broken-grok-referenced-bad-preset.yaml" > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "a healthy catalog keeps the preset rules fatal" "1" "$RC"
+
 # A scalar `grok:` section — the same invariant, one KIND of breakage over. `grok: false` is
 # how a user tries to switch a section off without deleting it, and the type gate used to die
 # on the preset path, so preflight printed CONFIG INVALID and SKIPPED every row: codex and

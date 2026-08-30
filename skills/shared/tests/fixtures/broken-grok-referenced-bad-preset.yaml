@@ -1,0 +1,27 @@
+# The REFERENCED broken catalog PLUS a malformed preset entry — the double typo. Every rule
+# inside the grok_models loop used a bare die, so this shape re-grounded the whole read one
+# line after the WARN promised every other engine was unaffected. It must degrade like its twin.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+grok:
+  models: grok-4.6
+codex:
+  model: gpt-5.5
+claude:
+  models: [opus, fable]
+defaults:
+  code_review:
+    builtin: [claude, codex, grok]
+    claude_models: [opus, fable]
+    grok_models: [zai/glm, zai/glm]
+  design_review:
+    builtin: [claude, codex, grok]
+    claude_models: [opus]
+    grok_models: [zai/glm, zai/glm]
