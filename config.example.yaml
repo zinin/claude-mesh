@@ -329,8 +329,8 @@ runtime:
                                                #   the /mesh-review and /mesh-design-review watcher
                                                #   (shared/watch-runs.sh) reports the run SILENT. default 600.
                                                #   The watcher floors this at 600: codex-exec, gemini-exec and
-                                               #   grok-exec hardcode HARD_ZERO_TIMEOUT=600 and ignore it, so a
-                                               #   lower value would call a live run silent before its own
+                                               #   grok-exec hardcode HARD_ZERO_TIMEOUT=600 and ignore this key,
+                                               #   so a lower value would call a live run silent before its own
                                                #   watchdog acts on it.
     global_sec: 3600                           # supervised mode: overall wall-clock budget. default 3600
     max_retries: 2                             # supervised mode: retries after a kill. default 2

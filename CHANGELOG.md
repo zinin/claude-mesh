@@ -16,11 +16,13 @@ All notable changes to claude-mesh will be documented here.
 - The grok runs speak the Claude Code wire format (`--output-format streaming-messages-json`),
   so the report renderer serves them unchanged and `verify-delegation.sh` judges them on the
   same branch as `ext-claude` — which is why grok reaches the `DEGRADED` verdict, a state
-  codex and gemini cannot express. Sharing that branch was not free in two places: it now
-  carries a grok-specific remedy for a refused tool call (`grok-exec` already passes
+  codex and gemini cannot express. Sharing that branch was not free: it now forks in two
+  places, on the remedy for a refused tool call (`grok-exec` already passes
   `--permission-mode bypassPermissions`, so ext-claude's "add the flag" advice would be
-  wrong), and `shared/extract-result.py` learned grok's TOP-LEVEL
-  `{"type":"error","message":…}` shape — the one a bad `-m` produces, which until now
+  wrong) and on the sentence that explains the review-length floor, whose archived
+  measurement is ext-claude's alone. Separately — because of the shared WIRE FORMAT rather
+  than the shared branch — `shared/extract-result.py` learned grok's TOP-LEVEL
+  `{"type":"error","message":…}` shape, the one a bad `-m` produces, which until now
   rendered as the literal `API Error: {}` with the message lost.
 
 ### Changed

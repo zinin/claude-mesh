@@ -59,8 +59,8 @@ cp ~/.claude/plugins/cache/*/claude-mesh/*/config.example.yaml \
 2. Edit `~/.claude/plugins/data/claude-mesh-zinin/config.yaml`:
    - Add your providers (URL + token) under `providers:`
    - Add your models under `models:` with id format `<provider>/<short>`
-   - Optionally configure `codex:` / `gemini:` / `grok:` sections (`grok:` also needs a
-     non-empty `models:` catalog — see the schema table below)
+   - Optionally configure `claude:` / `codex:` / `gemini:` / `grok:` sections (`grok:` also
+     needs a non-empty `models:` catalog — see the schema table below)
    - Adjust `defaults:` for `/claude-mesh:mesh-review default` and `/claude-mesh:mesh-design-review default`
 
 3. Verify config:
@@ -116,10 +116,10 @@ LOW` row carrying the exact value to set.
 **`BASH_DEFAULT_TIMEOUT_MS` — 300000 (5 min) is a sane middle.** This one governs ordinary
 commands that pass no timeout of their own: builds, test runs, `git log -S` sweeps over full
 history, `find` over large trees. The 2-minute stock value is tight enough that this plugin's
-own test suite does not fit: `skills/shared/tests/` runs 182 s end to end (2026-08-05, 580
-assertions — `test-preflight-env.sh` 97 s, `test-config-loader.sh` 59 s, `test-watch-runs.sh`
-21 s), so a foreground run of it dies partway through the longest suite. 5 minutes clears that
-with room to spare. Do not push it near the max:
+own test suite does not fit: `skills/shared/tests/` runs 166 s end to end (2026-08-30, ten
+suites, 1000 assertions — `test-preflight-env.sh` 105 s, `test-config-loader.sh` 45 s,
+`test-watch-runs.sh` 21 s), so a foreground run of it dies partway through the longest
+suite. 5 minutes clears that with room to spare. Do not push it near the max:
 it applies to *every* untimed command, so a genuinely wedged one holds the turn for the whole
 value before the harness intervenes — which is exactly the runaway the default exists to catch.
 
