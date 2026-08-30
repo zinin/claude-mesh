@@ -414,7 +414,10 @@ existing error message changes. No existing run directory moves.
 ## Out of scope
 
 - Rewriting codex and gemini onto a shared engine registry.
-- Per-model reasoning effort.
+- ~~Per-model reasoning effort.~~ SHIPPED after all, in `ea0b538`: `grok.reasoning_effort` is
+  one value per section while the CLI validates `--effort` per model and the accepted sets
+  differ, so a catalog of more than one model could not be served by a single level. See
+  `grok.model_efforts` in `config.example.yaml`.
 - Any grok API-key path: the CLI owns authentication.
 - Suppressing the Claude Code plugins grok loads.
 

@@ -58,6 +58,24 @@ INPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/nul
 OUTPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null)
 [ -z "$OUTPUT_TOKENS" ] || [ "$OUTPUT_TOKENS" = "null" ] && OUTPUT_TOKENS=0
 
+# Emit one collapsed section for a tool output. A function because BOTH shapes need it — the
+# single top-level `.tool_use_result.stdout` one engine writes, and each `tool_result` block of
+# the other — and ten duplicated echo lines are how two renderings of one thing drift apart.
+emit_tool_output() {
+    [ -n "$1" ] || return 0
+    [ "$1" != "null" ] || return 0
+    echo "<details>"
+    echo "<summary>Output (click to expand)</summary>"
+    echo ""
+    echo '```'
+    echo "$1"
+    echo '```'
+    echo "</details>"
+    echo ""
+    echo "---"
+    echo ""
+}
+
 {
     echo "# $REPORT_TITLE"
     echo ""
@@ -141,19 +159,29 @@ OUTPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/n
                 ;;
 
             "user")
-                # tool_result
-                OUTPUT=$(echo "$JSON" | jq -r '.tool_use_result.stdout // .message.content[0].content // empty' 2>/dev/null)
+                # tool_result — EVERY block, the mirror of the assistant branch above and for the
+                # same reason: one user message carries a LIST, and a model that issues PARALLEL
+                # tool calls gets one tool_result per call in a SINGLE message. This branch read
+                # index 0 and dropped every sibling, so a trace showed one answer where several
+                # tools had replied. The assistant branch was reworked for exactly this defect
+                # and its twin here was left behind.
+                #
+                # `.tool_use_result.stdout` keeps precedence and stays UNINDEXED: it is a single
+                # top-level field, not a list, and when it is present the blocks are not read at
+                # all — the same order the one-line jq fallback expressed before.
+                OUTPUT=$(echo "$JSON" | jq -r '.tool_use_result.stdout // empty' 2>/dev/null)
                 if [ -n "$OUTPUT" ] && [ "$OUTPUT" != "null" ]; then
-                    echo "<details>"
-                    echo "<summary>Output (click to expand)</summary>"
-                    echo ""
-                    echo '```'
-                    echo "$OUTPUT"
-                    echo '```'
-                    echo "</details>"
-                    echo ""
-                    echo "---"
-                    echo ""
+                    emit_tool_output "$OUTPUT"
+                else
+                    NBLOCKS=$(echo "$JSON" | jq -r '(.message.content // []) | length' 2>/dev/null)
+                    # Same guard as the assistant branch: a non-numeric answer means "render
+                    # nothing from this message", never "abort the report".
+                    case "$NBLOCKS" in ''|*[!0-9]*) NBLOCKS=0 ;; esac
+                    BI=0
+                    while [ "$BI" -lt "$NBLOCKS" ]; do
+                        emit_tool_output "$(echo "$JSON" | jq -r ".message.content[$BI].content // empty" 2>/dev/null)"
+                        BI=$((BI+1))
+                    done
                 fi
                 ;;
         esac

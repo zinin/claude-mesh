@@ -95,6 +95,38 @@ OUT=$(render \
 assert_lacks "thinking text is not dumped into the report" "JUST_THINKING" "$OUT"
 assert_lacks "no empty Response heading" "## Response" "$OUT"
 
+# === Test 7: parallel tool_results in ONE user message all render ===
+# The mirror of Test 4, one branch over. A model that issues parallel tool calls gets one
+# tool_result per call in a SINGLE user message; the branch read index 0 and dropped the rest,
+# so a trace showed one answer where several tools had replied. The assistant branch was
+# reworked for exactly this and its `user` twin was left behind.
+echo "=== Test 7: two tool_results in one user message both render ==="
+OUT=$(render \
+    '{"type":"user","message":{"content":[{"type":"tool_result","content":"FIRST_RESULT"},{"type":"tool_result","content":"SECOND_RESULT"}]}}')
+assert_contains "the first tool_result renders" "FIRST_RESULT" "$OUT"
+assert_contains "…and so does the second" "SECOND_RESULT" "$OUT"
+assert_eq "one <details> section per result" "2" "$(printf '%s' "$OUT" | grep -c '<summary>Output')"
+
+# The single top-level shape the other engine emits keeps precedence and is NOT indexed.
+echo "=== Test 8: .tool_use_result.stdout still wins and still renders ==="
+OUT=$(render \
+    '{"type":"user","tool_use_result":{"stdout":"TOP_LEVEL_STDOUT"},"message":{"content":[{"type":"tool_result","content":"BLOCK_CONTENT"}]}}')
+assert_contains "top-level stdout renders" "TOP_LEVEL_STDOUT" "$OUT"
+assert_lacks "…and the blocks are not also rendered under it" "BLOCK_CONTENT" "$OUT"
+
+# === Test 9: the ext-claude PREFIXED line shape reaches the block loop ===
+# Every case above feeds bare JSONL — grok's shape. ext-claude writes `[HH:MM:SS] {json}`, and
+# the block loop is new code that nothing drives through the prefix stripper. A regression that
+# broke prefixed lines would leave this suite green.
+echo "=== Test 9: prefixed [HH:MM:SS] lines render through the block loop ==="
+OUT=$(render \
+    '[12:34:56] {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"X"},{"type":"tool_use","name":"Bash","input":{"command":"echo PREFIXED_CMD"}}]}}' \
+    '[12:34:57] {"type":"user","message":{"content":[{"type":"tool_result","content":"PREFIXED_ONE"},{"type":"tool_result","content":"PREFIXED_TWO"}]}}')
+assert_contains "a prefixed assistant message renders its tool call" "echo PREFIXED_CMD" "$OUT"
+assert_contains "…under the timestamp the prefix carried" "[12:34:56]" "$OUT"
+assert_contains "a prefixed user message renders its first result" "PREFIXED_ONE" "$OUT"
+assert_contains "…and its second" "PREFIXED_TWO" "$OUT"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

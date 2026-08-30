@@ -304,8 +304,12 @@ fi
 If `$WORK_DIR/watchdog.exit` exists, do not print additional diagnostics here; `grok-exec`
 already emitted the full diagnostics block on its bail path.
 
-Decide from `output.txt`, never from `report.md`: the shared renderer shows only the first
-content block of each message, so a reasoning model's answer can be missing from it entirely.
+Decide from `output.txt`, never from `report.md`: the renderer walks the WHOLE run, so
+`report.md` runs to hundreds of KB against `output.txt`'s ten, and `output.txt` is the review
+itself. It used to say the renderer showed only the first content block of each message; that
+was true and is not any more — `shared/stream-json-report.sh` iterates every block on both the
+assistant and the user branch, pinned by `shared/tests/test-stream-json-report.sh`. The rule
+survives its old reason: size, not loss.
 
 Display with clear formatting. Highlight:
 - **Critical Issues** — must fix before proceeding

@@ -33,7 +33,15 @@ cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
 [ -n "${STUB_LOG:-}" ] && printf '%s\n' "$*" >> "$STUB_LOG"
 case "${1:-}" in
-    get-flag) echo "${STUB_HAS_GROK:-1}" ;;
+    get-flag)
+        # A loader that cannot answer the flag AT ALL — a broken grok: section. It exits
+        # non-zero and says why on stderr, exactly as the real one does.
+        if [ "${STUB_FLAG_RC:-0}" != "0" ]; then
+            echo "config-loader: grok: must be a mapping with models/reasoning_effort keys (got boolean)" >&2
+            exit "${STUB_FLAG_RC}"
+        fi
+        echo "${STUB_HAS_GROK:-1}"
+        ;;
     get-grok)
         [ "${STUB_FAIL:-0}" = "1" ] && { echo "config-loader: the grok section does not validate" >&2; exit 1; }
         case "${2:-}" in
@@ -74,7 +82,7 @@ run_snippet() { # $1=index  $2=preset EFFORT  $3=MODEL  -> prints "rc|EFFORT|<st
     # Both stub controls are named explicitly rather than left to bash's function-prefix
     # semantics, so it is visible that they reach the stub, which is a grandchild of this call.
     local out rc
-    out=$(STUB_LOG="${STUB_LOG:-}" STUB_FAIL="${STUB_FAIL:-0}" bash "$T/one.sh" 2>&1); rc=$?
+    out=$(STUB_LOG="${STUB_LOG:-}" STUB_FAIL="${STUB_FAIL:-0}" STUB_FLAG_RC="${STUB_FLAG_RC:-0}" STUB_HAS_GROK="${STUB_HAS_GROK:-1}" bash "$T/one.sh" 2>&1); rc=$?
     printf '%s|%s\n' "$rc" "$(printf '%s' "$out" | tr '\n' ' ')"
 }
 
@@ -119,6 +127,27 @@ for i in 0 1; do
         1\|*STOP*) ok "$LABEL STOPs when the loader fails" ;;
         *) bad "$LABEL should STOP with rc=1 when the loader fails — got '$R'" ;;
     esac
+
+    # The SAME treatment when the loader cannot answer the FLAG. The gate used to read it
+    # inside the `if` condition under 2>/dev/null, so a broken grok: section made the whole
+    # condition false and the run continued with NO --effort at all — the CLI's own default,
+    # which on this machine belongs to a model this plugin never chose. Pre-flight STOPs on
+    # exactly that rc, and execution has to agree with it: the two are separate Bash calls, so
+    # the config can break between them.
+    R=$(STUB_FLAG_RC=1 run_snippet "$i" "" "grok-4.6")
+    case "$R" in
+        1\|*STOP*) ok "$LABEL STOPs when the flag read itself fails" ;;
+        *) bad "$LABEL should STOP with rc=1 when get-flag fails — got '$R'" ;;
+    esac
+
+    # rc=2 is "no config.yaml at all", which IS unconfigured: no --effort and no STOP. The two
+    # non-zero rcs must not collapse into one.
+    R=$(STUB_FLAG_RC=2 run_snippet "$i" "" "grok-4.6")
+    eq "$LABEL treats rc=2 as unconfigured and passes no effort" "0|EFFORT=" "$R"
+
+    # A plain flag of 0 — a valid config with no grok: section — stays that same quiet path.
+    R=$(STUB_HAS_GROK=0 run_snippet "$i" "" "grok-4.6")
+    eq "$LABEL passes no effort when the section is absent" "0|EFFORT=" "$R"
 done
 
 echo ""

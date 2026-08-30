@@ -276,6 +276,14 @@ assert_ge "mesh-review honours grok_degraded" "1" \
     "$(grep -c 'grok_degraded' "$MESH_REVIEW")"
 assert_ge "design review honours grok_degraded" "1" \
     "$(grep -c 'grok_degraded' "$DESIGN_SKILL")"
+# The two above are floors on a NAME, and a name is satisfied by a passing mention in a
+# comment. What the rule actually owes the user is a SENTENCE — the flag is the only signal
+# that a reviewer they asked for is not running, so the orchestrator has to say so out loud.
+# Pin that sentence: it is user-facing output, which no comment about the field can supply.
+assert_eq "mesh-review prints the degraded notice verbatim" "1" \
+    "$(grep -c 'каталог grok.models не валидируется' "$MESH_REVIEW")"
+assert_eq "design review prints it too" "1" \
+    "$(grep -c 'каталог grok.models не валидируется' "$DESIGN_SKILL")"
 
 # The per-model selection list, in BOTH files. 4 is a floor, not a measurement: each
 # orchestrator has to default it to empty, fill it from the config or the selection page,

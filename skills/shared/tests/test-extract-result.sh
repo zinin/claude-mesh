@@ -199,6 +199,48 @@ assert_eq "both shapes: exit 0" "0" "$RC"
 assert_eq "both shapes: nested wins" "API Error: nested" "$(cat "$TDIR/output.txt")"
 rm -rf "$TDIR"
 
+# === Test 16: a RESULT event carrying errors[] is not silence ===
+# The shape a grok argument-parse failure produces — no `type:"error"` event at all, just a
+# terminal result with is_error and the reason in `errors[]`. Every existing arm misses it:
+# `.result` is absent, there are no assistant messages, and the type is `result`, not `error`.
+# So the extractor exited 0 over a ZERO-BYTE output.txt and the reason survived only in
+# stderr.txt, where nothing downstream reads it: verify-delegation.sh sees an empty review and
+# scores the run STALLED — "killed mid-flight" — for a run that died deterministically in 15s.
+# Observed live on 2026-08-30, not constructed: `--effort max` against grok-4.6.
+echo "=== Test 16: result event with errors[] surfaces the reason ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"system","subtype":"init","model":"grok-4.6"}' \
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["unknown effort level max"]}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "exit 0" "0" "$RC"
+assert_eq "output.txt names the reason" "API Error: unknown effort level max" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+# Several errors are all reported: a run can fail for more than one reason, and picking the
+# first would hide the rest behind a message that looks complete.
+echo "=== Test 17: every entry of errors[] is reported ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["first reason","second reason"]}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR" >/dev/null 2>&1
+assert_eq "the first reason is there" "1" "$(grep -c 'first reason' "$TDIR/output.txt")"
+assert_eq "…and so is the second" "1" "$(grep -c 'second reason' "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+# A HEALTHY result must not be touched by the new arm — is_error false, errors absent, and a
+# real answer present. This is the assertion that keeps the arm from firing on ordinary runs.
+echo "=== Test 18: a healthy result event is unaffected ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":false,"result":"THE REVIEW"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR" >/dev/null 2>&1
+assert_eq "output.txt is the review, not an error" "THE REVIEW" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

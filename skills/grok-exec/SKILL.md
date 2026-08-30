@@ -278,8 +278,24 @@ RAW_FILE="$WORK_DIR/raw.jsonl"
 # reach the loader. It is legitimately empty on a call that names no model, and that is the
 # whole-section question get-grok has always answered. Gated on has_grok; a get-grok rc!=0 means
 # a broken grok: section — STOP and surface it. config.yaml is user-owned: never edit it.
-if [ -z "$EFFORT" ] && [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_grok 2>/dev/null)" = "1" ]; then
-    EFFORT=$("$LOADER" get-grok "$MODEL") || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
+if [ -z "$EFFORT" ] && [ -x "$LOADER" ]; then
+    # The flag is read rc-AWARE, not inside the `if` condition under 2>/dev/null. Read that
+    # way, a grok: section that does not validate made the whole condition false and the run
+    # continued with NO --effort — the CLI's own default, which on this machine belongs to a
+    # model this plugin never chose. The soft pre-flight above STOPs on exactly that rc, and
+    # these are separate Bash calls, so the config can break between them. rc=2 ("no
+    # config.yaml at all") stays unconfigured and quiet, exactly as it does up there.
+    FLAG_ERR=$(mktemp) || { echo "STOP: mktemp failed"; exit 1; }
+    FLAG_RC=0
+    HAS_GROK_FLAG=$("$LOADER" get-flag has_grok 2>"$FLAG_ERR") || FLAG_RC=$?
+    if [ "$FLAG_RC" -eq 1 ]; then
+        echo "STOP: the grok: section in config.yaml does not validate — config.yaml is user-owned; agents never edit it. The loader says:"
+        cat "$FLAG_ERR"; rm -f "$FLAG_ERR"; exit 1
+    fi
+    rm -f "$FLAG_ERR"
+    if [ "$HAS_GROK_FLAG" = "1" ]; then
+        EFFORT=$("$LOADER" get-grok "$MODEL") || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
+    fi
 fi
 # NO fallback model and NO fallback effort: an unset value means "let ~/.grok/config.toml
 # decide", which is the whole reason this skill differs from codex-exec and gemini-exec.
@@ -479,8 +495,24 @@ EFFORT=$(cat <<'__EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__'
 {REASONING_EFFORT}
 __EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__
 )
-if [ -z "$EFFORT" ] && [ -x "$LOADER" ] && [ "$("$LOADER" get-flag has_grok 2>/dev/null)" = "1" ]; then
-    EFFORT=$("$LOADER" get-grok "$MODEL") || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
+if [ -z "$EFFORT" ] && [ -x "$LOADER" ]; then
+    # The flag is read rc-AWARE, not inside the `if` condition under 2>/dev/null. Read that
+    # way, a grok: section that does not validate made the whole condition false and the run
+    # continued with NO --effort — the CLI's own default, which on this machine belongs to a
+    # model this plugin never chose. The soft pre-flight above STOPs on exactly that rc, and
+    # these are separate Bash calls, so the config can break between them. rc=2 ("no
+    # config.yaml at all") stays unconfigured and quiet, exactly as it does up there.
+    FLAG_ERR=$(mktemp) || { echo "STOP: mktemp failed"; exit 1; }
+    FLAG_RC=0
+    HAS_GROK_FLAG=$("$LOADER" get-flag has_grok 2>"$FLAG_ERR") || FLAG_RC=$?
+    if [ "$FLAG_RC" -eq 1 ]; then
+        echo "STOP: the grok: section in config.yaml does not validate — config.yaml is user-owned; agents never edit it. The loader says:"
+        cat "$FLAG_ERR"; rm -f "$FLAG_ERR"; exit 1
+    fi
+    rm -f "$FLAG_ERR"
+    if [ "$HAS_GROK_FLAG" = "1" ]; then
+        EFFORT=$("$LOADER" get-grok "$MODEL") || { echo "STOP: config-loader get-grok failed — fix config.yaml (user-owned, agents never edit it)"; exit 1; }
+    fi
 fi
 # NO fallback model and NO fallback effort — an unset value means "let ~/.grok/config.toml
 # decide". Same contract as the default branch above.
@@ -644,7 +676,7 @@ if [ -f "$LATEST_DIR/watchdog.exit" ]; then echo "=== WATCHDOG EXIT ==="; cat "$
 | `--permission-mode bypassPermissions` | Approves tool use AND lets the run read outside its working directory. `--always-approve` covers only the first half; a reviewer confined to its cwd reviews on incomplete context and still finalizes cleanly, which is the failure `verify-delegation.sh` scores DEGRADED |
 | `--no-plan` | Prevents grok from entering plan mode and answering with a plan instead of doing the work |
 | `-m <model>` | Only when the caller named one — otherwise `~/.grok/config.toml` decides |
-| `--effort <level>` | Caller value, else `grok.reasoning_effort` from config, else the CLI default. Documented alias of `--reasoning-effort` |
+| `--effort <level>` | Caller value, else `grok.model_efforts[<model>]`, else the section-wide `grok.reasoning_effort`, else the CLI default — the CLI validates this flag PER MODEL, which is why the per-model table exists. Documented alias of `--reasoning-effort` |
 | `timeout 1800` | 30-minute cap per attempt |
 
 ## Stream File Format

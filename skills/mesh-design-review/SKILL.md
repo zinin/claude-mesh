@@ -246,7 +246,7 @@ LOADER="$SKILL_BASE/../shared/config-loader.sh"
 # iter-3 CRITICAL-3: a bare $() swallows the loader exit code. Probe once with explicit rc
 # capture so rc=2 (config.yaml not created yet — fresh install) is NOT misreported as
 # rc=1 (config invalid).
-LOADER_ERR=$(mktemp)
+LOADER_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 HAS_CODEX=$("$LOADER" get-flag has_codex 2>"$LOADER_ERR"); LRC=$?
 case "$LRC" in
   0) ;;
@@ -260,12 +260,12 @@ HAS_GEMINI=$("$LOADER" get-flag has_gemini)
 # grok: BOTH reads below VALIDATE the `grok:` catalog before answering, unlike the bare probes
 # has_codex / has_gemini beside them. That is a difference in what the flag PROMISES, not an
 # inconsistency: `has_grok` is consumed as "a grok reviewer can be dispatched", which needs a
-# non-empty catalog because the grok agent stops without a MODEL (config-loader.sh:1156-1168).
+# non-empty catalog because the grok agent stops without a MODEL (the `has_grok)` arm of the loader).
 # So either call can exit 1 on a malformed section. WARN and degrade grok ALONE rather than
 # exiting: a broken `grok:` section must not kill a codex-only design review — that is the
-# `ultra` incident (config-loader.sh:1014, 2026-07-10: one codex setting killed every ext-claude
+# `ultra` incident (2026-07-10: one codex setting killed every ext-claude
 # executor) in a new costume. Report it, drop the flag, let everything else run.
-GM_ERR=$(mktemp)
+GM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 if ! HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GM_ERR") \
    || ! GROK_MODELS=$("$LOADER" list-grok-models 2>"$GM_ERR"); then
     echo "ВНИМАНИЕ: секция grok: не валидируется — grok-ревьюеры отключены на этот запуск:" >&2
@@ -282,19 +282,19 @@ MODELS=$("$LOADER" list-models)            # `<id>|<label>` per line, ready for 
 # validate_defaults, so the new fail-closed claude_models guard reports through THIS call.
 # Swallowed, it leaves DEFAULTS_JSON empty and Step 5.1 then STOPs with the misleading
 # "defaults.design_review not configured" instead of the real validation error.
-DJ_ERR=$(mktemp)
+DJ_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 DEFAULTS_JSON=$("$LOADER" get-defaults design_review 2>"$DJ_ERR") \
     || { echo "config.yaml невалиден (defaults.design_review):" >&2; cat "$DJ_ERR" >&2; rm -f "$DJ_ERR"; exit 1; }
 rm -f "$DJ_ERR"   # {"builtin":[...],"claude_models":[...],"grok_models":[...],"models":[...],"run_mode":null}
 echo "$DEFAULTS_JSON"
-DM_ERR=$(mktemp)
+DM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
     || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
 rm -f "$DM_ERR"
 echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
 # Claude-model catalog (Step 5.2.5 gate). rc-aware like the dispatch_model read above:
 # both subcommands validate the `claude:` section, so a malformed section fast-fails here.
-CM_ERR=$(mktemp)
+CM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 HAS_CLAUDE_MODELS=$("$LOADER" get-flag has_claude_models 2>"$CM_ERR") \
     || { echo "config.yaml невалиден (секция claude):" >&2; cat "$CM_ERR" >&2; rm -f "$CM_ERR"; exit 1; }
 CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
@@ -337,7 +337,7 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
     `gemini-executor` / `ext-claude-executor`. Each gets `MODEL=<entry>` on the FIRST non-blank
     line and the tooling-constraint paragraph appended to the composed prompt — both shapes are
     written out in Step 6. Name them `grok:<model>` everywhere downstream. The validator
-    guarantees a non-empty list whenever `grok` is in `builtin` (`config-loader.sh:852` — "a grok
+    guarantees a non-empty list whenever `grok` is in `builtin` (the loader's fail-closed rule — "a grok
     reviewer cannot start without a model"), so this branch has no fallback and cannot dispatch
     nothing.
   - **If `.grok_degraded` is `true`, dispatch no grok executor and SAY SO.** The loader sets it when this preset names grok while the `grok:` catalog does not validate: it strips `grok` from `.builtin` and empties `.grok_models` instead of failing the read, so one typo cannot ground the codex, gemini, claude and ext-claude executors this run also asked for. The flag is the only signal that a requested executor is absent, so print it: `grok: каталог grok.models не валидируется — grok-исполнитель не запущен; остальные движки работают. config.yaml правит пользователь, агенты его не трогают.` Do not stop and do not substitute another engine.
@@ -441,7 +441,7 @@ Every selected model gets the SAME composed prompt — model diversity is the po
 
 #### Step 5.2.6: Grok-model selection
 
-Runs ONLY when Step 5.2.1 selected `grok`. There is no `HAS_GROK_MODELS` gate: a `grok:` section without a non-empty catalog does not validate, so `HAS_GROK=1` already guarantees `GROK_MODELS` is non-empty — that is the promise `has_grok` makes and the reason no separate flag exists (`config-loader.sh:1156-1168`).
+Runs ONLY when Step 5.2.1 selected `grok`. There is no `HAS_GROK_MODELS` gate: a `grok:` section without a non-empty catalog does not validate, so `HAS_GROK=1` already guarantees `GROK_MODELS` is non-empty — that is the promise `has_grok` makes and the reason no separate flag exists (the loader's `has_grok)` arm, which validates the catalog before answering).
 
 - `grok` NOT selected in Step 5.2.1 → skip this step; **bind `SELECTED_GROK_MODELS` to the empty list** and run no grok reviewer at all.
 
@@ -603,7 +603,7 @@ codex, gemini and ext-claude get no such paragraph: they cannot see those skills
 Agent-specific parameters:
 - **`claude-mesh:codex-executor`** (built-in selected: `codex`): pass `MODEL={CODEX_MODEL}` / `REASONING_LEVEL={CODEX_REASONING_LEVEL}` ONLY when the user explicitly set them; otherwise omit both lines entirely — codex-exec resolves model/level from `config.yaml` (`codex.model` / `codex.reasoning_level`, fallbacks `gpt-5.5`/`xhigh`)
 - **`claude-mesh:gemini-executor`** (built-in selected: `gemini`): default settings
-- **`claude-mesh:grok-executor`** (built-in selected: `grok`; one per entry of `SELECTED_GROK_MODELS`): `MODEL=<model>` on line 1 (e.g. `MODEL=grok-4.6`) — the id comes from the config (`SELECTED_GROK_MODELS`, or `defaults.design_review.grok_models` in `default` mode), never invented here. Pass `REASONING_EFFORT={GROK_REASONING_EFFORT}` ONLY when the user explicitly set it; otherwise omit the line entirely — grok-exec resolves the effort from `config.yaml` (`grok.reasoning_effort`), and when that is unset the CLI's own default applies.
+- **`claude-mesh:grok-executor`** (built-in selected: `grok`; one per entry of `SELECTED_GROK_MODELS`): `MODEL=<model>` on line 1 (e.g. `MODEL=grok-4.6`) — the id comes from the config (`SELECTED_GROK_MODELS`, or `defaults.design_review.grok_models` in `default` mode), never invented here. Pass `REASONING_EFFORT={GROK_REASONING_EFFORT}` ONLY when the user explicitly set it; otherwise omit the line entirely — grok-exec resolves the effort for the model it runs from `config.yaml` (`grok.model_efforts[<model>]`, then the section-wide `grok.reasoning_effort`), and when both are unset the CLI's own default applies.
 - **`claude-mesh:ext-claude-executor`** (one per selected model id): `MODEL=<id>` on line 1 (e.g. `MODEL=zai/glm`, `MODEL=alibaba/qwen`, `MODEL=ollama/kimi`) — the model id comes from the config (`SELECTED_IDS`, or `defaults.design_review.models` in `default` mode), NOT a hardcoded provider profile.
 
 **Every executor template carries `SUPERVISED_MODE: shell` — never drop it.** Without it the `*-exec` skills default to `none`, which means no `shared/watchdog.sh`: no stall detection, no restart when a provider tears the stream mid-response, and no `watchdog.log` — the file whose `cleanup` event tells the watch loop below that a run has stopped, and whose `alive` heartbeat tells it the run is still alive. Design review never set this until 2026-07-27, so supervision was a coin flip: 42 of 223 archived runs got a watchdog, against 242 of 255 on the `/mesh-review` path where it is hardcoded. On 2026-07-26 none of six did, four executors died mid-stream, and nothing noticed for 38 minutes. On 2026-07-27 four of five died again and only recovered because the executor agents improvised their own retries.

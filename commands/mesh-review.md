@@ -58,7 +58,7 @@ defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bou
        preset branch and on its model page, and the design doc states it once. Change all five or
        none: a copy that still promises a fallback would have the orchestrator dispatch a
        reviewer the agent then refuses to start for want of a MODEL. -->
-  - `grok` in `defaults.code_review.builtin` → **one `grok-code-reviewer` per entry of `defaults.code_review.grok_models`**, each dispatched with `MODEL=<entry>` alone on the FIRST line of its prompt (and `BASE_BRANCH=<branch>` on the line directly under it when that argument was given — the exact shape is in Step 5a's grok bullet). Name them `grok:<model>` everywhere downstream. The config validator guarantees that list is non-empty whenever `grok` is in `builtin` (`config-loader.sh:852` — "a grok reviewer cannot start without a model"), so there is no fallback branch here: a preset that names grok and validates always dispatches at least one reviewer. There is exactly ONE case where it dispatches none — a `grok:` catalog that does not validate — and it is never silent; see the next bullet.
+  - `grok` in `defaults.code_review.builtin` → **one `grok-code-reviewer` per entry of `defaults.code_review.grok_models`**, each dispatched with `MODEL=<entry>` alone on the FIRST line of its prompt (and `BASE_BRANCH=<branch>` on the line directly under it when that argument was given — the exact shape is in Step 5a's grok bullet). Name them `grok:<model>` everywhere downstream. The config validator guarantees that list is non-empty whenever `grok` is in `builtin` (the loader's fail-closed rule — "a grok reviewer cannot start without a model"), so there is no fallback branch here: a preset that names grok and validates always dispatches at least one reviewer. There is exactly ONE case where it dispatches none — a `grok:` catalog that does not validate — and it is never silent; see the next bullet.
   - **If `.grok_degraded` is `true`, run no grok reviewer and SAY SO.** The loader sets it when the preset names grok while the `grok:` catalog does not validate: rather than failing the whole read, it removes `grok` from `.builtin` and empties `.grok_models`, so one typo in a user-owned file cannot ground the claude, codex and gemini reviewers this same run asked for. That removal is invisible in the data — the flag is the ONLY thing saying a reviewer you asked for is not running — so print it verbatim: `grok: каталог grok.models не валидируется — grok-ревьюер не запущен; остальные движки работают. config.yaml правит пользователь, агенты его не трогают.` Do not stop the run, do not retry, and never substitute another engine for it.
   - **Bind `SELECTED_GROK_MODELS` to `defaults.code_review.grok_models` here** (the empty list when `grok` is not in `builtin`), for the same reason `SELECTED_CLAUDE_MODELS` is bound just above: Step 5a and Step 5b consume it unconditionally, the interactive path fills it in Step 2.45, and an unbound name in a prompt raises nothing at all — the reader improvises.
   - For each model id in `defaults.code_review.models`, spawn `ext-claude-code-reviewer` with `MODEL=<id>`.
@@ -83,7 +83,7 @@ LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
 # iter-3 CRITICAL-3: a bare $() swallows the loader exit code. Probe once with explicit rc
 # capture so rc=2 (config.yaml not created yet — fresh install) is NOT misreported as
 # rc=1 (config invalid). Distinct handling per design §6.6 / iter-2 CONCERN-11.
-LOADER_ERR=$(mktemp)
+LOADER_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 HAS_CODEX=$("$LOADER" get-flag has_codex 2>"$LOADER_ERR"); LRC=$?
 case "$LRC" in
   0) ;;
@@ -96,14 +96,14 @@ rm -f "$LOADER_ERR"
 HAS_GEMINI=$("$LOADER" get-flag has_gemini)
 # grok: BOTH reads below VALIDATE the `grok:` catalog before answering — `has_grok` promises
 # "a grok reviewer can be dispatched", which needs a non-empty catalog because the reviewer
-# agent stops without a MODEL (config-loader.sh:1156-1168), unlike the bare probes has_codex /
+# agent stops without a MODEL (the `has_grok)` arm of config-loader.sh), unlike the bare probes has_codex /
 # has_gemini above — so either one can exit 1 on a malformed section. Guard both, and WARN
 # rather than exit: a broken grok: section must not stop a codex-only review — that is the
-# `ultra` incident (config-loader.sh:1014, 2026-07-10: a codex setting killed every ext-claude
+# `ultra` incident (2026-07-10: a codex setting killed every ext-claude
 # executor) in a new costume, and the reason has_codex is a bare probe. The same rule is
 # spelled out at config-loader.sh:420-430. Degrade grok alone: report it, drop the flag, let
 # everything else run.
-GM_ERR=$(mktemp)
+GM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 if ! HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GM_ERR") \
    || ! GROK_MODELS=$("$LOADER" list-grok-models 2>"$GM_ERR"); then
     echo "ВНИМАНИЕ: секция grok: не валидируется — grok-ревьюеры отключены на этот запуск:" >&2
@@ -115,7 +115,7 @@ echo "HAS_GROK=$HAS_GROK"
 echo "GROK_MODELS=[$(echo "$GROK_MODELS" | tr '\n' ' ')]"
 HAS_MODELS=$("$LOADER" get-flag has_models)
 MODELS=$("$LOADER" list-models)  # `<id>|<label>` per line, ready for pagination
-DM_ERR=$(mktemp)
+DM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
     || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
 rm -f "$DM_ERR"
@@ -123,7 +123,7 @@ echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispa
 # Claude-model catalog (Step 2.4 gate). rc-aware like the dispatch_model read above:
 # these two subcommands validate the `claude:` section, so a malformed section must
 # fast-fail here with the validator's own message rather than surface as an empty list.
-CM_ERR=$(mktemp)
+CM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 HAS_CLAUDE_MODELS=$("$LOADER" get-flag has_claude_models 2>"$CM_ERR") \
     || { echo "config.yaml невалиден (секция claude):" >&2; cat "$CM_ERR" >&2; rm -f "$CM_ERR"; exit 1; }
 CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
@@ -138,7 +138,7 @@ echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
 # read of its own"), and this file simply never did. rc-aware and never through a pipe, for the
 # reason Step 2.4 gives: get-defaults is what runs validate_defaults, so a fail-closed preset
 # error now surfaces on the FIRST screen instead of two steps in.
-CR_ERR=$(mktemp)
+CR_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CR_ERR") \
     || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CR_ERR" >&2; rm -f "$CR_ERR"; exit 1; }
 rm -f "$CR_ERR"
@@ -275,7 +275,7 @@ LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
 # state this page must still survive.
 # `"$LOADER" get-defaults … | jq …` would take its status from jq and swallow the new
 # fail-closed guard (rc=1) entirely, turning a hard error into an empty list.
-CD_ERR=$(mktemp)
+CD_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CD_ERR") \
     || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CD_ERR" >&2; rm -f "$CD_ERR"; exit 1; }
 rm -f "$CD_ERR"
@@ -310,7 +310,8 @@ Each selected model becomes an independent reviewer with the same diff and the s
 Runs ONLY when Step 2.1 selected `grok` (i.e. `grok` is in `SELECTED_TYPES`). There is no
 `HAS_GROK_MODELS` gate: a `grok:` section without a non-empty catalog does not validate, so
 `HAS_GROK=1` already guarantees `GROK_MODELS` is non-empty — that is the promise `has_grok`
-makes and the reason no separate flag exists (`config-loader.sh:1156-1168`).
+makes and the reason no separate flag exists (the loader's `has_grok)` arm, which validates the
+catalog before answering).
 
 - `grok` NOT selected in Step 2.1 → skip this step; **bind `SELECTED_GROK_MODELS` to the empty
   list** and run no grok reviewer at all.
@@ -323,7 +324,7 @@ re-resolved):
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
-GD_ERR=$(mktemp)
+GD_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$GD_ERR") \
     || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$GD_ERR" >&2; rm -f "$GD_ERR"; exit 1; }
 rm -f "$GD_ERR"

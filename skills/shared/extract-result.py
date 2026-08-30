@@ -109,6 +109,30 @@ def main() -> int:
                 final_text = [f"API Error: {err_msg}"]
                 break
 
+    # F4: a terminal RESULT event that carries its reason in `errors[]` and no `type:"error"`
+    # event anywhere. That is the shape a grok argument-parse failure produces — observed live
+    # on 2026-08-30 when `--effort max` met grok-4.6, which accepts only xhigh|high|medium|low.
+    # Every arm above misses it: `.result` is absent, there are no assistant messages, and the
+    # type is `result`, not `error`. The extractor therefore exited 0 over a ZERO-BYTE
+    # output.txt and the reason survived only in stderr.txt, which nothing downstream reads —
+    # verify-delegation.sh saw an empty review and scored the run STALLED, "killed mid-flight",
+    # for a run that had died deterministically in fifteen seconds. Worse, STALLED means
+    # "re-dispatch", so a whole max_redispatch round was spent on an error no retry can fix.
+    #
+    # Gated on a NON-EMPTY errors list, so a healthy result event cannot reach this arm; the
+    # `not final_text` guard above already excludes every run that produced an answer.
+    if not final_text:
+        for ev in events:
+            if ev.get("type") != "result":
+                continue
+            errs = ev.get("errors")
+            if not isinstance(errs, list) or not errs:
+                continue
+            # Every entry, not the first: a run can fail for more than one reason, and one
+            # message that looks complete while hiding the rest is how a diagnosis goes wrong.
+            final_text = ["API Error: " + "; ".join(str(e) for e in errs)]
+            break
+
     # NOTE: a `thinking`-block fallback was tried (b42161f) and reverted. Reasoning models
     # served via broken endpoints (e.g. deepseek-v4-pro:cloud via Ollama) emit their whole
     # answer — including tool-call grammar — inside a `thinking` block; surfacing it made

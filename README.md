@@ -116,8 +116,8 @@ LOW` row carrying the exact value to set.
 **`BASH_DEFAULT_TIMEOUT_MS` — 300000 (5 min) is a sane middle.** This one governs ordinary
 commands that pass no timeout of their own: builds, test runs, `git log -S` sweeps over full
 history, `find` over large trees. The 2-minute stock value is tight enough that this plugin's
-own test suite does not fit: `skills/shared/tests/` runs 192 s end to end (2026-08-30, eleven
-suites, 1048 assertions — `test-preflight-env.sh` 112 s, `test-config-loader.sh` 50 s,
+own test suite does not fit: `skills/shared/tests/` runs 183 s end to end (2026-08-30, eleven
+suites, 1070 assertions — `test-preflight-env.sh` 105 s, `test-config-loader.sh` 48 s,
 `test-watch-runs.sh` 22 s), so a foreground run of it dies partway through the longest
 suite. 5 minutes clears that with room to spare. Do not push it near the max:
 it applies to *every* untimed command, so a genuinely wedged one holds the turn for the whole
