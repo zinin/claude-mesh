@@ -502,11 +502,13 @@ case "$ENGINE" in
             fail BROKEN "num_turns=$NT: $BROKEN_WHY" 4
         fi
         # The floor is one number for both engines; the sentence that explains it is not.
-        # ext-claude's cites its own archive (336 runs); grok has no archive yet, and quoting
-        # one would be a measurement nobody made.
+        # The archive citation (336 runs) is a fact about ext-claude, so ext-claude is what
+        # names it — not `*)`. grok has no archive yet and quoting one would be a measurement
+        # nobody made, and the same is true of any engine appended to this branch later: the
+        # default arm states the floor itself, which is true of every engine judged by it.
         case "$ENGINE" in
-            grok) FLOOR_NOTE="the floor is $MIN_REVIEW_BYTES non-space bytes" ;;
-            *)    FLOOR_NOTE="the shortest genuine review in the archive is 460" ;;
+            ext-claude) FLOOR_NOTE="the shortest genuine review in the archive is 460" ;;
+            *)          FLOOR_NOTE="the floor is $MIN_REVIEW_BYTES non-space bytes" ;;
         esac
         # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
         OUT_BYTES="$(out_bytes "$OUT")"
@@ -525,9 +527,13 @@ case "$ENGINE" in
             # The refusal is the same event on both engines; what to DO about it is not.
             # ext-claude's remedy is the missing flag — grok-exec already passes it, so naming
             # it here would send the reader after a setting that cannot be the cause.
+            # Each arm is named, and the default one names no engine: an engine appended to
+            # this branch's `ext-claude|grok)` head would otherwise be handed ext-claude's
+            # remedy — a flag its own exec skill may already pass, or may not accept at all.
             case "$ENGINE" in
-                grok) DENIAL_REMEDY="grok-exec already passes --permission-mode bypassPermissions, so this is not the missing-flag case: the CLI refused for a reason of its own (a sandbox profile, or a deny rule in ~/.grok). Keep the findings; do NOT re-dispatch, and check the CLI's own permission configuration" ;;
-                *)    DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The remedy is the user's, not an agent's: the ext-claude run needs --permission-mode bypassPermissions, and an installed plugin only picks that up through a release" ;;
+                grok)       DENIAL_REMEDY="grok-exec already passes --permission-mode bypassPermissions, so this is not the missing-flag case: the CLI refused for a reason of its own (a sandbox profile, or a deny rule in ~/.grok). Keep the findings; do NOT re-dispatch, and check the CLI's own permission configuration" ;;
+                ext-claude) DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The remedy is the user's, not an agent's: the ext-claude run needs --permission-mode bypassPermissions, and an installed plugin only picks that up through a release" ;;
+                *)          DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The cause sits outside the run: read how this engine's exec skill invokes the CLI, and the CLI's own permission configuration" ;;
             esac
             emit DEGRADED "num_turns=$NT but the CLI refused $DENIED tool call(s) ($BREAKDOWN) — the reviewer was confined to its working directory and reviewed on incomplete context. $DENIAL_REMEDY" 5
         fi

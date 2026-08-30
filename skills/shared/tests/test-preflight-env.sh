@@ -682,7 +682,9 @@ assert_eq   "…with nothing on stderr at all"            ""      "$ERR"
 run_probe none PREFLIGHT_GIT_BIN="$WORK/gitok/git" PREFLIGHT_CURL_BIN="$SHIM/curl" \
           PATH="$SHIM:$WORK/notimeout"
 assert_eq   "no timeout(1) -> UNKNOWN, not NO-NETWORK" UNKNOWN "$(field git-remote "$OUT")"
-assert_match "…naming the missing binary"              "timeout" "$OUT"
+# Scoped to the row, exactly as the grok twin above is: the row NAME `bash-timeout` prints in
+# every scenario, so an unscoped match here holds whatever the git-remote row happens to say.
+assert_match "…naming the missing binary"              "timeout" "$(grep '^git-remote' <<<"$OUT")"
 
 assert_match "gh row present"        "gh"        "$OUT"
 assert_match "clipboard row present" "clipboard" "$OUT"
@@ -896,8 +898,8 @@ assert_eq   "skip-network still offers claude"      "SUMMARY available: claude" 
 assert_match "…and names the unprobed model UNKNOWN" "zai/glm (UNKNOWN)"        "$UNAVAIL"
 assert_match "…with the summary saying nothing was probed" "SUMMARY note: PREFLIGHT_SKIP_NETWORK" "$OUT"
 
-# A rejected `claude:` section is not just the claude-models row: commands/mesh-review.md:71 and
-# skills/mesh-design-review/SKILL.md:256 both `|| exit 1` on that same list-claude-models read,
+# A rejected `claude:` section is not just the claude-models row: both orchestrators `|| exit 1`
+# on that same list-claude-models read in their Step 1 / Step 5.0 fence,
 # BEFORE any reviewer is offered. So nothing is selectable — not claude, not a reachable model —
 # and offering any of it sends the session into the dead end the config gate exists to prevent.
 run_probe invalid-claude-scalar.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200

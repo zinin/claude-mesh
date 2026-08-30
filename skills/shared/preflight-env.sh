@@ -381,7 +381,9 @@ probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
 # that same capture instead of reaching the report.
 CLI_STATUS=""
 cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_section flag, $5 = probe command (optional)
-                        # $5 is deliberately UNQUOTED at the call below: it must split into argv
+                        # $5 is deliberately UNQUOTED where it is EXPANDED — the `timeout` line
+                        # inside the probe branch below, not the cli_row call site, which quotes
+                        # it like any other argument. It must split into argv there
                         # ("grok models" -> two words). That makes word splitting part of this
                         # function's public contract, so a caller may never pass a value
                         # carrying spaces-in-one-argument, and glob characters must be disabled
@@ -713,8 +715,9 @@ UNAVAIL=""
 
 # TWO reads decide whether the orchestrators ever REACH their selection step, and neither of
 # them belongs to a single reviewer: config.yaml (mesh-review Step 0/1, mesh-design-review
-# Step 5.0) and the claude: catalog (commands/mesh-review.md:71 and
-# skills/mesh-design-review/SKILL.md:256 both `|| exit 1` on the same list-claude-models read
+# Step 5.0) and the claude: catalog (both orchestrators `|| exit 1` on the same
+# list-claude-models read in their Step 1 / Step 5.0 fence — cited by the read, not by a line
+# number, because the number has already gone stale once
 # the claude-models row reports above). Either one exits BEFORE anything is offered, so either
 # one makes EVERY reviewer unselectable — including a provider whose endpoint just answered.
 # Offering one here sends the reading session into a dead end it cannot debug from the table.

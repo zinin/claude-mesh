@@ -14,9 +14,10 @@ if [ "${GROK_SMOKE:-0}" != "1" ]; then
     exit 0
 fi
 for REQ in grok jq python3; do
-    # A missing grok binary is "the user did not opt in" -> SKIP. A missing jq or python3 is a
-    # broken environment, and reporting that as SKIP hides it: the suite would look clean on a
-    # machine where nothing could have run.
+    # All three FAIL, grok included. Opting in is the GROK_SMOKE=1 above, and it was already
+    # given: past that gate a missing binary is a broken environment, not an opt-out, and
+    # reporting it as SKIP would leave the suite looking clean on a machine where nothing
+    # could have run.
     command -v "$REQ" >/dev/null 2>&1 || { echo "FAIL: $REQ not installed — this is an environment defect, not an opt-out"; exit 1; }
 done
 

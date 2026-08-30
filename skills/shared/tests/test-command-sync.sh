@@ -292,9 +292,12 @@ done
 # table names a reviewer the orchestrator never dispatched. Both files use both; both must keep
 # both — `grok-4.6` is the worked example each of them carries.
 for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
-    assert_ge "${f#"$REPO"/}: watcher roster spells grok/<model>" "1" \
+    # Presence of each spelling, not of a particular line: prose mentioning `grok/grok-4.6`
+    # keeps this green with the watcher roster deleted, so the pair pins that BOTH spellings
+    # exist and are never swapped — never that the roster itself is there.
+    assert_ge "${f#"$REPO"/}: grok/<model> spelling present, never swapped" "1" \
         "$(grep -c 'grok/grok-4\.6' "$f")"
-    assert_ge "${f#"$REPO"/}: reviewer name spells grok:<model>" "1" \
+    assert_ge "${f#"$REPO"/}: grok:<model> spelling present, never swapped" "1" \
         "$(grep -c 'grok:grok-4\.6' "$f")"
 done
 
