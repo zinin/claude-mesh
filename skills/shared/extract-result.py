@@ -65,13 +65,30 @@ def main() -> int:
     # progress-monitor.sh) and supervised mode (which calls this script).
     final_text: list[str] = []
     from_result = False
-    for ev in reversed(events):
+    # The LONGEST result event, ties going to the LAST — not simply the last. When a run
+    # dispatches a background subagent, progress-monitor.sh appends every segment to one
+    # raw.jsonl, and the closing segment is a wake-up turn carrying an acknowledgement rather
+    # than the review. Measured over 904 archived streams: 59 ext-claude runs hold more than one
+    # result event and in 36 of them the LAST is shorter than the longest — up to 16817 of 17882
+    # characters of review discarded, this repository's own 2026-08-29 review among them.
+    #
+    # Ties go to the last so single-result streams (845 of the 904, and every default-mode run)
+    # keep byte-parity with progress-monitor.sh: with one event the longest IS the last.
+    #
+    # NOT "skip .origin.kind == task-notification", which reads like the semantic fix and was
+    # REFUTED by the same sweep: that marker records how a turn STARTED, not what it carries, so
+    # it also sits on 22 of the 23 tails that are the genuine answer, and 42 streams have no
+    # other result event at all — they would extract to nothing, which verify-delegation.sh reads
+    # as STALLED and answers with a re-dispatch. Length is a proxy for "carries the review", and
+    # on the whole archive it is the only rule that is right everywhere.
+    best_len = -1
+    for ev in events:
         if ev.get("type") == "result":
             r = ev.get("result")
-            if isinstance(r, str) and r:
+            if isinstance(r, str) and r and len(r) >= best_len:
                 final_text = [r]
                 from_result = True
-                break
+                best_len = len(r)
     if not final_text:
         for ev in reversed(events):
             if ev.get("type") != "assistant":

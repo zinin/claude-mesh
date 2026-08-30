@@ -262,6 +262,51 @@ python3 "$EXTRACT" "$TDIR" >/dev/null 2>&1
 assert_eq "mixed entries: both rendered, order kept" "API Error: plain string; from a dict" "$(cat "$TDIR/output.txt")"
 rm -rf "$TDIR"
 
+# === Test 21: a SPLIT stream extracts the review, not the wake-up tail ===
+# progress-monitor.sh appends every segment of a resumed run to one raw.jsonl, so a run that
+# dispatches a background subagent ends with a short wake-up turn. Taking the LAST result event
+# discarded the review in 36 of the 59 multi-result streams on this machine — up to 16817 of
+# 17882 characters, this repository's own 2026-08-29 review included. Ties go to the LAST, so
+# single-result streams keep byte-parity with progress-monitor.sh; Tests 1-20 above are that
+# parity and must stay green.
+echo "=== Test 21: the longest result wins on a split stream ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":false,"num_turns":20,"result":"THE_REAL_REVIEW_IS_LONG"}' \
+    '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"origin":{"kind":"task-notification"},"result":"woke up"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "split stream: exit 0" "0" "$RC"
+assert_eq "split stream: the review wins, not the tail" "THE_REAL_REVIEW_IS_LONG" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+# The REFUTED alternative, pinned so nobody re-derives it: skipping task-notification events
+# reads like the semantic fix and breaks 64 archived streams — the marker records how a turn
+# STARTED, not what it carries, and it sits on 22 of the 23 tails that ARE the answer. Here the
+# task-notification event is the longest, and it must win.
+echo "=== Test 22: a task-notification event still wins when it is the longest ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"short interim"}' \
+    '{"type":"result","subtype":"success","is_error":false,"num_turns":9,"origin":{"kind":"task-notification"},"result":"THE_ANSWER_ARRIVED_ON_THE_WAKE_UP_TURN"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "wake-up turn carrying the answer: exit 0" "0" "$RC"
+assert_eq "…is not skipped for its origin" "THE_ANSWER_ARRIVED_ON_THE_WAKE_UP_TURN" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+# Ties go to the LAST — the rule that keeps every single-result stream byte-identical.
+echo "=== Test 23: equal lengths keep the LAST, preserving parity ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"AAAA"}' \
+    '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"ZZZZ"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "tie: exit 0" "0" "$RC"
+assert_eq "tie goes to the last" "ZZZZ" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
