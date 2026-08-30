@@ -137,6 +137,10 @@ command -v jq >/dev/null 2>&1 || { echo "STOP: jq not found — required to pars
 echo "OK: jq found"
 command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found — required by shared/extract-result.py"; exit 1; }
 echo "OK: python3 found"
+# WARN, not STOP: shared/stream-json-report.sh computes the report's duration with `bc` and
+# falls back to 0 without it. That costs one header field, never the review — so a missing bc
+# must not stop a run the way a missing jq or python3 does.
+command -v bc >/dev/null 2>&1 || echo "WARN: bc not found — the report's duration will read 0; the review itself is unaffected"
 
 # Soft gate: warn (don't STOP) if the optional grok: block is unconfigured. grok handles its
 # own auth, so an absent block is non-fatal for a direct call — it only means no catalog and
@@ -268,6 +272,15 @@ EFFORT=$(cat <<'__EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__'
 {REASONING_EFFORT}
 __EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__
 )
+# Same reason {MODEL} is checked and not rewritten: catch a bad value BEFORE it becomes an
+# argument. NOT an enum — the design forbids one, so that a new xAI level passes without a
+# plugin release — only the charset a level name can have. The case this actually catches is an
+# UNSUBSTITUTED `{REASONING_EFFORT}`, which would otherwise reach the CLI and lose the run to a
+# 4.7-second argument refusal. The heredoc already makes injection impossible; this is about a
+# wasted run, not about safety.
+if [ -n "$EFFORT" ] && ! printf '%s' "$EFFORT" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+    echo "STOP: REASONING_EFFORT '$EFFORT' is not a level name (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. xhigh) — an unsubstituted {REASONING_EFFORT} looks exactly like this"; exit 1
+fi
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 TASK_NAME=$(cat "$WORK_DIR/.task_name" 2>/dev/null || basename "$WORK_DIR")
@@ -329,6 +342,13 @@ echo ""
 # ${GROK_ARGS[@]+"${GROK_ARGS[@]}"}, not "${GROK_ARGS[@]}": under `set -u` bash 4.2 treats the
 # plain form on an EMPTY array as an unbound variable and aborts, and this project supports
 # bash 4.2. Do not "simplify" it back.
+# `timeout 1800` here is the same per-attempt backstop the supervised branch uses, and in THIS
+# branch it is mostly aspirational: run this fence in a FOREGROUND Bash call and the harness
+# SIGTERMs it at `BASH_MAX_TIMEOUT_MS` (ten minutes out of the box) long before 1800 s — the
+# KILLED shape the supervised section below documents with measurements. Nothing is wrong with
+# the number; what is wrong is expecting it to bind. For a direct call you expect to run past
+# ten minutes, launch this fence in the BACKGROUND, or use SUPERVISED_MODE, which is built for
+# exactly that. The shape is inherited from codex-exec and gemini-exec, which carry it too.
 PIPELINE_RC=0
 { timeout 1800 grok \
     --prompt-file "$PROMPT_FILE" \
@@ -495,6 +515,15 @@ EFFORT=$(cat <<'__EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__'
 {REASONING_EFFORT}
 __EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__
 )
+# Same reason {MODEL} is checked and not rewritten: catch a bad value BEFORE it becomes an
+# argument. NOT an enum — the design forbids one, so that a new xAI level passes without a
+# plugin release — only the charset a level name can have. The case this actually catches is an
+# UNSUBSTITUTED `{REASONING_EFFORT}`, which would otherwise reach the CLI and lose the run to a
+# 4.7-second argument refusal. The heredoc already makes injection impossible; this is about a
+# wasted run, not about safety.
+if [ -n "$EFFORT" ] && ! printf '%s' "$EFFORT" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+    echo "STOP: REASONING_EFFORT '$EFFORT' is not a level name (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. xhigh) — an unsubstituted {REASONING_EFFORT} looks exactly like this"; exit 1
+fi
 if [ -z "$EFFORT" ] && [ -x "$LOADER" ]; then
     # The flag is read rc-AWARE, not inside the `if` condition under 2>/dev/null. Read that
     # way, a grok: section that does not validate made the whole condition false and the run
@@ -656,7 +685,15 @@ LOADER="$SKILL_BASE/../shared/config-loader.sh"
 RUNS_DIR="$("$LOADER" data-dir)/runs/grok"
 # The work dir this skill returned, when the caller still has it — an exact answer beats any
 # search. Leave it empty only when it is genuinely lost; the search below is the fallback.
-WORK_DIR_HINT="<the WORK_DIR this skill returned, or leave empty to search>"
+# Bound through a quoted heredoc, the shape grok-code-review uses for MODEL and BASE_BRANCH
+# and for the reason measured there: a double-quoted assignment is a substitution point into an
+# EXECUTED context. The value here is generated from sanitized components, so this is defence in
+# depth rather than a repair — but this is the fence a reader runs when something has already
+# gone wrong, which is the worst moment to be the one place that kept the weaker shape.
+WORK_DIR_HINT=$(cat <<'__HINT_BOUNDARY_3d5a91e7_HINT_END__'
+<the WORK_DIR this skill returned, or leave empty to search>
+__HINT_BOUNDARY_3d5a91e7_HINT_END__
+)
 # And when it IS lost, the search must not cross into another session's run. `ls -t | head -1`
 # did: it answered "the newest directory under runs/grok" across every model and every session,
 # which is a different question from "the run I am looking for". Two runs of one model a minute
@@ -736,6 +773,15 @@ failing the whole read.
 | `user` | Tool results fed back to the model (`.message.content[]` `tool_result` blocks) |
 | `result` | Terminal event: `is_error`, `num_turns`, `duration_ms`, `usage`, `result` (the final text) |
 | `error` | Failure event. grok puts the text TOP-LEVEL in `.message`, where claude/codex/gemini nest it under `.error.message`; `extract-result.py` reads both |
+
+**grok has TWO failure shapes, not one, and the second is the common one.** Besides the `error`
+event above, a run can fail through the TERMINAL `result` event alone: `is_error:true`,
+`num_turns:0` and the reason in `errors[]`, with no `error` event anywhere in the stream. That is
+what an argument the CLI refuses produces — measured, `--effort max` against `grok-4.6`, which
+accepts only `xhigh|high|medium|low`: rc=1 in 4.7 s, before any API call. `extract-result.py`
+covers it (arm F4); before it did, that stream yielded a ZERO-BYTE `output.txt` and the reason
+survived only in `stderr.txt`. A reader who knows only the `error` row will look for an event
+that is not there.
 
 `--include-partial-messages` would add `stream_event` delta lines. This skill does NOT pass it:
 whole messages keep the progress log short by construction, and the extractor wants complete

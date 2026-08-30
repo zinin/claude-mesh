@@ -526,11 +526,16 @@ validate_grok_effort() {
 # 1.0.5: grok-4.6 accepts xhigh|high|medium|low, grok-4.5 only high|medium|low, and most proxied
 # entries all five — so one section-wide level cannot serve a catalog of several models.
 #
-# Validated HERE and not in validate_grok_catalog, which means `validate`, `get-grok` and
-# through it preflight's grok row see a broken table, while `has_grok` and `list-grok-models`
-# do not. Deliberate, and not a weaker gate: `reasoning_effort` sits on exactly that path, a new
-# key does not invent a stricter one than the key it sits beside, and the laziness is what keeps
-# a broken grok: section from grounding a codex-only review (see :1014, the `ultra` incident).
+# Validated HERE and not in validate_grok_catalog. What that means, MEASURED rather than
+# assumed: `validate`, `get-grok`, preflight's grok row AND `has_grok` all see a broken table —
+# has_grok runs validate_grok, which calls this function, so it exits 1 — while
+# `list-grok-models` alone does not. Do not restate it as "has_grok does not validate this":
+# that was the OLD contract, and it is the one that produced "grok offered, run dir created,
+# get-grok dies, STALLED, re-dispatch". Deliberate, and not a weaker gate: `reasoning_effort`
+# sits on exactly that path, a new key does not invent a stricter one than the key it sits
+# beside, and the laziness is what keeps a broken grok: section from grounding a codex-only
+# review — the `ultra` incident, named rather than cited by line number, because that number has
+# already gone stale once.
 validate_grok_model_efforts() {
     local mtype count i=0 key vtype value
     mtype=$(jq -r '.grok.model_efforts | type' "$CONFIG_JSON" 2>/dev/null)

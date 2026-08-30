@@ -1630,8 +1630,8 @@ rm -rf "$TDIR" "$ACTUAL"
 # default per model.
 #
 # It is validated exactly where `reasoning_effort` is — inside validate_grok, so `validate`,
-# `get-grok` and through it preflight's grok row see it, while `has_grok` and
-# `list-grok-models` do not. Deliberate, not a weaker gate: a new key does not invent a
+# `get-grok`, preflight's grok row AND `has_grok` see it (has_grok runs validate_grok), while
+# `list-grok-models` alone does not. Deliberate, not a weaker gate: a new key does not invent a
 # stricter path than the key it sits beside, and that laziness is what keeps a broken grok
 # section from grounding a codex-only review.
 echo "=== Test 60: grok.model_efforts ==="

@@ -101,7 +101,9 @@ HAS_GEMINI=$("$LOADER" get-flag has_gemini)
 # rather than exit: a broken grok: section must not stop a codex-only review — that is the
 # `ultra` incident (2026-07-10: a codex setting killed every ext-claude
 # executor) in a new costume, and the reason has_codex is a bare probe. The same rule is
-# spelled out at config-loader.sh:420-430. Degrade grok alone: report it, drop the flag, let
+# spelled out in config-loader.sh above validate_grok_section_type — cited by the function it
+# guards, not by a line number, because the number has already gone stale once. Degrade grok
+# alone: report it, drop the flag, let
 # everything else run.
 GM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 if ! HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GM_ERR") \
@@ -285,7 +287,7 @@ echo "CLAUDE_DEFAULT_IDS=[$(echo "$CLAUDE_DEFAULT_IDS" | tr '\n' ' ')]"   # empt
 
 For each chunk of 4 entries from `CLAUDE_MODELS` (in config order) — same pagination mechanics as Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API):
 
-**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — claude на модели по умолчанию`. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide which model the single claude reviewer runs on — this catalog's only entry, or `DISPATCH_MODEL` through the fallback below on the user's behalf, silently, in the one configuration where the question matters most.
+**A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — claude на модели по умолчанию`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide which model the single claude reviewer runs on — this catalog's only entry, or `DISPATCH_MODEL` through the fallback below on the user's behalf, silently, in the one configuration where the question matters most.
 
 AskUserQuestion (multiSelect, max 4):
 ```
@@ -336,7 +338,7 @@ For each chunk of 4 entries from `GROK_MODELS` (in config order) — same pagina
 Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API). Unlike
 Step 2.1, whose option list is at most three, this catalog is the user's and can exceed 4:
 
-**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — grok не запускать`. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide whether a grok reviewer runs at all — the one thing this page exists to ask on the user's behalf, silently, in the one configuration where the question matters most.
+**A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — grok не запускать`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide whether a grok reviewer runs at all — the one thing this page exists to ask on the user's behalf, silently, in the one configuration where the question matters most.
 
 AskUserQuestion (multiSelect, max 4):
 ```
@@ -351,8 +353,10 @@ options:
 
 Collect the selections across pages into `SELECTED_GROK_MODELS`. Every entry is a bare catalog
 id (`grok-4.6`) — never a `<provider>/<short>` pair like ext-claude's. A slash in that value
-sends the Step 6.0 guard to `runs/grok/<provider>/<short>`, which nothing ever writes, and it
-reports `FLIP` — "this reviewer never delegated" — about a reviewer that ran.
+never reaches a verdict at all: the Step 6.0 guard rejects it with a usage error and exit 1,
+the shape that means "fix the call" — never `FLIP`, which would mean "re-dispatch this
+reviewer". It once did report `FLIP`, by resolving `runs/grok/<provider>/<short>`, a path
+nothing ever writes; the charset check in `verify-delegation.sh`'s `grok)` arm replaced that.
 
 <!-- SYNC: the "no fallback" rule for grok is ONE rule living in five places — this paragraph,
      this file's Step 0 grok preset bullet, and their two twins in the sibling orchestrator
@@ -414,7 +418,7 @@ Read the default set from `defaults.code_review.models` (if exists). Build a set
 
 For each chunk of 4 models from `models[]` (in config order):
 
-**A catalog of exactly ONE entry still gets this page — with TWO options.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — внешние модели не запускать`. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide that the user wants this model, when the alternative is the STOP in Step 3.5 on the user's behalf, silently, in the one configuration where the question matters most.
+**A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — внешние модели не запускать`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide that the user wants this model, when the alternative is the STOP in Step 3.5 on the user's behalf, silently, in the one configuration where the question matters most.
 - AskUserQuestion (multiSelect, max 4):
   ```
   header: "Models"
@@ -615,7 +619,7 @@ done
 ```
 
 
-A grok pair carries the BARE catalog id (`grok:grok-4.6`), never a `<provider>/<short>` pair. `verify-delegation.sh` rejects an empty model and `-` for grok with a usage error, but a slashed one is not rejected: `grok zai/glm` resolves `runs/grok/zai/glm`, which nothing ever writes, and the guard then reports `FLIP` — the statement that the reviewer never delegated — about a reviewer that ran and delivered.
+A grok pair carries the BARE catalog id (`grok:grok-4.6`), never a `<provider>/<short>` pair. `verify-delegation.sh` rejects an empty model, `-`, and any spelling outside `[A-Za-z0-9][A-Za-z0-9._-]*` — a slashed `grok zai/glm` included — with a usage error and exit 1, printing NO verdict. Read that as "fix the argument", never as a statement about the reviewer: `FLIP` would prescribe a re-dispatch, and re-dispatching cannot repair a call the script refuses to answer. The rejection is what stops `runs/grok/<provider>/<short>` — a path nothing ever writes — from being reported as a reviewer that never delegated.
 
 Substitute the **actual** `DISPATCH_EPOCH` number — the one stamped in Step 5, or the fresh one from step 4a on a re-dispatch round — exactly as in the Step 5a watcher call. A shell variable does not survive from one Bash call to the next, and `DISPATCH_EPOCH` was stamped in a different one; left as `"$DISPATCH_EPOCH"` it expands to nothing and the guard prints its usage line and exits 1 for every reviewer, which is not a verdict at all.
 Verdicts:

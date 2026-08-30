@@ -241,6 +241,27 @@ python3 "$EXTRACT" "$TDIR" >/dev/null 2>&1
 assert_eq "output.txt is the review, not an error" "THE REVIEW" "$(cat "$TDIR/output.txt")"
 rm -rf "$TDIR"
 
+# === Test 20: a DICT entry in errors[] reports its message, not a Python repr ===
+# Every grok failure measured so far puts strings in errors[]. If xAI ever puts objects there,
+# the naive `str(e)` renders `{'message': '...'}` as the whole user-facing diagnosis — the same
+# class of loss Test 16 exists for, one layer in. Strings must keep their exact old rendering.
+echo "=== Test 20: a dict in errors[] is not rendered as a Python repr ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":[{"message":"unknown effort level max"}]}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR" >/dev/null 2>&1
+assert_eq "dict entry: message extracted" "API Error: unknown effort level max" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["plain string",{"message":"from a dict"}]}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR" >/dev/null 2>&1
+assert_eq "mixed entries: both rendered, order kept" "API Error: plain string; from a dict" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

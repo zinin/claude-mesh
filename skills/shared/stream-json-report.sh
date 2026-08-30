@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Generate human-readable markdown from an Anthropic stream-json log (ext-claude and grok)
 # Usage: ./stream-json-report.sh <log_file> <md_file> <profile> [report_title] [task_name_override]
 #
@@ -21,7 +21,7 @@ FIRST_INPUT_LINE=$(grep -m 1 '[^[:space:]]' "$LOG_FILE" 2>/dev/null || true)
 case "$FIRST_INPUT_LINE" in
     \[* ) ;;
     * )
-        RAW_PREFIXED_LOG=$(mktemp)
+        RAW_PREFIXED_LOG=$(mktemp) || { echo "stream-json-report: mktemp failed — cannot prefix the log" >&2; exit 1; }
         sed 's/^/[??:??:??] /' "$LOG_FILE" > "$RAW_PREFIXED_LOG"
         LOG_FILE="$RAW_PREFIXED_LOG"
         trap 'rm -f "$RAW_PREFIXED_LOG"' EXIT
@@ -42,21 +42,27 @@ else
 fi
 
 # Get model from system init line
+# These two greps require `type` to be the FIRST key of the object — the `{` immediately
+# before it is what anchors them. True of every stream measured so far (claude -p and grok
+# alike), and deliberately narrow: a pattern matching `"type":"result"` anywhere would also
+# match the literal inside a tool_result payload or an assistant's text. Only the report's
+# header metrics read these; every verdict comes from extract-result.py, which parses the
+# JSON properly. If a producer ever reorders its keys, the fix is jq, not a looser grep.
 SYSTEM_LINE=$(grep '\[.*\] {"type":"system"' "$LOG_FILE" 2>/dev/null | head -1 | sed 's/^\[[^]]*\] //')
 MODEL=$(echo "$SYSTEM_LINE" | jq -r '.model // "unknown"' 2>/dev/null)
-[ -z "$MODEL" ] || [ "$MODEL" = "null" ] && MODEL="unknown"
+if [ -z "$MODEL" ] || [ "$MODEL" = "null" ]; then MODEL="unknown"; fi
 
 # Get result metrics from last line
 RESULT_LINE=$(grep '\[.*\] {"type":"result"' "$LOG_FILE" 2>/dev/null | tail -1 | sed 's/^\[[^]]*\] //')
 DURATION_MS=$(echo "$RESULT_LINE" | jq -r '.duration_ms // 0' 2>/dev/null)
-[ -z "$DURATION_MS" ] || [ "$DURATION_MS" = "null" ] && DURATION_MS=0
+if [ -z "$DURATION_MS" ] || [ "$DURATION_MS" = "null" ]; then DURATION_MS=0; fi
 DURATION_SEC=$(echo "scale=1; $DURATION_MS / 1000" | bc 2>/dev/null || echo "0")
 COST=$(echo "$RESULT_LINE" | jq -r '.total_cost_usd // 0' 2>/dev/null)
-[ -z "$COST" ] || [ "$COST" = "null" ] && COST="0"
+if [ -z "$COST" ] || [ "$COST" = "null" ]; then COST="0"; fi
 INPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/null)
-[ -z "$INPUT_TOKENS" ] || [ "$INPUT_TOKENS" = "null" ] && INPUT_TOKENS=0
+if [ -z "$INPUT_TOKENS" ] || [ "$INPUT_TOKENS" = "null" ]; then INPUT_TOKENS=0; fi
 OUTPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null)
-[ -z "$OUTPUT_TOKENS" ] || [ "$OUTPUT_TOKENS" = "null" ] && OUTPUT_TOKENS=0
+if [ -z "$OUTPUT_TOKENS" ] || [ "$OUTPUT_TOKENS" = "null" ]; then OUTPUT_TOKENS=0; fi
 
 # Emit one collapsed section for a tool output. A function because BOTH shapes need it — the
 # single top-level `.tool_use_result.stdout` one engine writes, and each `tool_result` block of
@@ -79,7 +85,7 @@ emit_tool_output() {
 {
     echo "# $REPORT_TITLE"
     echo ""
-    echo "**Date:** $(echo $TIMESTAMP | sed 's/\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)-\([0-9]\{2\}\)-\([0-9]\{2\}\)-\([0-9]\{2\}\)/\1 \2:\3:\4/')"
+    echo "**Date:** $(echo "$TIMESTAMP" | sed 's/\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)-\([0-9]\{2\}\)-\([0-9]\{2\}\)-\([0-9]\{2\}\)/\1 \2:\3:\4/')"
     echo "**Task:** $TASK_NAME"
     echo "**Profile:** $PROFILE | **Model:** $MODEL"
     echo "**Duration:** ${DURATION_SEC}s | **Cost:** \$${COST}"
@@ -201,9 +207,10 @@ emit_tool_output() {
 
     time_to_seconds() {
         local time="$1"
-        local h=$(echo "$time" | cut -d: -f1)
-        local m=$(echo "$time" | cut -d: -f2)
-        local s=$(echo "$time" | cut -d: -f3 | cut -d. -f1)  # drop .mmm: bash 10# rejects fractional
+        local h m s
+        h=$(echo "$time" | cut -d: -f1)
+        m=$(echo "$time" | cut -d: -f2)
+        s=$(echo "$time" | cut -d: -f3 | cut -d. -f1)  # drop .mmm: bash 10# rejects fractional
         echo $((10#$h * 3600 + 10#$m * 60 + 10#$s))
     }
 

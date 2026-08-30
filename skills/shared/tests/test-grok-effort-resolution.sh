@@ -150,6 +150,47 @@ for i in 0 1; do
     eq "$LABEL passes no effort when the section is absent" "0|EFFORT=" "$R"
 done
 
+# === The EFFORT charset guard ===
+# It sits BEFORE the resolution block above, so the extraction there does not reach it and a
+# green suite says nothing about it. Extracted and executed on its own, for the same reason the
+# rest of this file is: what must hold is behaviour, not the presence of a line.
+#
+# NOT an enum, deliberately — the design forbids one so a new xAI level ships without a plugin
+# release — so the future-level case below is as load-bearing as the rejections.
+awk '/^if \[ -n "\$EFFORT" \] && ! printf/ {inblock=1} inblock {print} inblock && /^fi$/ {inblock=0; print "@@GUARD-END@@"}' \
+    "$SKILL" > "$T/guards.txt"
+GCOUNT=$(grep -c '^@@GUARD-END@@$' "$T/guards.txt")
+
+echo "=== grok-exec effort charset guard ==="
+eq "SKILL.md carries the effort guard exactly twice" "2" "$GCOUNT"
+
+run_guard() { # $1=index  $2=EFFORT  -> prints rc
+    local idx="$1" val="$2"
+    printf 'set -euo pipefail\nEFFORT=%q\n' "$val" > "$T/g.sh"
+    awk -v want="$idx" '
+        /^@@GUARD-END@@$/ { n++; next }
+        { if (n == want) print }
+    ' "$T/guards.txt" >> "$T/g.sh"
+    bash "$T/g.sh" >/dev/null 2>&1; printf '%s' "$?"
+}
+
+for i in 0 1; do
+    LABEL=$([ "$i" = "0" ] && echo "default fence" || echo "supervised fence")
+    # The case the guard exists for: the template placeholder never got substituted. Without
+    # the guard it reaches the CLI as `--effort {REASONING_EFFORT}` and loses the whole run to
+    # a 4.7-second argument refusal.
+    eq "$LABEL guard rejects an unsubstituted placeholder" "1" "$(run_guard "$i" '{REASONING_EFFORT}')"
+    # A leading dash would be read by the CLI as a flag rather than as this flag's value.
+    eq "$LABEL guard rejects a leading dash"               "1" "$(run_guard "$i" '-max')"
+    eq "$LABEL guard rejects an embedded space"            "1" "$(run_guard "$i" 'a b')"
+    # Every real level passes, empty passes (it means "let ~/.grok/config.toml decide"), and so
+    # does a level xAI has not shipped yet — this is a charset, not a list.
+    eq "$LABEL guard passes xhigh"                         "0" "$(run_guard "$i" 'xhigh')"
+    eq "$LABEL guard passes max"                           "0" "$(run_guard "$i" 'max')"
+    eq "$LABEL guard passes an empty value"                "0" "$(run_guard "$i" '')"
+    eq "$LABEL guard passes an unknown future level"       "0" "$(run_guard "$i" 'ultra-new-2027')"
+done
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

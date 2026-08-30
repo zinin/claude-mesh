@@ -130,7 +130,12 @@ def main() -> int:
                 continue
             # Every entry, not the first: a run can fail for more than one reason, and one
             # message that looks complete while hiding the rest is how a diagnosis goes wrong.
-            final_text = ["API Error: " + "; ".join(str(e) for e in errs)]
+            # Entries are strings on every grok failure measured so far; a dict is defended
+            # against because the alternative is a Python repr reaching the user as the whole
+            # diagnosis — `{'message': '...'}` instead of the message.
+            final_text = ["API Error: " + "; ".join(
+                str(e.get("message") or e) if isinstance(e, dict) else str(e)
+                for e in errs)]
             break
 
     # NOTE: a `thinking`-block fallback was tried (b42161f) and reverted. Reasoning models
