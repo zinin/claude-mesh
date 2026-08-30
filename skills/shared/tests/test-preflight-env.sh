@@ -603,6 +603,39 @@ run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$
 assert_eq   "no timeout(1) -> grok UNKNOWN, not NO-NETWORK" UNKNOWN "$(field grok "$OUT")"
 assert_match "…naming the missing binary"                   "timeout" "$(grep '^grok' <<<"$OUT")"
 
+# The command probe has its OWN budget, PREFLIGHT_CLI_TIMEOUT, and does not share the HTTP one.
+# `grok models` is a full CLI start plus an authenticated round-trip — measured 1.83-2.30s on
+# grok 1.0.13, against 1.0-1.2s when the design wrote the shared 5s budget around "roughly
+# fourfold headroom" — while codex's and gemini's probes are a curl. A slow-but-healthy CLI
+# timing out prints "no network, or not logged in" as a fact and drops grok from SUMMARY, which
+# the *-fresh-session commands read to decide whether `default` is safe: a false negative
+# feeding an automatic decision.
+mkdir -p "$WORK/cli-grok-slow"
+cat > "$WORK/cli-grok-slow/grok" <<'SH'
+#!/usr/bin/env bash
+# Slower than a 1s budget, far inside the 15s default. Nothing here depends on the real CLI.
+case "${1:-}" in
+  models) sleep 2; printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n' ;;
+  *)      exit 0 ;;
+esac
+SH
+chmod +x "$WORK/cli-grok-slow/grok"
+
+# THE SEPARATION, and the assertion that would have been red before the split: squeezing the
+# HTTP budget must no longer touch the grok row. Measured on the pre-fix build, the very same
+# invocation produced `grok NO-NETWORK`.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok-slow:$SHIM:$PATH" \
+          PREFLIGHT_HTTP_TIMEOUT=1
+assert_eq   "a squeezed HTTP budget no longer fails the grok row" OK "$(field grok "$OUT")"
+
+# …and the CLI budget does govern it.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok-slow:$SHIM:$PATH" \
+          PREFLIGHT_CLI_TIMEOUT=1
+assert_eq   "PREFLIGHT_CLI_TIMEOUT does govern the command probe" NO-NETWORK "$(field grok "$OUT")"
+# Scoped to the grok ROW: provider:zai and git-remote print their own sentences in this report.
+assert_match "…and the row names the knob to turn" "PREFLIGHT_CLI_TIMEOUT" "$(grep '^grok' <<<"$OUT")"
+assert_match "…reporting the budget it actually used" "after 1s" "$(grep '^grok' <<<"$OUT")"
+
 # git: absent binary is MISSING, and a hanging remote is NO-NETWORK rather than a hang.
 run_probe none PREFLIGHT_GIT_BIN="$WORK/no-such-git"
 assert_eq   "no git -> MISSING"                MISSING "$(field git-remote "$OUT")"

@@ -11,7 +11,7 @@
 # is 3.2, exactly the machine this probe exists for) or was interrupted (130/143) — never that
 # the environment is poor (same contract as shared/watch-runs.sh).
 #
-# Env: PREFLIGHT_HTTP_TIMEOUT (5)  PREFLIGHT_GIT_TIMEOUT (8)
+# Env: PREFLIGHT_HTTP_TIMEOUT (5)  PREFLIGHT_GIT_TIMEOUT (8)  PREFLIGHT_CLI_TIMEOUT (15)
 #      PREFLIGHT_CURL_BIN (curl)   PREFLIGHT_GIT_BIN (git)
 #      PREFLIGHT_YQ_BIN (yq)       PREFLIGHT_JQ_BIN (jq)
 #      PREFLIGHT_EXT_DEPS_BINS ("claude bc python3")
@@ -32,6 +32,21 @@ LOADER="$SCRIPT_DIR/config-loader.sh"
 EXEC_DIR="$SCRIPT_DIR/../ext-claude-exec"
 HTTP_TIMEOUT="${PREFLIGHT_HTTP_TIMEOUT:-5}"
 GIT_TIMEOUT="${PREFLIGHT_GIT_TIMEOUT:-8}"
+# A command probe is not an HTTP probe and must not share its budget. `grok models` is a full
+# CLI start plus an authenticated round-trip, where codex's and gemini's probes are a curl that
+# answers in milliseconds. Measured 2026-08-30 on grok 1.0.13, eight warm runs: 1.83-2.30s,
+# essentially unmoved by CPU load (1.79-1.98s under four busy loops), so the cost is network and
+# I/O, not compute. The design measured 1.0-1.2s on grok 1.0.5 and wrote its 5s budget around
+# "roughly fourfold headroom" — that premise is gone, halved by one CLI version bump, and a COLD
+# start has never been measured by anyone. Own budget rather than a raise of the shared one, and
+# the size follows PREFLIGHT_GIT_TIMEOUT's precedent one line above: the design names both.
+#
+# The error this buys protection from is a FALSE NEGATIVE, which is why it is worth a slower
+# failure: a slow-but-healthy CLI timing out prints "no network, or not logged in" as a fact,
+# drops grok from SUMMARY, and the *-fresh-session commands read exactly that SUMMARY to decide
+# whether `default` is safe. The cost is that a genuinely offline machine waits 15s on this one
+# row instead of 5s.
+CLI_TIMEOUT="${PREFLIGHT_CLI_TIMEOUT:-15}"
 # Budgets are pasted straight into `curl --max-time` and `timeout`, so an unusable value here
 # does not degrade — it INVENTS a verdict, which is the one thing this file never does. Three
 # ways it went wrong, all observed: `PREFLIGHT_GIT_TIMEOUT=--help` makes `timeout` print its
@@ -440,14 +455,14 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
             echo "probing $1 (\`$5\`)…" >&2
             set -f                                   # see the contract note on $5 above
             # shellcheck disable=SC2086
-            timeout "$HTTP_TIMEOUT" $5 >/dev/null 2>&1; rc=$?
+            timeout "$CLI_TIMEOUT" $5 >/dev/null 2>&1; rc=$?
             set +f                                   # restored on BOTH paths, before any branch
             if [ "$rc" -eq 0 ]; then
                 CLI_STATUS="OK"
                 row "$1" OK "CLI present, \`$5\` answered (checks login as well as network)"
             else
                 CLI_STATUS="NO-NETWORK"
-                row "$1" NO-NETWORK "CLI present, \`$5\` failed or timed out after ${HTTP_TIMEOUT}s — no network, or not logged in (\`$2 login\`)"
+                row "$1" NO-NETWORK "CLI present, \`$5\` failed or timed out after ${CLI_TIMEOUT}s — no network, not logged in (\`$2 login\`), or slower than the budget (raise PREFLIGHT_CLI_TIMEOUT)"
             fi
         fi
         return 0
