@@ -117,7 +117,7 @@ LOW` row carrying the exact value to set.
 commands that pass no timeout of their own: builds, test runs, `git log -S` sweeps over full
 history, `find` over large trees. The 2-minute stock value is tight enough that this plugin's
 own test suite does not fit: `skills/shared/tests/` runs 207 s end to end (2026-08-30, thirteen
-suites, 1176 assertions — `test-preflight-env.sh` 123 s, `test-config-loader.sh` 53 s,
+suites, 1178 assertions — `test-preflight-env.sh` 123 s, `test-config-loader.sh` 53 s,
 `test-watch-runs.sh` 21 s), so a foreground run of it dies partway through the longest
 suite. 5 minutes clears that with room to spare. Do not push it near the max:
 it applies to *every* untimed command, so a genuinely wedged one holds the turn for the whole
