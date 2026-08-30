@@ -654,10 +654,39 @@ set -uo pipefail
 SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 RUNS_DIR="$("$LOADER" data-dir)/runs/grok"
+# The work dir this skill returned, when the caller still has it — an exact answer beats any
+# search. Leave it empty only when it is genuinely lost; the search below is the fallback.
+WORK_DIR_HINT="<the WORK_DIR this skill returned, or leave empty to search>"
+# And when it IS lost, the search must not cross into another session's run. `ls -t | head -1`
+# did: it answered "the newest directory under runs/grok" across every model and every session,
+# which is a different question from "the run I am looking for". Two runs of one model a minute
+# apart is the ordinary shape of a review that retried, and on 2026-08-30 reading the older of
+# two produced the report "this reviewer is dead" about a reviewer that was writing its review
+# at that moment. verify-delegation.sh already answers the same question by `.session_id`;
+# these blocks are the last thing anyone reads when a run went wrong, so they had better agree.
+#
+# Same semantics as the guard, including the exception: a run carrying NO stamp stays eligible.
+# Those come from plugin versions that predate the stamp, and calling a live one somebody
+# else's would be worse than the collision the filter removes. An empty SELF likewise accepts
+# everything rather than nothing.
+#
 # TWO glob segments: runs/grok/<model>/<ts>-<task>/. `"$RUNS_DIR"/*/` alone would list the
 # MODEL directories (or `_default`), not the runs inside them.
-LATEST_DIR=$(ls -td "$RUNS_DIR"/*/*/ 2>/dev/null | head -1)
-if [ -z "$LATEST_DIR" ]; then echo "No grok runs under $RUNS_DIR"; exit 0; fi
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-}"
+LATEST_DIR=""
+if [ -n "$WORK_DIR_HINT" ] && [ -d "$WORK_DIR_HINT" ]; then
+    LATEST_DIR="$WORK_DIR_HINT"
+else
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        run_sid=""
+        [ -r "$d/.session_id" ] && IFS= read -r run_sid < "$d/.session_id"
+        if [ -z "$SELF_SID" ] || [ -z "$run_sid" ] || [ "$run_sid" = "$SELF_SID" ]; then
+            LATEST_DIR="$d"; break
+        fi
+    done < <(ls -td "$RUNS_DIR"/*/*/ 2>/dev/null)
+fi
+if [ -z "$LATEST_DIR" ]; then echo "No grok runs under $RUNS_DIR for this session"; exit 0; fi
 echo "Latest: $LATEST_DIR"
 ls -la "$LATEST_DIR"
 if [ -f "$LATEST_DIR/raw.jsonl" ]; then echo "=== Last 30 events (raw.jsonl) ==="; tail -30 "$LATEST_DIR/raw.jsonl"; fi

@@ -63,10 +63,21 @@ a missing directory FLIP. Do NOT expand `${CLAUDE_PLUGIN_DATA}` in a Bash call: 
 (Task 2.5), so a literal `${CLAUDE_PLUGIN_DATA}/runs/grok/...` searches `/runs/grok` and finds
 nothing — which would report a review that ran as one that did not. Glob the data dir instead.
 Grok run dirs are depth 2 (`<model>/<run>`), so list the newest leaf, not the persistent model
-dirs:
+dirs — and list only YOURS. Restrict the search to your own MODEL and your own session: this
+listing used to be "the newest run under runs/grok" across every model and every session, which
+answers a different question. Two runs of one model a minute apart is the ordinary shape of a
+review that retried, and on 2026-08-30 reading the older of two produced the report "this
+reviewer is dead" about a reviewer that was writing its review at that moment. A run carrying no
+`.session_id` stays eligible on purpose — it predates the stamp, and calling a live one somebody
+else's would be worse than the collision the filter removes. Substitute your MODEL below:
 
 ```bash
-find "$HOME"/.claude/plugins/data/claude-mesh-*/runs/grok -mindepth 2 -maxdepth 2 -type d 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2-
+for d in "$HOME"/.claude/plugins/data/claude-mesh-*/runs/grok/<the MODEL you were given>/*/; do
+    [ -d "$d" ] || continue
+    run_sid=""; [ -r "$d/.session_id" ] && IFS= read -r run_sid < "$d/.session_id"
+    [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || [ -z "$run_sid" ] || [ "$run_sid" = "$CLAUDE_CODE_SESSION_ID" ] || continue
+    printf '%s %s\n' "$(stat -c %Y "$d")" "$d"
+done | sort -rn | head -5 | cut -d' ' -f2-
 ```
 
 If no run dir is listed, or the newest is not from this invocation (not recent), the review did
