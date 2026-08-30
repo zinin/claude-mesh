@@ -85,6 +85,19 @@ All notable changes to claude-mesh will be documented here.
   every installed claude-* plugin — the review prompt therefore forbids it from invoking any
   skill.
 
+### Fixed
+- **An ext-claude reviewer dispatched with `BASE_BRANCH=` got the base in front of `MODEL=`.**
+  `/mesh-review` prescribed a one-line `MODEL=<id> Review the changes…` prompt and then told
+  the caller to prefix the whole thing with `BASE_BRANCH=<branch> ` — which puts the base at
+  the head of the first line, where `agents/ext-claude-code-reviewer.md` requires MODEL to be.
+  Nothing parses that prompt mechanically, so the agent either stops with its own
+  `ERROR: MODEL parameter is required on first line` or forwards a guess: a reviewer that
+  never runs, or one reviewing a range nobody asked for. Both the initial dispatch and the
+  auto-redispatch retry are now the same three-line shape grok already used — `MODEL=` alone
+  on the first line, `BASE_BRANCH=` directly under it, then the request — and the prefix rule
+  says what it is really about: it belongs to codex and gemini, whose agents claim no first
+  line, and a wrapper that does claim one takes the two-line shape instead.
+
 ## [0.11.0] - 2026-08-26
 
 ### Requirements

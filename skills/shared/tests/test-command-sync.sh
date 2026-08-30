@@ -331,6 +331,20 @@ done
 assert_eq "no stale 'codex / gemini / ext-claude' enumeration" "0" \
     "$(cat "$MESH_REVIEW" "$DESIGN_SKILL" | grep -c 'codex / gemini / ext-claude')"
 
+# ext-claude and grok BOTH put MODEL= on the first line and the base on its own line under it;
+# only codex and gemini take the bare `BASE_BRANCH=<branch> ` prefix. Two sites used to say
+# otherwise, and both were stale copies left behind when the ext-claude bullet was moved off
+# the prefix: the prefix rule still called grok "the one exception", and the auto-redispatch
+# bullet still prescribed the one-line `MODEL=<id> Review …` form and then told the caller to
+# prefix it — producing `BASE_BRANCH=… MODEL=…`, the exact shape the ext-claude bullet names
+# as the defect it was fixing, in a bullet whose own first clause promises "the EXACT same
+# prompt as Step 5a". Found by codex's review of PR #16. Both are exact-0 negatives: the
+# stale sentence is the artefact, and a file that no longer contains it has been updated.
+assert_eq "the base-branch prefix rule names both exceptions, not grok alone" "0" \
+    "$(grep -c 'grok is the one exception' "$MESH_REVIEW")"
+assert_eq "no one-line 'MODEL=<id> Review …' form left to be prefixed" "0" \
+    "$(grep -c 'MODEL=<id> Review the changes' "$MESH_REVIEW")"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="
 [ "$FAIL" = "0" ]
