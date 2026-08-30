@@ -219,8 +219,8 @@ PIPELINE_RC=0
 
 echo ""
 echo "=== Generating report ==="
-{ "$SKILL_DIR/generate-md.sh" "$WORK_DIR/log.jsonl" "$WORK_DIR/report.md" "$MODEL" "" "$TASK_NAME" \
-    || echo "WARN: generate-md.sh failed" >&2 ; } || true
+{ "$SKILL_DIR/../shared/stream-json-report.sh" "$WORK_DIR/log.jsonl" "$WORK_DIR/report.md" "$MODEL" "" "$TASK_NAME" \
+    || echo "WARN: shared/stream-json-report.sh failed" >&2 ; } || true
 
 if [ ! -s "$WORK_DIR/output.txt" ] && [ -s "$WORK_DIR/raw.jsonl" ]; then
   echo "ERROR: output.txt empty but raw.jsonl has data" >&2
@@ -251,7 +251,7 @@ CC 2.1.222: 5 of 5 foreground runs died at 600-605s with their streams still gro
 every run launched with `run_in_background: true` outlived the cap — 812s, 1397s, 2001s, 2028s.
 
 Backgrounding costs nothing here, because everything the caller needs happens INSIDE this
-block: watchdog, copy-up, `extract-result.py`, `generate-md.sh` and the bail diagnostics. The
+block: watchdog, copy-up, `extract-result.py`, `shared/stream-json-report.sh` and the bail diagnostics. The
 launch returns a task id and the path of the file this block's stdout is written to. Report the
 work dir, end the turn, and read `$WORK_DIR/output.txt` / `report.md` — and that stdout file for
 an `rc=2` bail — once you are woken. Do NOT wrap the launch in a foreground wait or a poll loop:
@@ -340,10 +340,10 @@ if [ "$WATCHDOG_RC" -eq 0 ]; then
 
   echo ""
   echo "=== Generating report ==="
-  # Supervised mode has no log.jsonl; feed raw.jsonl. generate-md.sh detects the missing
+  # Supervised mode has no log.jsonl; feed raw.jsonl. shared/stream-json-report.sh detects the missing
   # timestamp prefix and synthesizes one — same call the legacy supervised blocks used.
-  { "$SKILL_DIR/generate-md.sh" "$WORK_DIR/raw.jsonl" "$WORK_DIR/report.md" "$MODEL" "" "$TASK_NAME" \
-      || echo "WARN: generate-md.sh failed" >&2 ; } || true
+  { "$SKILL_DIR/../shared/stream-json-report.sh" "$WORK_DIR/raw.jsonl" "$WORK_DIR/report.md" "$MODEL" "" "$TASK_NAME" \
+      || echo "WARN: shared/stream-json-report.sh failed" >&2 ; } || true
 
   # Diagnostics: empty output despite a non-empty stream is a recoverable signal — fail loudly.
   if [ ! -s "$WORK_DIR/output.txt" ] && [ -s "$WORK_DIR/raw.jsonl" ]; then
@@ -376,7 +376,7 @@ else
 fi
 ```
 
-The supervised block mirrors default mode (Step 3 above) but uses `watchdog.sh` instead of a single `claude | progress-monitor.sh` pipeline. Result extraction is asymmetric (iter-2 CRITICAL-3): **default mode** keeps `progress-monitor.sh` (battle-tested, streams progress lines live to stdout while extracting from `type=result` events). **Supervised mode** uses `shared/extract-result.py` because watchdog produces per-attempt dirs (`attempt-N/raw.jsonl`, with `final` a symlink to the winning attempt) — that layout doesn't fit progress-monitor.sh's stdin-pipe assumption. The Python extractor reads `type=result` first (matching progress-monitor.sh), then assistant-message text, and finally — if neither exists — surfaces an `error` event as `API Error: <msg>` (parity with the legacy ccs/ollama extractor). The supervised tail branches on the watchdog exit code: `rc=0` copies the winning attempt up and runs extraction + `generate-md.sh` from `raw.jsonl`; `rc=2` (watchdog bail) prints the `watchdog.exit` diagnostics + per-attempt tails and exits 2 (no exit-4 masking); any other code is propagated.
+The supervised block mirrors default mode (Step 3 above) but uses `watchdog.sh` instead of a single `claude | progress-monitor.sh` pipeline. Result extraction is asymmetric (iter-2 CRITICAL-3): **default mode** keeps `progress-monitor.sh` (battle-tested, streams progress lines live to stdout while extracting from `type=result` events). **Supervised mode** uses `shared/extract-result.py` because watchdog produces per-attempt dirs (`attempt-N/raw.jsonl`, with `final` a symlink to the winning attempt) — that layout doesn't fit progress-monitor.sh's stdin-pipe assumption. The Python extractor reads `type=result` first (matching progress-monitor.sh), then assistant-message text, and finally — if neither exists — surfaces an `error` event as `API Error: <msg>` (parity with the legacy ccs/ollama extractor). The supervised tail branches on the watchdog exit code: `rc=0` copies the winning attempt up and runs extraction + `shared/stream-json-report.sh` from `raw.jsonl`; `rc=2` (watchdog bail) prints the `watchdog.exit` diagnostics + per-attempt tails and exits 2 (no exit-4 masking); any other code is propagated.
 
 ### Step 3: Handle Errors
 
@@ -398,7 +398,7 @@ LATEST=$(find "$PLUGIN_DATA/runs/ext-claude" -mindepth 3 -maxdepth 3 -type d 2>/
 |------|---------|
 | `-p` | Headless (print) mode — no interactive session, prompt arrives on stdin |
 | `--permission-mode bypassPermissions` | Skip every permission check, **including the confinement to the launch directory**. Not optional: under `-p` nobody can answer a permission prompt, so without it every access outside the cwd is auto-denied and the reviewer silently loses the sibling repositories it needs to check an API signature against real source — the review degrades to guesswork instead of failing. `--add-dir` is NOT needed alongside it (the bypass lifts the directory confinement too). Parity with codex `--dangerously-bypass-approvals-and-sandbox` and gemini `--approval-mode yolo`; `--dangerously-skip-permissions` was measured equivalent and is spelled this way to match the mode vocabulary the other engines use. |
-| `--output-format stream-json` | Emit JSONL events, consumed by `progress-monitor.sh` (default mode) and `extract-result.py` / `generate-md.sh` (supervised) |
+| `--output-format stream-json` | Emit JSONL events, consumed by `progress-monitor.sh` (default mode), `extract-result.py` (supervised) and `shared/stream-json-report.sh` (BOTH modes — default renders from `log.jsonl`, supervised from `raw.jsonl`) |
 | `timeout $SINGLE_RUN` | Per-run limit from the `runtime` timeouts in config.yaml (default 1800s) |
 
 > If `--add-dir` is ever added here, note it takes a **variadic** value (`--add-dir <directories...>`)

@@ -225,7 +225,7 @@ PIPELINE_RC=0
     -o stream-json \
     --approval-mode "$APPROVAL_MODE" \
     --skip-trust \
-    2>"$WORK_DIR/stderr.txt" | while IFS= read -r line; do
+    2>"$WORK_DIR/stderr.txt" | while IFS= read -r line || [ -n "$line" ]; do
     echo "$line" | jq -e '.' >/dev/null 2>&1 || continue
     TS=$(date +%H:%M:%S)
     echo "[$TS] $line" >> "$LOG_FILE"

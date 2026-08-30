@@ -51,14 +51,18 @@ FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'
 # $WATCH, and it runs in a Bash call of its own where $LOADER from any earlier block is gone.
 # That site's fence is indented (it sits in a numbered list), which is why the counts below
 # strip leading whitespace — deliberate, not sloppy.
+# mesh-review.md went 4 -> 5 with the grok engine: Step 2.45 (the grok-model selection page)
+# reads defaults.code_review.grok_models for its recommended set, and Step 2.1's
+# AskUserQuestion sits between it and Step 1 — same fresh-shell reason as Step 2.4's site.
+# Checked: the new site uses these same two lines, byte for byte.
 echo "=== Test 1: resolver present and in sync across command files ==="
 # Leading whitespace is stripped first: the Step 5a site sits inside a numbered list
 # item, so its fence is indented. This canary is about content drift, not indentation.
 n_primary=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$PRIMARY")
 n_fallback=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$FALLBACK")
-assert_eq "6 primary lines across commands/" "6" "$n_primary"
-assert_eq "6 fallback lines across commands/" "6" "$n_fallback"
-assert_eq "mesh-review.md carries 4" "4" \
+assert_eq "7 primary lines across commands/" "7" "$n_primary"
+assert_eq "7 fallback lines across commands/" "7" "$n_fallback"
+assert_eq "mesh-review.md carries 5" "5" \
     "$(sed 's/^[[:space:]]*//' "$CMD_DIR/mesh-review.md" | grep -Fxc "$PRIMARY")"
 assert_eq "do-plan.md carries 2" "2" "$(grep -Fxc "$PRIMARY" "$CMD_DIR/do-plan.md")"
 

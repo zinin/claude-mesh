@@ -1,0 +1,24 @@
+# The per-model reasoning-effort table. `reasoning_effort` is the section default and
+# `model_efforts` holds only the EXCEPTIONS — the shape a real catalog takes, because the CLI
+# validates --effort per model and most models accept the top level while a few cap lower.
+#
+# TWO exceptions, not one, and a third model with none: a single-entry table cannot tell "looked
+# the model up" from "returned the only value the table holds", and without dks-ultra nothing
+# proves the fallback to the section default is reached.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+grok:
+  models: [grok-4.6, grok-4.5, dks-ultra]
+  reasoning_effort: max
+  model_efforts:
+    grok-4.6: xhigh
+    grok-4.5: high

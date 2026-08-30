@@ -1,6 +1,6 @@
 ---
 name: mesh-review
-description: Launch code review agents (built-in claude on N models, codex, gemini, ext-claude on N models) with selection UI and result deduplication.
+description: Launch code review agents (built-in claude on N models, codex, gemini, grok on N models, ext-claude on N models) with selection UI and result deduplication.
 ---
 
 # /mesh-review
@@ -22,9 +22,9 @@ Launch multiple external code review agents in parallel, collect and deduplicate
 Without `BASE_BRANCH` each review skill auto-detects the base itself — `git symbolic-ref
 refs/remotes/origin/HEAD`, falling back to `master`. Passing it matters exactly where that guess
 is wrong: in a repository whose default branch is `main`, or when reviewing against anything
-other than the default branch, `merge-base` then finds nothing and the codex / gemini skills fall
-back to `HEAD~1` — a single commit reviewed while the caller believes the whole branch was
-covered, with nothing on screen saying otherwise.
+other than the default branch, `merge-base` then finds nothing and the codex / gemini / grok
+skills fall back to `HEAD~1` — a single commit reviewed while the caller believes the whole
+branch was covered, with nothing on screen saying otherwise.
 
 ## Step 0: Check the arguments
 
@@ -38,7 +38,7 @@ defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bou
 **If `default` is among the arguments** — in any order, alone or combined with `BASE_BRANCH=` and
 `autodecide` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
 - Skip Steps 1-3 entirely.
-- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.models`, `.run_mode`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
+- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.grok_models`, `.models`, `.run_mode`, `.grok_degraded`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
 - Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly; rc=1 ⇒ surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it).
 - If `defaults.code_review` not configured → STOP with error:
   `defaults.code_review not configured in config.yaml. Use /claude-mesh:mesh-review without argument or add the preset.`
@@ -49,6 +49,18 @@ defers every disputed issue instead. Same reason `SELECTED_CLAUDE_MODELS` is bou
     - list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the behaviour from before this feature and stays the default.
   - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (it is `defaults.code_review.claude_models`, or empty in the fallback case). Step 5a and Step 5b both dispatch "one Task per entry of `SELECTED_CLAUDE_MODELS`" **unconditionally** — the interactive path fills it in Step 2.4, and without this line the variable would simply be undefined in `default` mode. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises, and `default` mode quietly dispatches one reviewer instead of N.
   - `codex` / `gemini` in `defaults.code_review.builtin` → spawn the corresponding agent.
+  <!-- SYNC: the "no fallback" rule in the next bullet is ONE rule living in five places — this
+       bullet, this file's Step 2.45 ("An empty selection runs no grok reviewer"), and their two
+       twins in the sibling orchestrator (`skills/mesh-design-review/SKILL.md` Step 5.1's grok
+       preset bullet and Step 5.2.6's same paragraph), plus the design's §1 note that grok_models
+       is required whenever grok is in builtin. The count is of PHYSICAL sites, like the claude
+       fallback rule's own four-place markers — each orchestrator states the rule twice, in its
+       preset branch and on its model page, and the design doc states it once. Change all five or
+       none: a copy that still promises a fallback would have the orchestrator dispatch a
+       reviewer the agent then refuses to start for want of a MODEL. -->
+  - `grok` in `defaults.code_review.builtin` → **one `grok-code-reviewer` per entry of `defaults.code_review.grok_models`**, each dispatched with `MODEL=<entry>` alone on the FIRST line of its prompt (and `BASE_BRANCH=<branch>` on the line directly under it when that argument was given — the exact shape is in Step 5a's grok bullet). Name them `grok:<model>` everywhere downstream. The config validator guarantees that list is non-empty whenever `grok` is in `builtin` (the loader's fail-closed rule — "a grok reviewer cannot start without a model"), so there is no fallback branch here: a preset that names grok and validates always dispatches at least one reviewer. There is exactly ONE case where it dispatches none — a `grok:` catalog that does not validate — and it is never silent; see the next bullet.
+  - **If `.grok_degraded` is `true`, run no grok reviewer and SAY SO.** The loader sets it when the preset names grok while the `grok:` catalog does not validate: rather than failing the whole read, it removes `grok` from `.builtin` and empties `.grok_models`, so one typo in a user-owned file cannot ground the claude, codex and gemini reviewers this same run asked for. That removal is invisible in the data — the flag is the ONLY thing saying a reviewer you asked for is not running — so print it verbatim: `grok: каталог grok.models не валидируется — grok-ревьюер не запущен; остальные движки работают. config.yaml правит пользователь, агенты его не трогают.` Do not stop the run, do not retry, and never substitute another engine for it.
+  - **Bind `SELECTED_GROK_MODELS` to `defaults.code_review.grok_models` here** (the empty list when `grok` is not in `builtin`), for the same reason `SELECTED_CLAUDE_MODELS` is bound just above: Step 5a and Step 5b consume it unconditionally, the interactive path fills it in Step 2.45, and an unbound name in a prompt raises nothing at all — the reader improvises.
   - For each model id in `defaults.code_review.models`, spawn `ext-claude-code-reviewer` with `MODEL=<id>`.
 - Use `run_mode` from preset (default: `background`).
 - Dispatch via the Step 5a (background) / Step 5b (team) mechanics per that `run_mode`, then go to **Step 6: Process Results**.
@@ -71,7 +83,7 @@ LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
 # iter-3 CRITICAL-3: a bare $() swallows the loader exit code. Probe once with explicit rc
 # capture so rc=2 (config.yaml not created yet — fresh install) is NOT misreported as
 # rc=1 (config invalid). Distinct handling per design §6.6 / iter-2 CONCERN-11.
-LOADER_ERR=$(mktemp)
+LOADER_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 HAS_CODEX=$("$LOADER" get-flag has_codex 2>"$LOADER_ERR"); LRC=$?
 case "$LRC" in
   0) ;;
@@ -82,9 +94,30 @@ case "$LRC" in
 esac
 rm -f "$LOADER_ERR"
 HAS_GEMINI=$("$LOADER" get-flag has_gemini)
+# grok: BOTH reads below VALIDATE the `grok:` catalog before answering — `has_grok` promises
+# "a grok reviewer can be dispatched", which needs a non-empty catalog because the reviewer
+# agent stops without a MODEL (the `has_grok)` arm of config-loader.sh), unlike the bare probes has_codex /
+# has_gemini above — so either one can exit 1 on a malformed section. Guard both, and WARN
+# rather than exit: a broken grok: section must not stop a codex-only review — that is the
+# `ultra` incident (2026-07-10: a codex setting killed every ext-claude
+# executor) in a new costume, and the reason has_codex is a bare probe. The same rule is
+# spelled out in config-loader.sh above validate_grok_section_type — cited by the function it
+# guards, not by a line number, because the number has already gone stale once. Degrade grok
+# alone: report it, drop the flag, let
+# everything else run.
+GM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
+if ! HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GM_ERR") \
+   || ! GROK_MODELS=$("$LOADER" list-grok-models 2>"$GM_ERR"); then
+    echo "ВНИМАНИЕ: секция grok: не валидируется — grok-ревьюеры отключены на этот запуск:" >&2
+    cat "$GM_ERR" >&2
+    HAS_GROK=0; GROK_MODELS=""
+fi
+rm -f "$GM_ERR"
+echo "HAS_GROK=$HAS_GROK"
+echo "GROK_MODELS=[$(echo "$GROK_MODELS" | tr '\n' ' ')]"
 HAS_MODELS=$("$LOADER" get-flag has_models)
 MODELS=$("$LOADER" list-models)  # `<id>|<label>` per line, ready for pagination
-DM_ERR=$(mktemp)
+DM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
     || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
 rm -f "$DM_ERR"
@@ -92,7 +125,7 @@ echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispa
 # Claude-model catalog (Step 2.4 gate). rc-aware like the dispatch_model read above:
 # these two subcommands validate the `claude:` section, so a malformed section must
 # fast-fail here with the validator's own message rather than surface as an empty list.
-CM_ERR=$(mktemp)
+CM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 HAS_CLAUDE_MODELS=$("$LOADER" get-flag has_claude_models 2>"$CM_ERR") \
     || { echo "config.yaml невалиден (секция claude):" >&2; cat "$CM_ERR" >&2; rm -f "$CM_ERR"; exit 1; }
 CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
@@ -100,7 +133,26 @@ CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
 rm -f "$CM_ERR"
 echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
 echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
+# The preset, READ HERE because Q1 and Step 2.1 draw ★ markers from it and this fence is the
+# only thing standing between the config and those two pages. Without it those stars come from
+# a list nothing has loaded — the sibling orchestrator has always read it up front (SKILL.md
+# Step 5.0 binds DEFAULTS_JSON and says in as many words that its model page "needs no loader
+# read of its own"), and this file simply never did. rc-aware and never through a pipe, for the
+# reason Step 2.4 gives: get-defaults is what runs validate_defaults, so a fail-closed preset
+# error now surfaces on the FIRST screen instead of two steps in.
+CR_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
+CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CR_ERR") \
+    || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CR_ERR" >&2; rm -f "$CR_ERR"; exit 1; }
+rm -f "$CR_ERR"
+echo "CR_DEFAULTS=$CR_DEFAULTS"
 ```
+
+Parse `CR_DEFAULTS` with jq (`.builtin`, `.claude_models`, `.grok_models`, `.models`) into the ★
+sets the pages below mark with: the recommended built-in set for Q1 and Step 2.1,
+`CLAUDE_DEFAULT_IDS` for Step 2.4, `GROK_DEFAULT_IDS` for Step 2.45 and `DEFAULT_IDS` for Step 3.
+Those later steps re-read the preset in their own fences anyway — each runs in a fresh shell where
+`$LOADER` no longer exists, and re-resolving it costs one local script call — but the ★ decisions
+on Q1 and Step 2.1 have no fence of their own and are made from THIS read.
 
 rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it) (iter-3 CRITICAL-3).
 
@@ -115,12 +167,88 @@ header: "Reviewers"
 question: "Какие типы reviewers запустить? (★ = recommended, в defaults.code_review.builtin)"
 options:
   - "claude ★ default (свой Claude через superpowers)"        — always shown; ★ if "claude" in defaults.code_review.builtin
-  - "codex CLI ★ default"                                      — show only if HAS_CODEX=1; ★ if "codex" in defaults.code_review.builtin
-  - "gemini CLI ★ default"                                     — show only if HAS_GEMINI=1; ★ if "gemini" in defaults.code_review.builtin
+  - "внешние CLI (<the configured engines, " / "-joined>) ★ default"  — show only if HAS_CODEX=1 OR HAS_GEMINI=1 OR HAS_GROK=1; ★ if ANY of codex/gemini/grok is in defaults.code_review.builtin.
+    Build the parenthesis from the flags that are 1, in the order codex / gemini / grok: a codex-only machine reads «внешние CLI (codex)», never a roster of two
+    engines it does not have. The ★ still fires on ANY of the three appearing in `builtin`, because it marks the OPTION, not an individual engine.
   - "external models (Anthropic-API) ★ default"                — show only if HAS_MODELS=1; ★ if defaults.code_review.models is non-empty
 ```
 
-If "external models" not selected → skip Step 3 entirely.
+**Q1 is three options and stays three however many CLI engines exist later.** `AskUserQuestion`
+accepts at most FOUR, and one option is already spent on `claude` and one on the external models,
+so the CLI engines share the third — a fourth CLI engine belongs on Step 2.1's page, never as a
+fifth option here. Do **not** "restore symmetry" by splitting this option back into one per
+engine: on a machine with codex, gemini and grok all configured that call has five options and
+fails outright, and the failure is the whole question, not one dropped row.
+
+**What Q1's answer becomes.** «внешние CLI» is not itself a reviewer type and **never enters
+`SELECTED_TYPES`** — Step 2.1 turns it into the individual engine names (`codex`, `gemini`,
+`grok`), and those are what land in `SELECTED_TYPES`. Everything downstream — Step 2.5's bullet
+list, Step 5a / Step 5b's dispatch, Step 6.0's `engine:model` roster — keys off that set exactly
+as it did when Q1 named the engines directly; no other step changes shape.
+
+- «внешние CLI» selected → go to **Step 2.1** and pick which of them.
+- «внешние CLI» NOT selected → **skip Step 2.1**; no `codex` / `gemini` / `grok` enters
+  `SELECTED_TYPES`, no CLI reviewer runs at all, and **bind `SELECTED_GROK_MODELS` to the empty
+  list** — Step 2.45 never runs on this path and Step 5a consumes the name unconditionally.
+- "external models" not selected → skip Step 3 entirely.
+
+**Bind `SELECTED_TYPES` here**, to Q1's answer with «внешние CLI» replaced by whatever Step 2.1
+selects — by nothing at all when that option was not chosen and Step 2.1 never runs. Q1 and
+Step 2.1's fold are the ONLY two writes to this set in the file; Step 2.45's gate, Step 2.5's
+list, Step 5a / Step 5b's dispatch and Step 6.0's roster only ever read it.
+
+## Step 2.1: CLI-engine selection
+
+(No `Q1.x` label, for the same reason Step 2.4 carries none: this page runs *before* Step 2.5's
+`Q1.5` — earlier still than Step 2.4 — so any `Q1.x` number here would read as an ordering error.
+The step number alone is unambiguous.)
+
+Runs ONLY when Q1 selected «внешние CLI». The engines on offer are exactly those whose Step 1
+flag is `1`: `codex` (`HAS_CODEX=1`), `gemini` (`HAS_GEMINI=1`), `grok` (`HAS_GROK=1`). Never
+offer an engine whose flag is `0` — it has no config section to run from, and for grok a `0` may
+also mean Step 1 degraded it after a validator error it already printed.
+
+**Exactly one engine configured → skip the page and select that engine implicitly**, saying so in
+one line (`Внешний CLI: codex (единственный настроенный)`) — the engine enters `SELECTED_TYPES`
+exactly as a page selection would, per the fold below. Without this, every single-engine user
+pays an extra screen for a problem they do not have.
+
+Otherwise ask ONE page — **not** a pagination loop. `AskUserQuestion` caps options at 4 and there
+are three CLI engines, so a `chunk of 4` loop would have exactly one iteration today and still
+exactly one at four engines. A FIFTH CLI engine is what would need the Step 2.4 / Step 3
+pagination mechanic; add it then, not now.
+
+AskUserQuestion (multiSelect, max 4):
+```
+header: "CLI"
+question: "Какие внешние CLI-движки запустить? (★ = recommended, в defaults.code_review.builtin)"
+options:
+  For each CONFIGURED engine, in this order — codex, gemini, grok:
+    label:       "<engine> CLI"                     if NOT in defaults.code_review.builtin
+                 "★ <engine> CLI (recommended)"     if in defaults.code_review.builtin
+    description: "внешнее ревью через <engine> CLI"
+```
+
+The ★ comes from the same `defaults.code_review.builtin` list Q1's own ★ markers came from,
+which Step 1's fence read into `CR_DEFAULTS` — no
+new loader read here. AskUserQuestion has no `preSelected` API, which is why the recommendation
+travels in the label text, exactly as in Step 2.4 and Step 3.
+
+**Fold the selection — the page's answer, or the single engine chosen implicitly above — into
+`SELECTED_TYPES` as the individual engine names** (`codex`, `gemini`, `grok`), and never as the
+«внешние CLI» option itself. The implicit path folds exactly as the page does; skipping the
+question is not skipping the write, and an engine that never reaches `SELECTED_TYPES` is silently
+dropped at Step 2.45's gate and dispatched by nothing. That set is what Step 2.5 lists, what
+Step 5a and Step 5b dispatch from, and what Step 6.0 builds its roster from.
+
+**Selecting no engine is not an error** — the same rule the model pages already follow. It means
+no CLI reviewer runs; do not re-ask and do not STOP.
+
+**If `grok` is not among the selected engines** — however they were selected, on the page above
+or implicitly because it is the only one configured — **bind `SELECTED_GROK_MODELS` to the empty
+list here.** Step 2.45's own skip bullet states the same binding, deliberately: Step 2.5 and
+Step 5a read the name unconditionally, and an unbound name in a prompt raises nothing at all —
+the reader improvises.
 
 ## Step 2.4: Claude-model selection
 
@@ -142,11 +270,14 @@ Build `CLAUDE_DEFAULT_IDS` from the preset — **rc-aware, and never through a p
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
-# This is the FIRST get-defaults call on the interactive path, so it is the first thing
-# that runs validate_defaults — which means a bad `claude_models` surfaces exactly here.
+# NOT the first get-defaults call on the interactive path any more — Step 1 reads the preset
+# for Q1's and Step 2.1's ★ markers, so validate_defaults has already run and a bad
+# `claude_models` has already surfaced there. This read stands for the fresh-shell reason
+# above, and its rc handling stays: a config the user edited between the two screens is a
+# state this page must still survive.
 # `"$LOADER" get-defaults … | jq …` would take its status from jq and swallow the new
 # fail-closed guard (rc=1) entirely, turning a hard error into an empty list.
-CD_ERR=$(mktemp)
+CD_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$CD_ERR") \
     || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$CD_ERR" >&2; rm -f "$CD_ERR"; exit 1; }
 rm -f "$CD_ERR"
@@ -155,6 +286,8 @@ echo "CLAUDE_DEFAULT_IDS=[$(echo "$CLAUDE_DEFAULT_IDS" | tr '\n' ' ')]"   # empt
 ```
 
 For each chunk of 4 entries from `CLAUDE_MODELS` (in config order) — same pagination mechanics as Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API):
+
+**A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — claude на модели по умолчанию`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_CLAUDE_MODELS` can never contain it.** Nothing downstream recognises the sentinel — a list holding that string is NON-EMPTY, so the fallback below does not fire and one reviewer is dispatched with `model: "ни одной — claude на модели по умолчанию"`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide which model the single claude reviewer runs on — this catalog's only entry, or `DISPATCH_MODEL` through the fallback below on the user's behalf, silently, in the one configuration where the question matters most.
 
 AskUserQuestion (multiSelect, max 4):
 ```
@@ -174,16 +307,106 @@ Collect the selections across pages into `SELECTED_CLAUDE_MODELS`.
 
 Each selected model becomes an independent reviewer with the same diff and the same prompt — the point is model diversity, so never differentiate their prompts.
 
+## Step 2.45: Grok-model selection
+
+Runs ONLY when Step 2.1 selected `grok` (i.e. `grok` is in `SELECTED_TYPES`). There is no
+`HAS_GROK_MODELS` gate: a `grok:` section without a non-empty catalog does not validate, so
+`HAS_GROK=1` already guarantees `GROK_MODELS` is non-empty — that is the promise `has_grok`
+makes and the reason no separate flag exists (the loader's `has_grok)` arm, which validates the
+catalog before answering).
+
+- `grok` NOT selected in Step 2.1 → skip this step; **bind `SELECTED_GROK_MODELS` to the empty
+  list** and run no grok reviewer at all.
+
+Read the recommended set from the preset — rc-aware, and never through a pipe, for the same
+reason Step 2.4 spells out (this Bash call runs in a fresh shell; `$LOADER` must be
+re-resolved):
+
+```bash
+LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
+GD_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
+CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$GD_ERR") \
+    || { echo "config.yaml невалиден (defaults.code_review):" >&2; cat "$GD_ERR" >&2; rm -f "$GD_ERR"; exit 1; }
+rm -f "$GD_ERR"
+GROK_DEFAULT_IDS=$(echo "$CR_DEFAULTS" | jq -r '.grok_models[]?')
+echo "GROK_DEFAULT_IDS=[$(echo "$GROK_DEFAULT_IDS" | tr '\n' ' ')]"   # empty = no ★ markers below
+```
+
+For each chunk of 4 entries from `GROK_MODELS` (in config order) — same pagination mechanics as
+Step 3, and the same reason for the ★ marker (AskUserQuestion has no `preSelected` API). Unlike
+Step 2.1, whose option list is at most three, this catalog is the user's and can exceed 4:
+
+**A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — grok не запускать`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_GROK_MODELS` can never contain it.** Nothing downstream recognises the sentinel — `grok-code-review` checks MODEL against the catalog with `grep -Fxq` and STOPs, so the reviewer the user asked NOT to run is the one that reports an error. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide whether a grok reviewer runs at all — the one thing this page exists to ask on the user's behalf, silently, in the one configuration where the question matters most.
+
+AskUserQuestion (multiSelect, max 4):
+```
+header: "Grok"
+question: "На каких grok-моделях запустить ревью? (страница N/M, ★ = recommended)"
+options:
+  For each model in the chunk:
+    label:       "<model>"                     if NOT in GROK_DEFAULT_IDS
+                 "★ <model> (recommended)"     if in GROK_DEFAULT_IDS
+    description: "отдельный независимый ревьюер на этой модели"
+```
+
+Collect the selections across pages into `SELECTED_GROK_MODELS`. Every entry is a bare catalog
+id (`grok-4.6`) — never a `<provider>/<short>` pair like ext-claude's. A slash in that value
+never reaches a verdict at all: the Step 6.0 guard rejects it with a usage error and exit 1,
+the shape that means "fix the call" — never `FLIP`, which would mean "re-dispatch this
+reviewer". It once did report `FLIP`, by resolving `runs/grok/<provider>/<short>`, a path
+nothing ever writes; the charset check in `verify-delegation.sh`'s `grok)` arm replaced that.
+
+<!-- SYNC: the "no fallback" rule for grok is ONE rule living in five places — this paragraph,
+     this file's Step 0 grok preset bullet, and their two twins in the sibling orchestrator
+     (`skills/mesh-design-review/SKILL.md` Step 5.1's grok preset bullet and Step 5.2.6's same
+     paragraph), plus the design's §1 note that grok_models is required whenever grok is in
+     builtin. The count is of PHYSICAL sites, like the claude fallback rule's own four-place
+     markers — each orchestrator states the rule twice, in its preset branch and on its model
+     page, and the design doc states it once. Change all five or none: a copy that still promises
+     a fallback would have the orchestrator dispatch a reviewer the agent then refuses to start
+     for want of a MODEL. -->
+**An empty selection runs no grok reviewer — and unlike claude, there is no fallback.** The
+grok reviewer agent stops without a `MODEL`, so there is nothing to dispatch. Say so on the
+Step 2.5 confirmation page ("grok: модели не выбраны — ревьюер не запускается") and continue;
+do not re-ask and do not STOP.
+
+Each selected model becomes an independent reviewer with the same diff and the same prompt —
+the point is model diversity, so never differentiate their prompts.
+
 ## Step 2.5 (Q1.5): Confirm reviewer-type selection
 
-Mirror Step 3.5 (model confirmation): after Q1 (and Step 2.4, when it ran), show the full SELECTED_TYPES list (one per line) and ask. **Expand `claude` in that list into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case — the user must see how many Claude reviewers they are about to pay for.
+Mirror Step 3.5 (model confirmation): after Q1 (and Steps 2.1, 2.4 and 2.45, each when it ran), show the full SELECTED_TYPES list (one per line) and ask. **Expand `claude` in that list into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case — the user must see how many Claude reviewers they are about to pay for.
+
+**When `grok` is in `SELECTED_TYPES`, expand it the same way**, one bullet per entry of
+`SELECTED_GROK_MODELS` (`grok:grok-4.6`). When `grok` is selected and that list is empty, show
+`grok: модели не выбраны — ревьюер не запускается` instead of a bullet, so a user who picked grok
+in Step 2.1 and then checked nothing in Step 2.45 sees why nothing will run. **When `grok` is NOT
+in `SELECTED_TYPES`** — Step 2.1 did not pick it, or `HAS_GROK=0` and it was never on offer — the
+page says nothing about grok at all: no bullet and no such line, exactly as it says nothing about
+an unconfigured codex. That line reports on a selection the user made; it is not a standing
+notice. Without that gate it prints on EVERY review, because both paths that skip Step 2.45 —
+Q1 without «внешние CLI», and Step 2.1 without grok — bind `SELECTED_GROK_MODELS` to the empty
+list, which is exactly the state the line describes. There
+is no fallback bullet here: unlike `claude`, an empty grok list dispatches nothing at all
+(Step 2.45). A pair that shows no bullet contributes nothing further either — not to Step 5a's
+dispatch, not to its watcher roster, not to Step 6.0's guard. A roster entry with no dispatch
+behind it comes back `MISSING`, which is indistinguishable from a dead executor.
+
+**If the effective roster is empty** — `SELECTED_TYPES` holds nothing that can produce a
+reviewer: no `claude`, no CLI engine with anything to run (grok with an empty model list counts
+as nothing), and no `external models` — STOP with `ничего не выбрано для ревью` instead of
+showing this page over an empty list and starting an orchestration with no reviewers.
+(`external models` in `SELECTED_TYPES` counts as a reviewer here even though its ids are only
+chosen in Step 3; that page has its own empty-selection STOP in Step 3.5.)
 
 ```
 header: "Подтверди"
 question: "Использовать эти reviewer-типы? <bullet list of SELECTED_TYPES>"
 options:
   - "Да, использовать как выбрано"
-  - "Нет, выбрать заново" — re-runs Q1 **and** Step 2.4, dropping the current SELECTED_CLAUDE_MODELS (cap 3 attempts; on the 4th attempt, surface STOP "пользователь не подтвердил выбор reviewer-типов")
+  - "Нет, выбрать заново" — re-runs Q1 **and** Steps 2.1, 2.4 and 2.45, dropping the current SELECTED_CLAUDE_MODELS and SELECTED_GROK_MODELS (cap 3 attempts; on the 4th attempt, surface STOP "пользователь не подтвердил выбор reviewer-типов")
   - "Отмена" — exits command cleanly (no executors dispatched)
 ```
 
@@ -194,6 +417,8 @@ AskUserQuestion `options` schema (verified in iteration 1) does NOT support a `p
 Read the default set from `defaults.code_review.models` (if exists). Build a set `DEFAULT_IDS` of model ids that should appear pre-recommended.
 
 For each chunk of 4 models from `models[]` (in config order):
+
+**A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — внешние модели не запускать`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_IDS` can never contain it.** Nothing downstream recognises the sentinel — the id reaches `ext-claude-code-review` as a model name and the run dies on the catalog lookup. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide that the user wants this model, when the alternative is the STOP in Step 3.5 on the user's behalf, silently, in the one configuration where the question matters most.
 - AskUserQuestion (multiSelect, max 4):
   ```
   header: "Models"
@@ -239,32 +464,46 @@ Since AskUserQuestion lacks preSelected, the recommended choice gets a "(Recomme
 
 ## Step 5a: Background tasks mode
 
-**Before dispatch — stamp the delegation window (Step 6.0 guard needs it).** Via a Bash tool call, record `DISPATCH_EPOCH=$(date +%s)` and keep the number. Also remember the list of *wrapper* reviewers being dispatched as `engine:model` pairs: `codex`→`codex:-`, `gemini`→`gemini:-`, each selected model id→`ext-claude:<id>`. The builtin `claude` / `general-purpose` reviewers — there may now be several, one per Claude model — are NOT wrappers (they review inline by design). Exclude all of them from this list.
+**Before dispatch — stamp the delegation window (Step 6.0 guard needs it).** Via a Bash tool call, record `DISPATCH_EPOCH=$(date +%s)` and keep the number. Also remember the list of *wrapper* reviewers being dispatched as `engine:model` pairs: `codex`→`codex:-`, `gemini`→`gemini:-`, each entry of `SELECTED_GROK_MODELS`→`grok:<model>` (`grok:grok-4.6` — a colon, and the bare catalog id), each selected model id→`ext-claude:<id>`. `grok` with an empty `SELECTED_GROK_MODELS` contributes no pair at all: nothing was dispatched, so there is nothing to verify. The builtin `claude` / `general-purpose` reviewers — there may now be several, one per Claude model — are NOT wrappers (they review inline by design). Exclude all of them from this list.
 
 Launch all selected reviewers via Task tool, each `run_in_background: true`, in ONE message:
 
 **Dispatch model:** if `DISPATCH_MODEL` (resolved in Step 0 for `default` mode, or Step 1 for interactive) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch below. If it is empty, omit `model:` so each reviewer inherits this session's model.
 
-**Exception — claude reviewers with an explicit model.** When Step 2.4 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL`. Running the review on a chosen model is the whole point; letting `DISPATCH_MODEL` win here would collapse every claude reviewer onto one model and fake the independence. `DISPATCH_MODEL` still governs the codex / gemini / ext-claude wrappers, and the single fallback `claude` reviewer.
+**Exception — claude reviewers with an explicit model.** When Step 2.4 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL`. Running the review on a chosen model is the whole point; letting `DISPATCH_MODEL` win here would collapse every claude reviewer onto one model and fake the independence. `DISPATCH_MODEL` still governs the codex / gemini / grok / ext-claude wrappers, and the single fallback `claude` reviewer. **A grok reviewer's `MODEL=` is not an exception to that** — the two name different things and both apply at once: `DISPATCH_MODEL` sets the Claude model the `grok-code-reviewer` WRAPPER itself runs on, while `MODEL=<entry>` names the xAI model its CLI reviews with. Exactly as for ext-claude, neither overrides the other.
 
 **Base branch:** when the `BASE_BRANCH=<branch>` argument was given, prefix every WRAPPER prompt
 below with `BASE_BRANCH=<branch> `. Each wrapper's skill reads that name and otherwise
 auto-detects (`ext-claude-code-review` SKILL.md:20, `codex-code-review`
-/ `gemini-code-review` :84), so without the prefix the reviewers silently examine a different
-range than the caller asked for. This is a parameter exactly like `MODEL=<id>`, not review
-content — the CRITICAL rule below still forbids inlining scope, diff or focus areas. The builtin
-`claude` reviewers resolve the range themselves, so they get the base named in their prompt
-sentence instead. Argument absent → change nothing; every skill keeps its own auto-detection.
+/ `gemini-code-review` :84, `grok-code-review` :29 and :127), so without the prefix the reviewers
+silently examine a different range than the caller asked for. This is a parameter exactly like
+`MODEL=<id>`, not review content — the CRITICAL rule below still forbids inlining scope, diff or
+focus areas. **The prefix is for codex and gemini only; grok and ext-claude are both exceptions
+to it** — not to the rule: each of those two agents requires `MODEL=` on the FIRST line, so the
+base goes on its own line directly under `MODEL=` and never in front of it; the exact shapes are
+in the grok and ext-claude bullets below. The rule reads by what the agent demands, not by engine
+name — a fifth wrapper takes the prefix if its agent claims no first line, and the two-line shape
+if it does. The builtin `claude` reviewers resolve the range themselves, so they get the base
+named in their prompt sentence instead. Argument absent → change nothing; every skill keeps its own auto-detection.
 
 For each builtin reviewer:
 - claude: `subagent_type: "general-purpose"` (built-in — NOT namespaced), prompt invokes `superpowers:requesting-code-review` skill. **One Task per entry of `SELECTED_CLAUDE_MODELS`**, each carrying `model: "<entry>"`; in the fallback case exactly one Task per the Dispatch-model rule above. All of them get the same prompt — only the model differs. With `BASE_BRANCH` given, the prompt names it: `… review the changes on this branch against base <branch> …`.
 - codex: `subagent_type: "claude-mesh:codex-code-reviewer"`, prompt: `Review the changes for production readiness` (with the `BASE_BRANCH=<branch> ` prefix when the argument was given)
 - gemini: `subagent_type: "claude-mesh:gemini-code-reviewer"`, prompt: `Review the changes for production readiness` (same prefix rule)
+- grok: `subagent_type: "claude-mesh:grok-code-reviewer"`, **one Task per entry of `SELECTED_GROK_MODELS`** — and none at all when that list is empty. Write `MODEL=<entry>` ALONE on the FIRST line and, when the `BASE_BRANCH` argument was given, `BASE_BRANCH=<branch>` on the line directly under it:
+
+  ```
+  MODEL=<entry>
+  BASE_BRANCH=<branch>
+  Review the changes for production readiness
+  ```
+
+  Without that argument, drop the middle line: the prompt is `MODEL=<entry>` then `Review the changes for production readiness`. Do **NOT** collapse this into one line starting with `BASE_BRANCH=` — that is the one shape grok's agent is written to reject, and the ext-claude bullet below now takes the same two-line shape for the same reason. Its contract is prose an agent reads, not a regex: `agents/grok-code-reviewer.md:26` ("MODEL is REQUIRED on the first line") and `:30-31` (a `BASE_BRANCH=<branch>` line "which the caller writes directly under `MODEL=`"). Nothing parses this prompt mechanically, which is precisely why the caller has to get it right — an agent reading `BASE_BRANCH=` at the head of the first line either stops with its `ERROR: MODEL parameter is required on first line` or forwards something it guessed at, and neither outcome is a review. `<entry>` is the bare catalog id (`grok-4.6`), never a `<provider>/<short>` pair. `MODEL=` is a parameter, exactly as for ext-claude; it is not review content, so the CRITICAL rule below still forbids inlining scope or diff.
 
 For each selected model id:
-- `subagent_type: "claude-mesh:ext-claude-code-reviewer"`, prompt: `MODEL=<id> Review the changes for production readiness` — with the base branch it becomes `BASE_BRANCH=<branch> MODEL=<id> Review the changes for production readiness`
+- `subagent_type: "claude-mesh:ext-claude-code-reviewer"`, prompt: `MODEL=<id>` on its own FIRST line, then `BASE_BRANCH=<branch>` directly under it when there is a base branch to name, then `Review the changes for production readiness`. Without a base branch, drop the middle line. The one-line `BASE_BRANCH=<branch> MODEL=<id> …` form this bullet used to prescribe put `BASE_BRANCH=` at the head of the first line, against `agents/ext-claude-code-reviewer.md`'s own requirement that MODEL be there — it worked in practice, but only because every agent so far read past it
 
-**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / ext-claude reviewers are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own Claude model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (Only the builtin `claude` / `general-purpose` reviewers review directly.)
+**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / grok / ext-claude reviewers are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude; headed by `MODEL=<entry>` on its own first line for grok). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own Claude model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (Only the builtin `claude` / `general-purpose` reviewers review directly.)
 
 Display:
 ```
@@ -288,12 +527,12 @@ When each agent completes, read its output. After all agents finish (or the user
    [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
    WATCH="$(dirname "$LOADER")/watch-runs.sh"
    [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
-   "$WATCH" --since <DISPATCH_EPOCH> codex ext-claude/zai/glm ext-claude/ollama/kimi
+   "$WATCH" --since <DISPATCH_EPOCH> codex grok/grok-4.6 ext-claude/zai/glm ext-claude/ollama/kimi
    ```
 
    Substitute the **actual** `DISPATCH_EPOCH` number you stamped in Step 5. A shell variable does not survive from one Bash call to the next, and an unset name in a prompt raises nothing at all — the script rejects an implausible `--since` rather than silently watching a window that ended in 1970.
 
-   The arguments after the options are a **roster** of `engine[/provider/model]` — the subpath under `runs/` — not run directories. A wrapper whose run dies and is re-run creates a new run dir, so the watcher re-resolves the newest one at/after `--since` on every tick and follows it by itself. Pass only the wrappers you are still waiting for (point 5).
+   The arguments after the options are a **roster** of `engine[/provider/model]` — the subpath under `runs/` — not run directories. The depth follows the engine: `codex` and `gemini` have none, `grok` takes one segment (`grok/grok-4.6`, matching `runs/grok/<model>/`) and `ext-claude` takes two. Note the SLASH: the watcher roster spells a grok reviewer `grok/grok-4.6` where the dispatch pair and the reviewer name spell it `grok:grok-4.6`; the two are never interchangeable. A wrapper whose run dies and is re-run creates a new run dir, so the watcher re-resolves the newest one at/after `--since` on every tick and follows it by itself. Pass only the wrappers you are still waiting for (point 5).
 
    | Status | Meaning |
    |---|---|
@@ -308,7 +547,7 @@ When each agent completes, read its output. After all agents finish (or the user
    A `MISSING` row that ends `N run(s) in this window belong to another session` is the one status here that is **not** about the wrapper. Run dirs carry the id of the session that dispatched them, and this session's id no longer matches — a resumed or forked session, not a death. Do not route it to Step 6.0 as a failure; say so and, if the runs are in fact this orchestration's, finish the watch by reading them directly.
 3. **When the watcher reports a run `DONE` but its wrapper has not delivered a report — SendMessage that wrapper:** `your external run finished — read its output.txt, extract the findings and send your report`. A pinged wrapper answers promptly. **Ping once per `DONE` run** — track who was already pinged and re-ping only if a wrapper is still silent after the next poll interval (~60–90 s), so a wrapper whose answer is already in flight is not spammed.
 
-   **After a second unanswered ping, read the run yourself and stop waiting.** The file is `<run dir>/output.txt`, or `<run dir>/final/output.txt` when the root one is empty — the same file the wrapper would have read, and the same one `verify-delegation.sh` judges. Take the findings from it and attribute them to that reviewer exactly as if it had reported. Read `output.txt`, never `report.md`: the latter is the whole run rendered by `generate-md.sh` and runs to 137–250 KB in practice, while `output.txt` is the review itself (11 KB for a large one).
+   **After a second unanswered ping, read the run yourself and stop waiting.** The file is `<run dir>/output.txt`, or `<run dir>/final/output.txt` when the root one is empty — the same file the wrapper would have read, and the same one `verify-delegation.sh` judges. Take the findings from it and attribute them to that reviewer exactly as if it had reported. Read `output.txt`, never `report.md`: the latter is the whole run rendered by the wrapper's report generator and runs to 137–250 KB in practice, while `output.txt` is the review itself (11 KB for a large one).
 
    A wrapper's report is a delivery mechanism, not the result, and delivery is the part that fails. The harness sends an idle subagent no notification when its background task exits, and a composed report can be lost in transit on top of that: on 2026-08-05 an `alibaba/qwen` run finished with `num_turns=22` and an 11428-byte review on disk while the orchestration recorded that model as having produced nothing across five runs and dropped it from the cross-validation. **Never record a reviewer as silent, dead or empty-handed while `verify-delegation.sh` scores its run `REAL`** — that verdict is precisely the statement that the file holds an agentic review, and it is made from the disk, which no delivery can lose.
 4. **A `SILENT`, `FAILED` or `MISSING` run is dead — send it to Step 6.0**, which classifies it mechanically, rather than waiting out the budget over a run that will never change. Do **not** re-dispatch it here: `watchdog.sh` already restarts the CLI up to twice inside the run, and Step 6.0 owns the wrapper-level retry via `max_redispatch`. Report what you actually observed: "ext-claude ollama/kimi silent for 612s, last write 14:40:43". Never call a death `WATCH_TIMEOUT`; that claims time ran out when in fact a wrapper died, and the two call for different actions. A **silent wrapper over a finished run is not one of these three** — that is point 3's case, and its review is on disk waiting to be read.
@@ -321,7 +560,7 @@ When each agent completes, read its output. After all agents finish (or the user
 >
 > **Mirror the substance.** The status table, the roster explanation, the `--since` warning, the "every verdict exits 0" contract, point 5 and the `--once` liveness rule just above this note say the same thing in both files and must go on saying it: when you change what one of them says, change the other. Do not paste bytes — each copy is worded to its own file (`wrapper` in `/mesh-review`, `executor` in design review), names its own cross-references (where `DISPATCH_EPOCH` was stamped; the "Do NOT block" instruction only `/mesh-review` has) and describes its own retry model (a run re-dispatched by `/mesh-review` versus one that self-retries under design review).
 >
-> **Never mirror these four.** (1) Points 1–2 resolve paths differently by construction: `/mesh-review` reads `$DATA_DIR` and finds its loader through `${CLAUDE_PLUGIN_ROOT}` with a version-sorted `find` fallback, because the harness substitutes that placeholder into a command file's text; a skill gets no such substitution, so design review starts from the base path Claude Code prints at load (`SKILL_BASE`) and asks the loader for `data-dir`. Copying either block across breaks path resolution outright. (2) Point 3: design review runs the `verify-delegation.sh` content gate inline before pinging, while `/mesh-review` pings on `DONE` and only reaches the same check later, in its own mechanical classification step. (3) Point 4: a dead run goes to Error Handling in design review, whose only retry layer is `watchdog.sh` inside the run, and to Step 6.0 in `/mesh-review`, which classifies it mechanically and owns a second, wrapper-level retry layer; the retry sentence that closes the point differs with the routing. (4) Point 6's closing clause: `/mesh-review` hands whatever is still silent to that same step, while design review instead records that the loop covers the codex / gemini / ext-claude executors only.
+> **Never mirror these four.** (1) Points 1–2 resolve paths differently by construction: `/mesh-review` reads `$DATA_DIR` and finds its loader through `${CLAUDE_PLUGIN_ROOT}` with a version-sorted `find` fallback, because the harness substitutes that placeholder into a command file's text; a skill gets no such substitution, so design review starts from the base path Claude Code prints at load (`SKILL_BASE`) and asks the loader for `data-dir`. Copying either block across breaks path resolution outright. (2) Point 3: design review runs the `verify-delegation.sh` content gate inline before pinging, while `/mesh-review` pings on `DONE` and only reaches the same check later, in its own mechanical classification step. (3) Point 4: a dead run goes to Error Handling in design review, whose only retry layer is `watchdog.sh` inside the run, and to Step 6.0 in `/mesh-review`, which classifies it mechanically and owns a second, wrapper-level retry layer; the retry sentence that closes the point differs with the routing. (4) Point 6's closing clause: `/mesh-review` hands whatever is still silent to that same step, while design review instead records that the loop covers its wrapper executors only. That clause names the class, not a list of engines, on purpose: a roster spelled out here has to be re-spelled in the sibling every time an engine is added, and the two copies drift the moment one of them is missed.
 >
 > Do not restore parity by copying the gate or the routing across, and do not delete either: each file checks a finished run's content exactly once and routes a dead run exactly once, and a copy of either in the other file would be the weaker of the two.
 
@@ -330,8 +569,8 @@ The builtin `claude` reviewers are exempt: they review inline, create no `runs/<
 ## Step 5b: Team of reviewers mode
 
 1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewers — all of them) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
-2. Create one task per selected reviewer — with several Claude models selected that means one task per Claude model (`claude:opus`, `claude:fable`), not one shared `claude` task
-3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task. The Step 5a **Dispatch model** rule *and its claude exception* also apply here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it — except claude teammates that carry an explicit model, which each use their own entry from `SELECTED_CLAUDE_MODELS`. When that list is empty, `DISPATCH_MODEL` governs the single fallback claude teammate like any other.
+2. Create one task per selected reviewer — with several Claude models selected that means one task per Claude model (`claude:opus`, `claude:fable`), not one shared `claude` task; and **one task per entry of `SELECTED_GROK_MODELS`**, named `grok:<model>`, exactly as Step 5a dispatches them — never one shared `grok` task, and none at all when that list is empty
+3. Spawn teammates via Task tool with `team_name: "<the same unique name>"`, using the **same short per-reviewer prompts as Step 5a** (see the CRITICAL note there) — team mode does NOT change the prompt rules. Wrapper reviewers (codex / gemini / grok / ext-claude) must still receive ONLY the short delegation prompt, never an inlined review task — including grok's `MODEL=<entry>` first line and the `BASE_BRANCH=<branch>` line under it, which are parameters and not review content. The Step 5a **Dispatch model** rule *and its claude exception* also apply here: add `model: "<DISPATCH_MODEL>"` to each teammate Task dispatch when `DISPATCH_MODEL` is non-empty, otherwise omit it — except claude teammates that carry an explicit model, which each use their own entry from `SELECTED_CLAUDE_MODELS`. When that list is empty, `DISPATCH_MODEL` governs the single fallback claude teammate like any other.
 4. Wait for completion → Step 6. Teammate wrappers idle exactly like the Step 5a background ones — run the same disk-watch + ping loop from Step 5a to collect their reports
 5. Shut down team
 
@@ -354,9 +593,11 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 ### Step 6.0: Verify delegation (mechanical guard)
 
-**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned. The inverse failure also exists: a wrapper whose run is `REAL` on disk but which never sent a report is not a flip — it is idle (wrappers do not wake when their background run finishes); ping it per the Step 5a watch loop to collect the report before classifying.
+**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / grok / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned. The inverse failure also exists: a wrapper whose run is `REAL` on disk but which never sent a report is not a flip — it is idle (wrappers do not wake when their background run finishes); ping it per the Step 5a watch loop to collect the report before classifying.
 
 The builtin `claude` / `general-purpose` reviewers (one per selected Claude model, or a single fallback one) are **skipped by the guard** — they review inline by design, so every one of them whose Task actually completed is accepted into Step 6.1. `verify-delegation.sh` is never invoked for them. (A claude reviewer whose Task errored is the exception — see the `FAILED` rule below.)
+
+Run points 1 and 2 in the SAME Bash call: `$VERIFY` and `$DATA_DIR` are stamped in point 1's fence and do not survive into a second call, and `bash "" …` is not a verdict but a "No such file or directory".
 
 **1. Locate the loader, data dir, and guard:**
 ```bash
@@ -373,21 +614,24 @@ N="$("$LOADER" get-runtime | jq -r '.max_redispatch // 1')"; [[ "$N" =~ ^[0-9]+$
 **2. Classify each dispatched wrapper.** Iterate the `engine:model` list stamped in Step 5 (substitute the ACTUAL dispatched pairs):
 ```bash
 # example — replace the list with what was actually dispatched:
-for spec in "codex:-" "ext-claude:zai/glm" "ext-claude:ollama/kimi"; do
+for spec in "codex:-" "grok:grok-4.6" "ext-claude:zai/glm" "ext-claude:ollama/kimi"; do
   eng="${spec%%:*}"; mdl="${spec#*:}"
   printf '%-28s ' "$spec"
   bash "$VERIFY" "$eng" "$mdl" <DISPATCH_EPOCH> "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN|DEGRADED|KILLED; reason on stderr
 done
 ```
 
+
+A grok pair carries the BARE catalog id (`grok:grok-4.6`), never a `<provider>/<short>` pair. `verify-delegation.sh` rejects an empty model, `-`, and any spelling outside `[A-Za-z0-9][A-Za-z0-9._-]*` — a slashed `grok zai/glm` included — with a usage error and exit 1, printing NO verdict. Read that as "fix the argument", never as a statement about the reviewer: `FLIP` would prescribe a re-dispatch, and re-dispatching cannot repair a call the script refuses to answer. The rejection is what stops `runs/grok/<provider>/<short>` — a path nothing ever writes — from being reported as a reviewer that never delegated.
+
 Substitute the **actual** `DISPATCH_EPOCH` number — the one stamped in Step 5, or the fresh one from step 4a on a re-dispatch round — exactly as in the Step 5a watcher call. A shell variable does not survive from one Bash call to the next, and `DISPATCH_EPOCH` was stamped in a different one; left as `"$DISPATCH_EPOCH"` it expands to nothing and the guard prints its usage line and exits 1 for every reviewer, which is not a verdict at all.
 Verdicts:
 - `REAL` (exit 0) — delegated, real review → **keep** for Step 6.1.
 - `FLIP` (exit 3) — no run dir → self-reviewed on the session model → **re-dispatch**. One `FLIP` reason reads differently and is not about the wrapper: `N run dir(s) in the dispatch window belong to another session`. The runs are there, but they carry an id this session does not have — either this session was resumed or forked since Step 5, or the wrapper really did flip and another orchestration's runs happen to sit in the same window on the same model. The guard cannot tell those two apart and deliberately does not guess. Re-dispatch anyway: a fresh run is stamped with this session's id and verifies honestly, which is the only way back to a checkable answer. What changes is how it is reported if it does not recover — see step 5.
-- `STALLED` (exit 2) — run dir but died mid-flight / delivered nothing usable → **re-dispatch** (retry helps). For ext-claude that is a missing result event; for codex and gemini, a stream with no `turn.completed` / `result` event, or a non-zero watchdog exit that is not a signal (see `KILLED`). It also covers a run that finished healthily and delivered a **notice instead of a review** — `output.txt` under 400 non-space bytes. That is not hypothetical: on 2026-08-05 `deepseek/v4-pro` twice returned "Ревью запущено … уведомлю вас по завершении" after 24 and 17 tool calls, and the older gate scored both `REAL`, so `/mesh-review` counted a model that said nothing among its cross-validating reviewers. Measured across 624 archived runs the floor moves exactly those two out of `REAL`, plus five that were `DEGRADED` on the same kind of text (an "approve this command" note, leaked tool grammar, a summary of a review that is not in the file).
+- `STALLED` (exit 2) — run dir but died mid-flight / delivered nothing usable → **re-dispatch** (retry helps). For ext-claude **and grok** — they share one branch of the guard because they share the stream format — that is a missing result event; for codex and gemini, a stream with no `turn.completed` / `result` event, or a non-zero watchdog exit that is not a signal (see `KILLED`). It also covers a run that finished healthily and delivered a **notice instead of a review** — `output.txt` under 400 non-space bytes. That is not hypothetical: on 2026-08-05 `deepseek/v4-pro` twice returned "Ревью запущено … уведомлю вас по завершении" after 24 and 17 tool calls, and the older gate scored both `REAL`, so `/mesh-review` counted a model that said nothing among its cross-validating reviewers. Measured across 624 archived runs the floor moves exactly those two out of `REAL`, plus five that were `DEGRADED` on the same kind of text (an "approve this command" note, leaked tool grammar, a summary of a review that is not in the file).
 - `KILLED` (exit 6) — a review **lost** to a signal from OUTSIDE the run: the watchdog's last `cleanup` carries 143 (SIGTERM) or 130 (SIGINT), no `watchdog.exit` sits beside it, so nothing inside the run chose to stop — and what the run left behind is not a usable review → **EXCLUDE, do NOT re-dispatch.** The verdict weighs the cost, not the signal: a run that had already delivered a real review before something killed its tail scores `REAL` and keeps its findings, on every engine. So `KILLED` never means "there may be findings on disk you are discarding" — there are none worth having, which is why there is nothing to ping for. The review itself was healthy right up to the signal; what failed is the launch, and an identical launch is killed identically. The usual sender is the harness capping a *foreground* Bash call at `BASH_MAX_TIMEOUT_MS` (ten minutes by default) and SIGTERMing it there — which is why the exec skills launch the engine as a background task. On 2026-08-05 this verdict did not exist, the five affected runs scored `STALLED`, and three re-dispatches died exactly as the runs they replaced. If the run dirs show this repeatedly, the wrapper is launching in the foreground and the fix is in the skill, not in another round.
-- `BROKEN` (exit 4) — run dir but the engine finished without doing any work → **DROP, do NOT retry** (the engine itself is broken). For ext-claude that is thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events); for codex and gemini, a completed turn that ran no tool at all — narration rather than a review.
-- `DEGRADED` (exit 5, ext-claude only) — a real, agentic review, but the CLI refused `N` of its tool calls: the reviewer never got outside the directory it was launched in, so it reviewed without the sibling sources it tried to open → **KEEP for Step 6.1, do NOT re-dispatch.** The findings are genuine; what is missing is everything the reviewer could not read, so treat any claim about code outside the project dir as a guess rather than a finding. A retry re-runs the same invocation and is denied identically, and the remedy is not an agent's to apply: the ext-claude run needs `--permission-mode bypassPermissions`, and an *installed* plugin only picks that up through a release — so on any copy predating that release this verdict is the expected outcome, not an anomaly. The reason line names the denial count and which tools were refused (`Read×2, Bash×1`), which says whether the reviewer lost source files, searches, or both. Before this verdict existed such a run scored `REAL`: every liveness signal (finalized, `is_error:false`, `num_turns` well above 1, non-empty output) is healthy on a reviewer that read nothing, which is why it needed a check of its own.
+- `BROKEN` (exit 4) — run dir but the engine finished without doing any work → **DROP, do NOT retry** (the engine itself is broken). For ext-claude **and grok** that is thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events); for codex and gemini, a completed turn that ran no tool at all — narration rather than a review.
+- `DEGRADED` (exit 5, ext-claude and grok) — a real, agentic review, but the CLI refused `N` of its tool calls: the reviewer never got outside the directory it was launched in, so it reviewed without the sibling sources it tried to open → **KEEP for Step 6.1, do NOT re-dispatch.** The findings are genuine; what is missing is everything the reviewer could not read, so treat any claim about code outside the project dir as a guess rather than a finding. A retry re-runs the same invocation and is denied identically, and the remedy is not an agent's to apply: the ext-claude run needs `--permission-mode bypassPermissions`, and an *installed* plugin only picks that up through a release — so on any copy predating that release this verdict is the expected outcome, not an anomaly. The reason line names the denial count and which tools were refused (`Read×2, Bash×1`), which says whether the reviewer lost source files, searches, or both. Before this verdict existed such a run scored `REAL`: every liveness signal (finalized, `is_error:false`, `num_turns` well above 1, non-empty output) is healthy on a reviewer that read nothing, which is why it needed a check of its own. **On grok the remedy differs and the reason line says so:** `grok-exec` already passes `--permission-mode bypassPermissions`, so a denial there is not the missing-flag case at all — it points at the CLI's own permission configuration (`~/.grok`, or a sandbox profile), not at a plugin release. The verdict is the same: keep the findings, do not re-dispatch.
 
 **3. Show the delegation status table** so the user sees who really cross-validated:
 ```
@@ -395,11 +639,12 @@ Verdicts:
 |---------------------|---------|-----------------|
 | claude:opus         | INLINE  | ✅ по построению |
 | claude:fable        | INLINE  | ✅ по построению |
-| ext-claude/zai/glm  | REAL    | ✅ kept          |
+| ext-claude:zai/glm  | REAL    | ✅ kept          |
+| grok:grok-4.6       | REAL    | ✅ kept          |
 | codex               | FLIP    | ↻ re-dispatch   |
-| ext-claude/ollama/… | BROKEN  | ✗ dropped       |
-| ext-claude/deepseek/… | DEGRADED | ⚠ kept — 14 denials, partial context |
-| ext-claude/alibaba/… | KILLED  | ✗ excluded — killed from outside at 600s |
+| ext-claude:ollama/… | BROKEN  | ✗ dropped       |
+| ext-claude:deepseek/… | DEGRADED | ⚠ kept — 14 denials, partial context |
+| ext-claude:alibaba/… | KILLED  | ✗ excluded — killed from outside at 600s |
 ```
 
 A `DEGRADED` row must say **how many** tool calls were denied — the count is the whole content of the verdict, and a row that hides it reads like a `REAL` with decoration.
@@ -419,7 +664,7 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 
 `PROBLEMS` = reviewers whose verdict is `FLIP` or `STALLED` — **not** `BROKEN`, **not** `DEGRADED`, **not** `KILLED`. All three are already final: a broken engine repeats itself, a denied reviewer is denied identically on the next run because nothing about the invocation changed, and a killed run is killed again by whatever sent the signal. While `PROBLEMS` is non-empty AND rounds-done < `N`:
   - **a. Stamp a fresh window** via Bash: `DISPATCH_EPOCH=$(date +%s)` — so the guard inspects the NEW run, not the old failed one.
-  - **b. Re-dispatch ONLY the `PROBLEMS` reviewers** with the EXACT same short delegation prompt as Step 5a (`MODEL=<id> Review the changes for production readiness` for ext-claude; `Review the changes for production readiness` for codex/gemini) — including the `BASE_BRANCH=<branch> ` prefix when the argument was given, since a retry that drops it would review a different range than the attempt it replaces — same `subagent_type`, same run mode. Apply the Step 5a **Dispatch model** rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit). Then **run the same disk-watch + ping loop as Step 5a** (its points 1–6), with a roster of only these reviewers and the fresh `DISPATCH_EPOCH` from step a, and collect their reports exactly as there. **Do not treat the Task returning as the run finishing.** A wrapper launches its engine as a background Bash task, names the run dir and ends its turn, so its Task completes within seconds of the launch — long before there is anything on disk. Without the watch loop, step c inspects a run dir that has barely been created, scores every re-dispatch `STALLED` (no `final`, no `output.txt`) or `FLIP` (no dir yet), and the whole `max_redispatch` budget is spent without one run ever finishing.
+  - **b. Re-dispatch ONLY the `PROBLEMS` reviewers** with the EXACT same short delegation prompt as Step 5a — read the shape off that step's own bullets rather than restating it here, because a copy of it in this bullet is what went stale last time: `Review the changes for production readiness` for codex and gemini, carrying the `BASE_BRANCH=<branch> ` prefix when the argument was given; for grok and ext-claude the multi-line shape their bullets prescribe — `MODEL=<entry>` (grok) or `MODEL=<id>` (ext-claude) ALONE on the first line, `BASE_BRANCH=<branch>` on the line directly under it when the argument was given, then `Review the changes for production readiness`. A retry that drops the base would review a different range than the attempt it replaces; a retry that puts `BASE_BRANCH=` at the head of the first line is refused by those two agents, which is the whole reason their base goes on its own line. Same `subagent_type`, same run mode. Apply the Step 5a **Dispatch model** rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit). Then **run the same disk-watch + ping loop as Step 5a** (its points 1–6), with a roster of only these reviewers and the fresh `DISPATCH_EPOCH` from step a, and collect their reports exactly as there. **Do not treat the Task returning as the run finishing.** A wrapper launches its engine as a background Bash task, names the run dir and ends its turn, so its Task completes within seconds of the launch — long before there is anything on disk. Without the watch loop, step c inspects a run dir that has barely been created, scores every re-dispatch `STALLED` (no `final`, no `output.txt`) or `FLIP` (no dir yet), and the whole `max_redispatch` budget is spent without one run ever finishing.
   - **c. Re-run the guard** (step 2) for those reviewers with the new `DISPATCH_EPOCH`; update their verdicts.
   - **d.** rounds-done++.
 
@@ -439,7 +684,7 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 
 ### Step 6.1: Deduplicate, Verify, and Classify
 
-1. **Deduplicate:** If multiple agents found the same issue (same file, same problem), merge into one entry. Note all agents that found it. Claude reviewers are attributed as `claude:<model>` (`claude:opus`, `claude:fable`); a single fallback reviewer is just `claude`. Two different Claude models reporting the same issue is corroboration — exactly like codex and ext-claude agreeing — so merge them into one entry that lists both, never collapse them into a nameless "claude".
+1. **Deduplicate:** If multiple agents found the same issue (same file, same problem), merge into one entry. Note all agents that found it. Claude reviewers are attributed as `claude:<model>` (`claude:opus`, `claude:fable`); a single fallback reviewer is just `claude`. Two different Claude models reporting the same issue is corroboration — exactly like codex and ext-claude agreeing — so merge them into one entry that lists both, never collapse them into a nameless "claude". Grok reviewers are attributed the same way, as `grok:<model>` (`grok:grok-4.6`) — two grok models reporting one issue is corroboration exactly as two Claude models are, so merge them into one entry that lists both and never collapse them into a nameless "grok".
 
 2. **Verify each issue against the codebase:** read the code at the reported location.
    - Is the issue real?

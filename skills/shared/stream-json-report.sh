@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# Generate human-readable markdown from an Anthropic stream-json log (ext-claude and grok)
+# Usage: ./stream-json-report.sh <log_file> <md_file> <profile> [report_title] [task_name_override]
+#
+# task_name_override: if non-empty, used verbatim as TASK_NAME in the report
+# header. Otherwise TASK_NAME is parsed from the directory path (legacy
+# behavior). Callers with non-standard WORK_DIR formats (e.g. ollama-exec
+# uses TIMESTAMP-PID-NAME with extra `-$$` PID component, supervised mode
+# stores logs under `$WORK_DIR/final/` so basename loses TASK_NAME) should
+# pass an explicit override.
+
+LOG_FILE="$1"
+MD_FILE="$2"
+PROFILE="$3"
+REPORT_TITLE="${4:-Ext-Claude Execution Report}"
+TASK_NAME_OVERRIDE="${5:-}"
+ORIGINAL_LOG_FILE="$LOG_FILE"
+
+RAW_PREFIXED_LOG=""
+FIRST_INPUT_LINE=$(grep -m 1 '[^[:space:]]' "$LOG_FILE" 2>/dev/null || true)
+case "$FIRST_INPUT_LINE" in
+    \[* ) ;;
+    * )
+        RAW_PREFIXED_LOG=$(mktemp) || { echo "stream-json-report: mktemp failed — cannot prefix the log" >&2; exit 1; }
+        sed 's/^/[??:??:??] /' "$LOG_FILE" > "$RAW_PREFIXED_LOG"
+        LOG_FILE="$RAW_PREFIXED_LOG"
+        trap 'rm -f "$RAW_PREFIXED_LOG"' EXIT
+        ;;
+esac
+
+# Extract timestamp from directory path (always parsed); task name from
+# explicit 5th arg if provided, else from path (legacy fallback).
+DIR_NAME=$(basename "$(dirname "$ORIGINAL_LOG_FILE")")
+TIMESTAMP=$(echo "$DIR_NAME" | sed 's/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}\).*/\1/')
+if [ -n "$TASK_NAME_OVERRIDE" ]; then
+    # Defense-in-depth: sanitize even if caller already sanitized.
+    # Direct external callers may pass unfiltered values.
+    TASK_NAME=$(printf '%s' "$TASK_NAME_OVERRIDE" | tr -cd '[:alnum:]._-' | head -c 64)
+    [ -z "$TASK_NAME" ] && TASK_NAME="task"
+else
+    TASK_NAME=$(echo "$DIR_NAME" | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}-[0-9]\{2\}-//')
+fi
+
+# Get model from system init line
+# These two greps require `type` to be the FIRST key of the object — the `{` immediately
+# before it is what anchors them. True of every stream measured so far (claude -p and grok
+# alike), and deliberately narrow: a pattern matching `"type":"result"` anywhere would also
+# match the literal inside a tool_result payload or an assistant's text. Only the report's
+# header metrics read these; every verdict comes from extract-result.py, which parses the
+# JSON properly. If a producer ever reorders its keys, the fix is jq, not a looser grep.
+SYSTEM_LINE=$(grep '\[.*\] {"type":"system"' "$LOG_FILE" 2>/dev/null | head -1 | sed 's/^\[[^]]*\] //')
+MODEL=$(echo "$SYSTEM_LINE" | jq -r '.model // "unknown"' 2>/dev/null)
+if [ -z "$MODEL" ] || [ "$MODEL" = "null" ]; then MODEL="unknown"; fi
+
+# Get result metrics from last line
+RESULT_LINE=$(grep '\[.*\] {"type":"result"' "$LOG_FILE" 2>/dev/null | tail -1 | sed 's/^\[[^]]*\] //')
+DURATION_MS=$(echo "$RESULT_LINE" | jq -r '.duration_ms // 0' 2>/dev/null)
+if [ -z "$DURATION_MS" ] || [ "$DURATION_MS" = "null" ]; then DURATION_MS=0; fi
+DURATION_SEC=$(echo "scale=1; $DURATION_MS / 1000" | bc 2>/dev/null || echo "0")
+COST=$(echo "$RESULT_LINE" | jq -r '.total_cost_usd // 0' 2>/dev/null)
+if [ -z "$COST" ] || [ "$COST" = "null" ]; then COST="0"; fi
+INPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/null)
+if [ -z "$INPUT_TOKENS" ] || [ "$INPUT_TOKENS" = "null" ]; then INPUT_TOKENS=0; fi
+OUTPUT_TOKENS=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null)
+if [ -z "$OUTPUT_TOKENS" ] || [ "$OUTPUT_TOKENS" = "null" ]; then OUTPUT_TOKENS=0; fi
+
+# Emit one collapsed section for a tool output. A function because BOTH shapes need it — the
+# single top-level `.tool_use_result.stdout` one engine writes, and each `tool_result` block of
+# the other — and ten duplicated echo lines are how two renderings of one thing drift apart.
+emit_tool_output() {
+    [ -n "$1" ] || return 0
+    [ "$1" != "null" ] || return 0
+    echo "<details>"
+    echo "<summary>Output (click to expand)</summary>"
+    echo ""
+    echo '```'
+    echo "$1"
+    echo '```'
+    echo "</details>"
+    echo ""
+    echo "---"
+    echo ""
+}
+
+{
+    echo "# $REPORT_TITLE"
+    echo ""
+    echo "**Date:** $(echo "$TIMESTAMP" | sed 's/\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\)-\([0-9]\{2\}\)-\([0-9]\{2\}\)-\([0-9]\{2\}\)/\1 \2:\3:\4/')"
+    echo "**Task:** $TASK_NAME"
+    echo "**Profile:** $PROFILE | **Model:** $MODEL"
+    echo "**Duration:** ${DURATION_SEC}s | **Cost:** \$${COST}"
+    echo ""
+    echo "---"
+    echo ""
+
+    # Process each message.
+    # `|| [ -n "$line" ]` keeps the LAST line when the log ends without a trailing newline: a
+    # bare `read` returns non-zero on that final partial line and the loop drops it silently.
+    # Here that costs the last assistant/user message — this loop has no `result` arm, so it is
+    # the message text that goes missing, not the terminal event. The same truncation is far
+    # more expensive one layer down, in the exec skills that WRITE this log: their loop appends
+    # each line to raw.jsonl, so a dropped final line removes the `result` event from the file
+    # itself, and verify-delegation.sh scores a completed run STALLED for want of it.
+    # ext-claude's own stream consumer has always handled this case explicitly
+    # (ext-claude-exec/progress-monitor.sh: "EOF — process any trailing partial line").
+    while IFS= read -r line || [ -n "$line" ]; do
+        TS=$(echo "$line" | sed 's/^\[\([^]]*\)\].*/\1/')
+        JSON=$(echo "$line" | sed 's/^\[[^]]*\] //')
+        TYPE=$(echo "$JSON" | jq -r '.type' 2>/dev/null)
+
+        case "$TYPE" in
+            "assistant")
+                # EVERY content block, not index 0 alone. One assistant message carries a LIST
+                # — the wire format's own shape is [thinking?, text?, tool_use*] — and this
+                # branch used to read `.message.content[0]` six times over: a message whose
+                # FIRST block was `thinking` matched neither arm and vanished from the report
+                # whole, tool call included, while any block after the first was dropped
+                # whatever its type. That is the ordinary shape for a reasoning model, which is
+                # what grok is, and this renderer serves grok since the file moved into shared/.
+                # No verdict is taken from report.md — every one of them comes from output.txt —
+                # but a trace that omits a tool call reads as a tool that was never called.
+                NBLOCKS=$(echo "$JSON" | jq -r 'if (.message.content | type) == "array" then (.message.content | length) else 0 end' 2>/dev/null)
+                # TYPE-GATED to array first: `jq '"abc" | length'` is 3, so a STRING content
+                # would pass the numeric guard below as a block COUNT and spawn one jq per
+                # CHARACTER while rendering nothing — measured at 11.8 s for a 2000-char string
+                # against 0.17 s for the same payload as an array, and linear beyond that. The
+                # identical trap is already documented above validate_model_catalog in
+                # config-loader.sh, whose callers must type-gate for the same reason.
+                # Never let a jq hiccup turn into an unbounded or erroring loop: a non-numeric
+                # answer means "render nothing from this message", not "abort the report".
+                case "$NBLOCKS" in ''|*[!0-9]*) NBLOCKS=0 ;; esac
+                BI=0
+                while [ "$BI" -lt "$NBLOCKS" ]; do
+                    CONTENT_TYPE=$(echo "$JSON" | jq -r ".message.content[$BI].type // empty" 2>/dev/null)
+
+                    if [ "$CONTENT_TYPE" = "tool_use" ]; then
+                        TOOL_NAME=$(echo "$JSON" | jq -r ".message.content[$BI].name" 2>/dev/null)
+                        # For Bash tool, get the command
+                        if [ "$TOOL_NAME" = "Bash" ]; then
+                            TOOL_CMD=$(echo "$JSON" | jq -r ".message.content[$BI].input.command // empty" 2>/dev/null)
+                            echo "## Tool: $TOOL_NAME [$TS]"
+                            echo ""
+                            echo '```bash'
+                            echo "$TOOL_CMD"
+                            echo '```'
+                        else
+                            TOOL_INPUT=$(echo "$JSON" | jq -r ".message.content[$BI].input | tostring" 2>/dev/null)
+                            echo "## Tool: $TOOL_NAME [$TS]"
+                            echo ""
+                            echo '```json'
+                            echo "$TOOL_INPUT"
+                            echo '```'
+                        fi
+                        echo ""
+                        echo "---"
+                        echo ""
+                    elif [ "$CONTENT_TYPE" = "text" ]; then
+                        TEXT=$(echo "$JSON" | jq -r ".message.content[$BI].text" 2>/dev/null)
+                        echo "## Response [$TS]"
+                        echo ""
+                        echo "$TEXT"
+                        echo ""
+                        echo "---"
+                        echo ""
+                    fi
+                    # `thinking`, and any block type xAI or Anthropic add later, fall through on
+                    # purpose: they are skipped exactly as before. What changed is that skipping
+                    # one no longer skips its siblings.
+                    BI=$((BI+1))
+                done
+                ;;
+
+            "user")
+                # tool_result — EVERY block, the mirror of the assistant branch above and for the
+                # same reason: one user message carries a LIST, and a model that issues PARALLEL
+                # tool calls gets one tool_result per call in a SINGLE message. This branch read
+                # index 0 and dropped every sibling, so a trace showed one answer where several
+                # tools had replied. The assistant branch was reworked for exactly this defect
+                # and its twin here was left behind.
+                #
+                # `.tool_use_result.stdout` keeps precedence and stays UNINDEXED: it is a single
+                # top-level field, not a list, and when it is present the blocks are not read at
+                # all — the same order the one-line jq fallback expressed before.
+                OUTPUT=$(echo "$JSON" | jq -r '.tool_use_result.stdout // empty' 2>/dev/null)
+                if [ -n "$OUTPUT" ] && [ "$OUTPUT" != "null" ]; then
+                    emit_tool_output "$OUTPUT"
+                else
+                    NBLOCKS=$(echo "$JSON" | jq -r 'if (.message.content | type) == "array" then (.message.content | length) else 0 end' 2>/dev/null)
+                    # Type-gated to array for the same reason as the assistant branch above:
+                    # a string content would otherwise be counted by CHARACTER.
+                    # Same guard as the assistant branch: a non-numeric answer means "render
+                    # nothing from this message", never "abort the report".
+                    case "$NBLOCKS" in ''|*[!0-9]*) NBLOCKS=0 ;; esac
+                    BI=0
+                    while [ "$BI" -lt "$NBLOCKS" ]; do
+                        emit_tool_output "$(echo "$JSON" | jq -r ".message.content[$BI].content // empty" 2>/dev/null)"
+                        BI=$((BI+1))
+                    done
+                fi
+                ;;
+        esac
+    done < "$LOG_FILE"
+
+    # Usage section
+    TOTAL=$((INPUT_TOKENS + OUTPUT_TOKENS))
+    echo "## Usage"
+    echo ""
+    echo "- **Input tokens:** $INPUT_TOKENS"
+    echo "- **Output tokens:** $OUTPUT_TOKENS"
+    echo "- **Total:** $TOTAL"
+
+    # Timing section
+    FIRST_TS=$(head -1 "$LOG_FILE" 2>/dev/null | sed 's/^\[\([^]]*\)\].*/\1/')
+    LAST_TS=$(tail -1 "$LOG_FILE" 2>/dev/null | sed 's/^\[\([^]]*\)\].*/\1/')
+
+    time_to_seconds() {
+        local time="$1"
+        local h m s
+        h=$(echo "$time" | cut -d: -f1)
+        m=$(echo "$time" | cut -d: -f2)
+        s=$(echo "$time" | cut -d: -f3 | cut -d. -f1)  # drop .mmm: bash 10# rejects fractional
+        echo $((10#$h * 3600 + 10#$m * 60 + 10#$s))
+    }
+
+    ts_to_sec() {
+        local time="$1"
+        if [ -z "$time" ] || [ "$time" = "??:??:??" ]; then
+            echo 0
+        else
+            time_to_seconds "$time"
+        fi
+    }
+
+    START_SECS=$(ts_to_sec "$FIRST_TS")
+    END_SECS=$(ts_to_sec "$LAST_TS")
+
+    echo ""
+    echo "## Timing"
+    echo ""
+    if [ "$START_SECS" -eq 0 ] && [ "$END_SECS" -eq 0 ]; then
+        echo "Timing: unknown (raw stream — no timestamps)"
+    else
+        echo "- **Started:** $FIRST_TS"
+        echo "- **Finished:** $LAST_TS"
+    fi
+
+} > "$MD_FILE"
+
+echo "Generated: $MD_FILE"

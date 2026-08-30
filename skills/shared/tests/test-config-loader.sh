@@ -40,6 +40,15 @@ assert_stderr_lacks() {
     fi
 }
 
+assert_eq_str() {
+    # $1 = description, $2 = expected, $3 = actual
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS+1)); echo "  PASS: $1"
+    else
+        FAIL=$((FAIL+1)); echo "  FAIL: $1 — expected '$2', got '$3'"
+    fi
+}
+
 echo "=== Test 1: missing config file ==="
 # iter-2 CONCERN-11: load_or_die exits with rc=2 (distinct from rc=1) when
 # config.yaml is missing — so /do-plan (and any future consumer that wants to
@@ -1340,6 +1349,476 @@ else
     FAIL=$((FAIL+1)); echo "  FAIL: the snapshot outlived the process: $LEFTOVER"
 fi
 rm -rf "$TDIR" "$ERR" "$SHIMDIR" "$LEAKTMP"
+
+# === Test 57: the grok: section ===
+# grok: is a GATE like codex:/gemini: — but unlike claude:, its catalog is REQUIRED, because
+# the grok reviewer agent refuses to start without a MODEL. A section with no models would
+# advertise a reviewer that cannot run.
+echo "=== Test 57: grok: section validation ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+
+cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a well-formed grok: section" "0" "$RC"
+
+cp "$FIXTURES/invalid-grok-scalar.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a scalar grok: section" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "grok: must be a mapping" "$ERR"
+assert_stderr_lacks "no raw jq indexing noise" "Cannot index" "$ERR"
+
+cp "$FIXTURES/invalid-grok-models-missing.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a grok: section with no catalog" "1" "$RC"
+assert_stderr_contains "says the catalog is required" "grok.models: required when grok: section present" "$ERR"
+
+cp "$FIXTURES/invalid-grok-models-empty.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects an empty grok catalog" "1" "$RC"
+assert_stderr_contains "says the catalog is required" "grok.models: required when grok: section present" "$ERR"
+
+# The charset is the narrow one. A colon is legal in claude.models and must NOT be here:
+# the value becomes a path component and a watch-runs.sh roster entry.
+cp "$FIXTURES/invalid-grok-model-charset.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a colon in a grok model id" "1" "$RC"
+assert_stderr_contains "names the narrow charset" "grok.models\[1\]" "$ERR"
+assert_stderr_contains "shows which charset applies" "\[A-Za-z0-9._-\]" "$ERR"
+
+{ printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
+  printf 'grok:\n  models: [grok-4.6, grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate grok model" "1" "$RC"
+assert_stderr_contains "names the duplicate" "duplicate model" "$ERR"
+assert_stderr_contains "…and names WHICH id repeats" "grok-4.6" "$ERR"
+
+# Unknown effort passes with a WARN — xAI adds levels without asking this plugin.
+cp "$FIXTURES/unknown-grok-effort.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts an unknown reasoning_effort" "0" "$RC"
+assert_stderr_contains "warns about it" "unknown value \"ludicrous\"" "$ERR"
+
+# No grok: section at all — every existing config on earth.
+cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "a config with no grok: section stays valid" "0" "$RC"
+GF=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
+assert_eq_str "has_grok=0 without a section" "0" "$GF"
+
+cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
+GF=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
+assert_eq_str "has_grok=1 with a section" "1" "$GF"
+LIST=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-grok-models 2>/dev/null | tr '\n' ' ')
+assert_eq_str "list-grok-models emits the catalog in config order" "grok-4.6 grok-4.5 " "$LIST"
+EFFORT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok 2>/dev/null)
+assert_eq_str "get-grok returns the effort" "xhigh" "$EFFORT"
+
+# get-grok is a TYPED getter: a malformed section must die here, not return an empty string.
+cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-grok rejects a malformed catalog" "1" "$RC"
+assert_stderr_contains "…and says what the catalog must be" "must be a list of grok model ids" "$ERR"
+# …while the codex getter beside it still answers: a broken grok section must not
+# ground the other engines (the `ultra` incident, 2026-07-10).
+CG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null); RC=$?
+assert_exit "get-codex still works with a broken grok section" "0" "$RC"
+assert_eq_str "…and returns the codex model" "gpt-5.5|" "$CG"
+# has_grok VALIDATES instead of probing (see its case arm), so a MALFORMED section must make
+# it EXIT 1 rather than answer 0 or 1. That rc is the contract preflight-env.sh reads to print
+# an INVALID row instead of a MISSING one, and it is the whole justification for the flag not
+# being a bare `jq -e '.grok'`.
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok exits 1 on a malformed section" "1" "$RC"
+
+# The same must hold for the PRESET read, which every orchestrator and preflight-env.sh runs
+# before anything else. Since Task 3 validate_defaults DOES reach the grok catalog — but only
+# when a preset references grok, which this fixture's `builtin: [codex]` deliberately does not.
+# So the assertion below pins the UNREFERENCED half of the lazy check, and that half holds: a
+# typo in grok.models must not ground the codex and gemini rows of a config that never asked
+# for grok.
+# The REFERENCED half is covered further down, by broken-grok-referenced.yaml — and the
+# CROSS-PRESET half by broken-grok-one-preset.yaml. Both fixtures postdate this comment's
+# earlier wording, which described the referenced case as uncovered and recorded what it then
+# did: both get-defaults calls exited 1 and preflight-env.sh printed `config INVALID` with
+# EVERY row SKIPPED. That is no longer the behaviour — the referenced case now degrades grok
+# alone — so read those three blocks together: this one owns the UNREFERENCED half only.
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-defaults still answers with a malformed grok section" "0" "$RC"
+
+# The mirror case: a grok: {} section that NO preset references. `validate` must still reject
+# it — the full path owns the whole config — while the preset read must not even look.
+cp "$FIXTURES/unreferenced-broken-grok.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "validate rejects a catalog-less grok section no preset references" "1" "$RC"
+
+# The REFERENCED case, the other half of the same invariant. `grok` is named by BOTH presets
+# while the catalog is broken — config.example.yaml's own shape with one typo. The preset read
+# must DEGRADE grok alone and keep answering: a typo in a user-owned file must not ground the
+# claude and codex rows of a run that never asked for grok (the `ultra` incident's shape).
+# `validate` stays strict on the full path, and has_grok still exits 1 so preflight-env.sh
+# prints INVALID on the grok row rather than a MISSING one.
+GD_OUT=$(mktemp)
+cp "$FIXTURES/broken-grok-referenced.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "get-defaults answers when a REFERENCED grok catalog is broken" "0" "$RC"
+assert_eq_str "…with grok dropped from builtin" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…grok_models emptied" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…the degradation flagged for default mode" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…and the other engines untouched" "opus fable" "$(jq -r '.claude_models | join(" ")' "$GD_OUT" 2>/dev/null)"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "…the second preset degrades the same way" "0" "$RC"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+assert_exit "validate still rejects a referenced broken catalog" "1" "$RC"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok still exits 1 on it, so the grok row reads INVALID" "1" "$RC"
+
+# The same referenced-broken catalog with the preset entry ALSO malformed — the double typo, and
+# the half the degrade left behind. Every rule inside the grok_models loop (element type, empty
+# value, charset, duplicate) called a bare die, so this shape re-grounded get-defaults for BOTH
+# presets and preflight-env.sh then printed CONFIG INVALID with codex, gemini and claude all
+# SKIPPED — one line after the WARN above promised "every other engine is unaffected". The
+# fixture carries `[zai/glm, zai/glm]`: a slash breaks the charset rule and the repeat breaks the
+# duplicate rule, so one file exercises two of the four. The healthy-catalog case below proves
+# the rules did not simply go soft.
+cp "$FIXTURES/broken-grok-referenced-bad-preset.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "a broken catalog AND a malformed preset entry still answer" "0" "$RC"
+assert_eq_str "…grok dropped, other engines intact" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…and still flagged degraded" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_stderr_contains "…the charset rule is REPORTED, not silent" "must start with a letter/digit" "$ERR"
+# One report per bad ENTRY PER PRESET, not one per rule. Four is the right number and says so:
+# two malformed entries in each of the fixture's two presets, because validate_defaults walks
+# the whole defaults: block on every read — the property the WARN text itself names. Six would
+# mean the skip after each failed check is gone: grok_preset_die RETURNS when it only warns, so
+# without it the second entry is reported by the charset rule AND again by the duplicate rule,
+# the first having reached `seen_gm` on its way past.
+assert_eq_str "…once per entry per preset, not once per rule" "4" "$(grep -c 'grok_models\[' "$ERR")"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+assert_exit "…and validate still rejects it" "1" "$RC"
+
+# CONTROL: with a HEALTHY catalog the very same malformed preset entry stays FATAL. Without
+# this, deleting the rules outright would satisfy every assertion above.
+sed 's/^  models: grok-4.6$/  models: [grok-4.6]/' \
+    "$FIXTURES/broken-grok-referenced-bad-preset.yaml" > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "a healthy catalog keeps the preset rules fatal" "1" "$RC"
+
+# A scalar `grok:` section — the same invariant, one KIND of breakage over. `grok: false` is
+# how a user tries to switch a section off without deleting it, and the type gate used to die
+# on the preset path, so preflight printed CONFIG INVALID and SKIPPED every row: codex and
+# gemini taken down by a grok typo, which is the `ultra` incident's shape and the one thing
+# `preflight-env.sh` forbids in so many words. It now degrades exactly as a broken catalog
+# does. `validate` stays strict, and no raw jq noise may reach stderr — the reason the gate
+# was unconditional in the first place is that `(.grok.models // [])[]` cannot index a boolean.
+cp "$FIXTURES/scalar-grok-referenced.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "get-defaults answers on a SCALAR grok section a preset references" "0" "$RC"
+assert_eq_str "…with grok dropped from builtin" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…grok_models emptied" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…and flagged degraded for default mode" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…the other engines untouched" "opus fable" "$(jq -r '.claude_models | join(" ")' "$GD_OUT" 2>/dev/null)"
+assert_stderr_lacks "no raw jq noise on the preset path" "Cannot index" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "…the preset that never names grok answers too" "0" "$RC"
+assert_eq_str "…and is NOT flagged degraded" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+assert_exit "validate still rejects a scalar grok section" "1" "$RC"
+assert_stderr_contains "…naming the type it got" "must be a mapping" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok still exits 1 on it" "1" "$RC"
+# The CROSS-PRESET case, the third shape of the same invariant. GROK_CATALOG_BROKEN is ONE
+# variable for the whole run while validate_defaults iterates BOTH presets, so a catalog broken
+# for design_review must not be reported to code_review, which never named grok. The two
+# fixtures above cannot catch this: one has grok in NEITHER preset, the other in BOTH.
+cp "$FIXTURES/broken-grok-one-preset.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "get-defaults answers for the preset that never names grok" "0" "$RC"
+assert_eq_str "…and does NOT flag that preset degraded" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…its builtin is untouched" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+assert_exit "…while the preset that DOES name grok still answers" "0" "$RC"
+assert_eq_str "…and that one IS flagged degraded" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+assert_eq_str "…with grok dropped from its builtin" "claude" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+# The UNREFERENCED fixture must not be flagged: nothing read its catalog, so nothing degraded.
+cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"
+assert_eq_str "grok_degraded is false when no preset references grok" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+rm -f "$GD_OUT"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-defaults ignores a grok section no preset references" "0" "$RC"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 58: defaults.<preset> grok gating ===
+# Two rules, and they point in OPPOSITE directions. grok_models without grok in builtin is the
+# same fail-closed rule claude_models has. grok in builtin WITHOUT grok_models is also an
+# error — the mirror image, and unlike claude there is no single-reviewer fallback to land on,
+# because the reviewer agent stops without a MODEL.
+echo "=== Test 58: defaults grok gating ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+GCAT=$(printf 'grok:\n  models: [grok-4.6, grok-4.5]\n')
+
+cp "$FIXTURES/invalid-defaults-builtin-grok-no-section.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects builtin grok with no grok: section" "1" "$RC"
+assert_stderr_contains "says which section is missing" 'builtin lists "grok" but no grok: section' "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects builtin grok with no grok_models" "1" "$RC"
+assert_stderr_contains "explains the reviewer needs a model" "grok_models is empty" "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    grok_models: [grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects grok_models without grok in builtin" "1" "$RC"
+assert_stderr_contains "names the missing builtin entry" 'missing from defaults.code_review.builtin' "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: [grok-4.7]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a grok_models entry outside the catalog" "1" "$RC"
+assert_stderr_contains "points at the catalog" "grok.models catalog" "$ERR"
+
+# Charset gate, the twin of the claude_models case above (Test 47's block): membership is a
+# substring match against the space-joined catalog, so a multi-token value whose words are
+# ADJACENT catalog members would SPAN it. A missing comma in `["grok-4.6 grok-4.5"]` is ONE
+# YAML string, and against the catalog "grok-4.6 grok-4.5 " it would match and validate clean,
+# handing the orchestrator one bogus model name. GROK_IDENT_RE forbids the space, so the entry
+# is reported for what it is — and this assertion is what makes the SYNC marker's claim true
+# on the grok side: delete the charset line and the suite goes red here.
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: ["grok-4.6 grok-4.5"]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a space-spanning grok_models entry (missing comma)" "1" "$RC"
+assert_stderr_contains "reports it as a charset violation, not as unknown" 'must start with a letter/digit' "$ERR"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: [grok-4.6, grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a duplicate grok_models entry" "1" "$RC"
+
+{ printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  design_review:\n    builtin: [grok]\n    grok_models: [grok-4.5]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a well-formed design_review preset" "0" "$RC"
+DJ=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review 2>/dev/null)
+GM=$(printf '%s' "$DJ" | jq -r '.grok_models | join(",")')
+assert_eq_str "get-defaults carries grok_models" "grok-4.5" "$GM"
+
+# A preset with no grok at all still emits an ARRAY, never null — both orchestrators iterate it.
+{ printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
+DJ=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review 2>/dev/null)
+GT=$(printf '%s' "$DJ" | jq -r '.grok_models | type')
+assert_eq_str "grok_models defaults to an array" "array" "$GT"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 59: the claude catalog's error text is frozen ===
+# validate_claude no longer owns its per-element loop — validate_model_catalog does, and grok:
+# calls the same helper. Every message that loop emits is a contract users read and this suite
+# asserts, so the refactor was checked once by hand against text captured beforehand. That check
+# lived in a temp file and died with the session. Nothing else here would catch a message MOVING:
+# the assertions above (Test 47) grep for substrings, so text that had quietly grown a
+# grok-flavoured clause, lost its index, or swapped its example would still pass every one.
+#
+# The golden file is the whole nine-case stderr, byte for byte. Seven cases produce a message:
+# the non-mapping section, the scalar .models value (the only list-level failure, so the only
+# one with no index), and the four per-element guards — element type, empty value, charset,
+# duplicate — with the charset one covered twice, by a leading dash and by an embedded space.
+# The other two print NOTHING and are recorded as a header with no body under it: an empty list
+# and a mapping with no .models key are both legal "no catalog". That silence is as much of a
+# contract as the text, and it is what breaks the day someone "fixes" an empty catalog into an
+# error — a golden file that only collected messages would not have noticed.
+echo "=== Test 59: claude catalog messages match the golden file byte for byte ==="
+TDIR=$(mktemp -d); ACTUAL=$(mktemp)
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+for CASE in 'claude:\n  models: opus\n' \
+            'claude:\n  models:\n    - 5\n' \
+            'claude:\n  models:\n    - "-opus"\n' \
+            'claude:\n  models: [opus, "claude fable"]\n' \
+            'claude:\n  models: [opus, fable, opus]\n' \
+            'claude:\n  models: [opus, ""]\n' \
+            'claude:\n  models: []\n' \
+            'claude:\n  other_key: x\n' \
+            'claude: false\n'; do
+    { printf '%s\n' "$BASE"; printf "$CASE"; } > "$TDIR/config.yaml"
+    printf -- '--- case: %s\n' "$CASE" >> "$ACTUAL"
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>> "$ACTUAL"
+done
+# "the two blobs differ" is not actionable — print the diff, or the next maintainer has to
+# reconstruct the nine cases by hand before they can see WHICH message moved.
+if diff -u "$FIXTURES/golden-claude-catalog-messages.txt" "$ACTUAL" > "$TDIR/catalog.diff" 2>&1; then
+    PASS=$((PASS+1)); echo "  PASS: every claude.models message is byte-for-byte unchanged"
+else
+    FAIL=$((FAIL+1)); echo "  FAIL: a claude.models message moved (-golden / +actual):"
+    sed 's/^/    /' "$TDIR/catalog.diff"
+fi
+rm -rf "$TDIR" "$ACTUAL"
+
+# === Test 60: grok.model_efforts — per-model reasoning effort ===
+# `reasoning_effort` is ONE value for the whole section, but the CLI validates --effort PER
+# MODEL and rejects a bad pair at argument parsing (rc=1), before any API call. Measured
+# 2026-08-30 against grok 1.0.5: grok-4.6 accepts xhigh|high|medium|low, grok-4.5 only
+# high|medium|low, and most proxied entries all five. A catalog of more than one model
+# therefore cannot be served by a single level, and `model_efforts` overrides the section
+# default per model.
+#
+# It is validated exactly where `reasoning_effort` is — inside validate_grok, so `validate`,
+# `get-grok`, preflight's grok row AND `has_grok` see it (has_grok runs validate_grok), while
+# `list-grok-models` alone does not. Deliberate, not a weaker gate: a new key does not invent a
+# stricter path than the key it sits beside, and that laziness is what keeps a broken grok
+# section from grounding a codex-only review.
+echo "=== Test 60: grok.model_efforts ==="
+TDIR=$(mktemp -d); ERR=$(mktemp)
+ME_BASE='providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
+
+cp "$FIXTURES/valid-grok-model-efforts.yaml" "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts a well-formed model_efforts table" "0" "$RC"
+assert_stderr_lacks "…silently, its levels being known ones" "unknown value" "$ERR"
+
+assert_eq_str "get-grok <model> reads the table" \
+    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+assert_eq_str "…per model, not one value handed to every model" \
+    "high" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+assert_eq_str "a model absent from the table falls back to the section default" \
+    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok dks-ultra 2>/dev/null)"
+# The no-argument contract must not move: grok-exec passes "$MODEL", which is legitimately
+# empty on a direct call that names no model, and that call has to behave as it did before
+# this key existed.
+assert_eq_str "get-grok with no argument still prints the section default" \
+    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok 2>/dev/null)"
+assert_eq_str "…and an empty argument is that same case, not a lookup of the empty id" \
+    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok "" 2>/dev/null)"
+
+# A section carrying no table at all: the argument is accepted and changes nothing.
+cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
+assert_eq_str "get-grok <model> falls back when the section has no table" \
+    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+
+# An entry for a model outside the catalog is a HARD error, the twin of the rule that every
+# defaults.<preset>.grok_models entry must be a catalog member. A silent no-op is the failure
+# this key exists to prevent: the user believes that model runs at the level they wrote.
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.7: max\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects an entry for a model outside the catalog" "1" "$RC"
+assert_stderr_contains "names the offending key" "grok-4.7" "$ERR"
+assert_stderr_contains "…and says which list it must belong to" "grok.models" "$ERR"
+# `has_grok` is consumed as "can a grok reviewer be dispatched" — its own comment says so — and
+# a broken table makes dispatch impossible, so the flag has to see it. It used to answer 1 here,
+# and this suite pinned that as the contract: the orchestrator then offered grok, dispatched it,
+# and the reviewer died on `get-grok "$MODEL"` AFTER its run dir existed, which the guard reads
+# as STALLED — "killed mid-flight" — and STALLED means re-dispatch, so a max_redispatch round
+# went on an error no retry can fix. Found independently by all three reviewers of this branch.
+#
+# This is NOT the `ultra` incident returning. That was about a broken grok section GROUNDING the
+# environment; here rc=1 is what both orchestrators already handle by degrading grok ALONE and
+# printing the validator's message (commands/mesh-review.md Step 1), and what makes preflight
+# print INVALID on the grok row rather than MISSING. The unconditional type gate at the top of
+# validate_defaults is untouched, so an UNREFERENCED broken section still grounds nothing.
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok exits 1 on a broken model_efforts table" "1" "$RC"
+assert_stderr_contains "…with the validator's own message" "not in grok.models" "$ERR"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 >/dev/null 2>"$ERR"; RC=$?
+assert_exit "get-grok fails on it too, so a direct grok-exec call STOPs" "1" "$RC"
+
+# A preset that REFERENCES grok with a broken table must degrade grok alone and say so — the
+# same shape a broken catalog already gets, so `default` mode announces the missing reviewer
+# instead of dispatching one that cannot start. The other engines are untouched.
+{ printf '%b' "$ME_BASE"
+  printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.7: max\n'
+  printf 'defaults:\n  code_review:\n    builtin: [claude, grok]\n    grok_models: [grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$TDIR/gd.json" 2>"$ERR"; RC=$?
+assert_exit "get-defaults still answers when a preset names grok and the table is broken" "0" "$RC"
+assert_eq_str "…flagged degraded" "true" "$(jq -r '.grok_degraded' "$TDIR/gd.json" 2>/dev/null)"
+assert_eq_str "…grok dropped from builtin" "claude" "$(jq -r '.builtin | join(" ")' "$TDIR/gd.json" 2>/dev/null)"
+assert_eq_str "…and its model list emptied" "0" "$(jq '.grok_models | length' "$TDIR/gd.json" 2>/dev/null)"
+rm -f "$TDIR/gd.json"
+
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts: [xhigh]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a model_efforts that is not a mapping" "1" "$RC"
+assert_stderr_contains "explains the mapping requirement" "grok.model_efforts: must be a mapping" "$ERR"
+assert_stderr_lacks "no raw jq indexing noise" "Cannot index" "$ERR"
+
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.6: 3\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "rejects a non-string effort value" "1" "$RC"
+assert_stderr_contains "names the model whose value is wrong" "grok-4.6" "$ERR"
+assert_stderr_contains "…and the type it got" "got number" "$ERR"
+
+# Unknown levels WARN and pass, exactly as reasoning_effort does — xAI adds levels with new
+# models and the CLI is the final validator. Never an enum.
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.6: "ludicrous"\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts an unknown per-model level" "0" "$RC"
+assert_stderr_contains "…warning about it and naming the model" "grok.model_efforts" "$ERR"
+assert_stderr_contains "…and quoting the value" "ludicrous" "$ERR"
+assert_eq_str "…and passes it through to the CLI" \
+    "ludicrous" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+
+# An empty value means "unset", the reasoning_effort semantics: a user who comments a level out
+# and leaves the key behind means "let the section default decide", not "pass --effort ''".
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  reasoning_effort: high\n  model_efforts:\n    grok-4.6: ""\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+assert_exit "accepts an empty per-model value" "0" "$RC"
+assert_eq_str "…and treats it as unset, falling back to the section default" \
+    "high" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+
+# The table alone, with no section default: a model outside it resolves to nothing at all, and
+# grok-exec then passes no --effort and lets ~/.grok/config.toml decide.
+{ printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6, grok-4.5]\n  model_efforts:\n    grok-4.6: xhigh\n'; } > "$TDIR/config.yaml"
+assert_eq_str "the table works without a section default" \
+    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+assert_eq_str "…and an unlisted model resolves to nothing, so no --effort is passed" \
+    "" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+
+rm -rf "$TDIR" "$ERR"
+
+# === Test 61: a broken grok catalog must not let a PRESET error ground the environment ===
+# The two fail-closed preset rules — grok in builtin without grok_models, and grok_models
+# without grok in builtin — exist to stop the orchestrator dispatching a reviewer the agent
+# refuses to start for want of a MODEL. When the catalog itself does not validate, grok is
+# dropped from the read anyway, so those rules guard a dispatch that cannot happen while their
+# `die` grounds codex, gemini and claude — one line after the WARN has promised the opposite.
+# Both shapes measured 2026-08-30; both answered WARN-then-die before the gate.
+echo "=== Test 61: broken grok catalog + a preset error degrades, never grounds ==="
+for FX in broken-grok-preset-no-models broken-grok-preset-orphan-models; do
+    TDIR=$(mktemp -d); ERR=$(mktemp); GD_OUT=$(mktemp)
+    cp "$FIXTURES/$FX.yaml" "$TDIR/config.yaml"
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+    assert_exit "$FX: get-defaults answers instead of dying" "0" "$RC"
+    assert_eq_str "$FX: codex survives" "codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+    assert_eq_str "$FX: degradation flagged" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+    # The invariant the whole suppression rests on: while degraded, grok is never dispatchable.
+    # If either of these ever fails, the fail-closed rules must come back — a preset carrying
+    # grok with no model would then reach an orchestrator.
+    assert_eq_str "$FX: grok never left in builtin while degraded" "0" \
+        "$(jq '[.builtin[] | select(. == "grok")] | length' "$GD_OUT" 2>/dev/null)"
+    assert_eq_str "$FX: grok_models emptied while degraded" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
+    # Reported, not silenced: the preset error still reaches the user, as a WARN.
+    assert_stderr_contains "$FX: the preset error is still reported" "NOT fatal for that preset" "$ERR"
+    # And the strict path is untouched — validate_grok runs before validate_defaults in
+    # validate_all and dies there, so the gate above is unreachable from `validate`.
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+    assert_exit "$FX: validate still rejects the file" "1" "$RC"
+    rm -f "$ERR" "$GD_OUT"; rm -rf "$TDIR"
+done
+
+# A HEALTHY catalog must still make both preset rules fatal — the gate keys on the broken
+# catalog, never on the preset error itself.
+echo "=== Test 62: with a valid catalog both preset rules stay fatal ==="
+for PAIR in "builtin: [codex, grok]|grok_models is empty" "builtin: [codex]
+    grok_models: [grok-4.6]|is missing from"; do
+    PRESET="${PAIR%%|*}"; NEEDLE="${PAIR##*|}"
+    TDIR=$(mktemp -d); ERR=$(mktemp)
+    { printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\n'
+      printf 'models:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
+      printf 'codex:\n  model: gpt-5.5\n'
+      printf 'grok:\n  models: [grok-4.6]\n'
+      printf 'defaults:\n  code_review:\n    %s\n' "$PRESET"; } > "$TDIR/config.yaml"
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+    assert_exit "valid catalog: the preset error is still fatal" "1" "$RC"
+    assert_stderr_contains "…and says which rule" "$NEEDLE" "$ERR"
+    rm -f "$ERR"; rm -rf "$TDIR"
+done
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="

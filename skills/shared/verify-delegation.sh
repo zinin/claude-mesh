@@ -2,32 +2,35 @@
 # verify-delegation.sh — did a wrapper reviewer actually DELEGATE to its external
 # engine and produce a REAL review, or did it flip / stall / break?
 #
-# Wrapper reviewers (codex / gemini / ext-claude-code-reviewer) are supposed to invoke
-# their *-code-review skill, which runs the external engine and writes a run dir under
-# ${DATA}/runs/<engine>/.../. Non-deterministically they sometimes "flip": skip the
+# Wrapper reviewers (the codex / gemini / ext-claude / grok code-reviewers) are supposed to
+# invoke their *-code-review skill, which runs the external engine and writes a run dir
+# under ${DATA}/runs/<engine>/.../. Non-deterministically they sometimes "flip": skip the
 # skill and self-review inline on the session's own model — a false cross-validation that
 # leaves NO run dir. This script lets the /mesh-review orchestrator (Step 6.0) detect
 # that mechanically instead of trusting the agent's returned text.
 #
 # Usage:
 #   verify-delegation.sh <engine> <model|-> <since-epoch> [data-dir]
-#     engine      ext-claude | codex | gemini
-#     model       for ext-claude: "<provider>/<short>" (e.g. zai/glm); "-" for codex/gemini
+#     engine      ext-claude | codex | gemini | grok
+#     model       for ext-claude: "<provider>/<short>" (e.g. zai/glm); for grok: the model id
+#                 (e.g. grok-4.6); "-" for codex/gemini
 #     since-epoch only run dirs NAMED at/after this unix time are considered — the same
 #                 window watch-runs.sh applies, and creation time rather than mtime
 #                 (the orchestrator stamps this just before dispatch)
 #     data-dir    optional; defaults to config-loader resolve_plugin_data()
 #
-# ext-claude runs are judged on NT = the maximum num_turns across the SUCCESSFUL result
-# events of raw.jsonl (a stream can carry several: a background subagent splits it into a
-# "started" segment and the resumed one that delivers the review). Errored events and
-# non-integer counts never enter that maximum — see the ext-claude branch for why.
+# ext-claude and grok runs are judged on NT = the maximum num_turns across the SUCCESSFUL
+# result events of raw.jsonl (a stream can carry several: a background subagent splits it into
+# a "started" segment and the resumed one that delivers the review). Errored events and
+# non-integer counts never enter that maximum — see the ext-claude|grok branch for why. The two
+# engines share that branch because they share the wire format: grok-exec runs the CLI with
+# --output-format streaming-messages-json, which is what claude -p emits.
 #
 # Verdict on stdout + exit code:
-#   REAL=0     finalized + agentic — ext-claude: NT>1 & output.txt has non-whitespace content;
-#              codex/gemini: watchdog cleanup exit 0 (when logged), non-empty output, and a
-#              stream carrying a terminal event, at least one tool call, and no final result
-#              with an explicit status != "success"
+#   REAL=0     finalized + agentic — ext-claude/grok: NT>1 & output.txt has non-whitespace
+#              content; codex/gemini: watchdog cleanup exit 0 (when logged), non-empty output,
+#              and a stream carrying a terminal event, at least one tool call, and no final
+#              result with an explicit status != "success"
 #   STALLED=2  died mid-flight or delivered nothing usable: no final / no result event /
 #              no successful result event with an integer num_turns / final result event
 #              is_error:true / engine rc!=0 / agentic but blank output — and for codex/gemini:
@@ -41,22 +44,23 @@
 #              It answers what the signal COST, not whether one arrived: a run that had already
 #              delivered a usable review scores REAL however its tail died, on every engine.
 #              Every non-REAL outcome routes through `fail`, which promotes it to KILLED when
-#              the run was signalled — so BROKEN also becomes KILLED for ext-claude, where a
-#              truncated subagent-split stream is indistinguishable from a lone num_turns=1
+#              the run was signalled — so BROKEN also becomes KILLED for ext-claude and grok,
+#              where a truncated subagent-split stream is indistinguishable from num_turns=1
 #   FLIP=3     no TIMESTAMP-NAMED run dir of THIS session for this engine in the dispatch
 #              window — the reviewer self-reviewed on the session model, the model argument was
 #              truncated and BASE is a provider directory (its children never match the run-dir
 #              shape), or every run in the window carries another session's id, which the
 #              reason line names because it is the one FLIP that is not the reviewer's doing
-#   BROKEN=4   finalized but non-agentic — ext-claude: NT<=1; codex/gemini: terminal event but
-#              zero tool calls (thinking-only / DSML grammar / answered without reading code —
+#   BROKEN=4   finalized but non-agentic — ext-claude/grok: NT<=1; codex/gemini: terminal event
+#              but zero tool calls (thinking-only / DSML grammar / answered without reading code —
 #              retry futile; fix by swapping the model in config.yaml)
-#   DEGRADED=5 ext-claude only: everything above says REAL, but the result event's
+#   DEGRADED=5 ext-claude and grok only: everything above says REAL, but the result event's
 #              `permission_denials` is non-empty — the CLI refused N of the run's tool calls,
 #              so the reviewer was confined to its working directory and wrote the review
 #              without the sources it tried to open. KEEP the findings (they are real, just
-#              partial) and do NOT retry: the cause is the invocation, not the run. codex and
-#              gemini carry no such field and cannot reach this verdict
+#              partial) and do NOT retry: the cause sits outside the run — the invocation for
+#              ext-claude, the CLI's own permission config for grok. codex and gemini carry no
+#              such field and cannot reach this verdict
 set -u
 export LC_ALL=C   # run dir names are compared with [[ < ]] and sorted; keep both byte-wise.
                   # A UTF-8 collation ignores '-' when comparing, so the name window below
@@ -122,6 +126,23 @@ DATA_DIR="${4:-}"
 
 case "$ENGINE" in
     ext-claude) BASE="$DATA_DIR/runs/ext-claude/$MODEL" ;;
+    # A model is MANDATORY for grok, and '-' is not one: the run dirs live under
+    # runs/grok/<model>/, so a missing argument would resolve to runs/grok/- and report FLIP
+    # about a directory nothing ever writes. Usage error, exit 1, no verdict — the shape both
+    # orchestrators read as "fix the call", not as a verdict about the reviewer.
+    grok)
+        case "$MODEL" in
+            ''|'-') echo "verify-delegation: engine grok requires a model argument (e.g. grok-4.6), got '${MODEL:-}'" >&2; exit 1 ;;
+            # Same charset as GROK_IDENT_RE in config-loader.sh, and for the same reason: this
+            # value becomes a path component. A config-sourced model cannot fail it — the loader
+            # already rejected anything else — but this script is also a CLI entry point and BOTH
+            # orchestrators TEMPLATE the call, so the spelling that actually arrives wrong is
+            # ext-claude's <provider>/<short>. That resolved runs/grok/<provider>/<short>, a path
+            # nothing ever writes, and was then reported as FLIP — "this reviewer never
+            # delegated" — about a reviewer that ran and delivered its review.
+            *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "verify-delegation: engine grok model '$MODEL' is not a catalog id (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. grok-4.6; <provider>/<short> is ext-claude's spelling)" >&2; exit 1 ;;
+        esac
+        BASE="$DATA_DIR/runs/grok/$MODEL" ;;
     codex)      BASE="$DATA_DIR/runs/codex" ;;
     gemini)     BASE="$DATA_DIR/runs/gemini" ;;
     *) echo "verify-delegation: unknown engine '$ENGINE'" >&2; exit 1 ;;
@@ -282,6 +303,14 @@ fail() {   # fail <verdict> <reason> <exit-code>
 # on a later attempt — so one re-dispatch is a fair use of the budget, and a signalled run stays
 # KILLED.
 MIN_REVIEW_BYTES=400
+# "Read×2, Bash×1" — which tools were refused says whether the reviewer lost source files,
+# searches, or both, and a bare count does not. One function because both the BROKEN promotion
+# and the DEGRADED emit print it, from the same $DENIED_TOOLS.
+denial_breakdown() {
+    printf '%s\n' "$DENIED_TOOLS" | grep '[^[:space:]]' | sort | uniq -c |
+        sort -rn | awk '{printf "%s%s×%s", (n++ ? ", " : ""), $2, $1}'
+}
+
 out_bytes() { tr -d '[:space:]' < "$1" 2>/dev/null | wc -c | tr -d ' '; }
 
 # --- 2. did it finalize? (died mid-flight = no final symlink AND no root output.txt) ---
@@ -367,7 +396,15 @@ case "$ENGINE" in
             fail STALLED "the run used tools but output.txt holds only $OUT_BYTES non-space bytes — a notice or a fragment, not a review (the shortest genuine codex review in the archive is 1746)" 2
         emit REAL "delegated, non-empty review" 0
         ;;
-    ext-claude)
+    ext-claude|grok)
+        # grok joins this branch rather than getting one of its own because it shares the
+        # STREAM FORMAT, not merely the spirit: grok-exec runs the CLI with
+        # --output-format streaming-messages-json, which is the Claude Code wire format byte
+        # for byte, so is_error, num_turns and permission_denials are all on disk here too.
+        # Only two sentences below are engine-specific, and both are lifted into a
+        # `case "$ENGINE"` of their own; everything else states a fact about the stream, which
+        # is the same fact for both engines.
+        #
         # num_turns is the authoritative signal that the model did agentic work (read code /
         # ran tools). Classify on it directly — it is robust to HOW a non-review surfaces
         # (empty output, thinking-only, or DSML tool-grammar leaked as literal text), so it
@@ -400,6 +437,47 @@ case "$ENGINE" in
         LAST_ERR="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
             | jq -Rr 'fromjson? | objects | select(.type == "result") | .is_error' 2>/dev/null | tail -1)"
         if [ "$LAST_ERR" = "true" ]; then
+            # A failed run that took ZERO turns did not die mid-flight — it never started, and
+            # STALLED's "retry helps" is the wrong instruction for it. The shape is a CLI that
+            # refused its own arguments: measured 2026-08-30, `grok -m grok-4.6 --effort max`
+            # exits 1 in 4.7s BEFORE any API call with a single
+            # {"type":"result","is_error":true,"num_turns":0,"errors":[…]} event, which
+            # watchdog.sh:260 counts as attempt success and extract-result.py's F4 arm turns into
+            # a non-empty output.txt. Every retry dies identically, so a STALLED here spends the
+            # whole max_redispatch budget on an error no retry can fix.
+            #
+            # The discriminator is num_turns == 0 and NOTHING ELSE — specifically NOT "errors[]
+            # is non-empty", which was the first proposal. Measured across 1067 archived
+            # ext-claude run files: is_error:true with a non-empty errors[] is ORDINARY there
+            # (num_turns 2 through 62, dozens of runs, several of which a retry did fix), while
+            # num_turns == 0 appears in NONE of them — the archive's minimum is 1. So the errors[]
+            # form would have made retryable ext-claude failures terminal.
+            #
+            # This is the SAME judgement the `NT <= 1` arm below already makes for both engines,
+            # reaching runs that cannot get there because this check fires first. Read from the
+            # last result event whatever its is_error, since the NT scan below deliberately
+            # counts only successful events.
+            # `tail -1` FIRST, on the LINE, then read that one event. With the order reversed
+            # `numbers` dropped null and absent counts BEFORE tail saw them, so LAST_NT could
+            # come from an EARLIER event than the one being judged — the name and the sentence
+            # above it both promise the last. Two shapes it got wrong: a final event with no
+            # num_turns and an earlier success at 0 elected that 0 and fired BROKEN with "failed
+            # before taking a single turn" about a run that took several; a final null with an
+            # earlier 5 judged the failure by the healthy segment's count. Neither is reachable
+            # in 904 archived streams — the two readings disagree on exactly one, a file whose
+            # last line is truncated, and there neither value is 0 — so this corrects the read
+            # without moving any verdict that has ever been issued. Unparseable or absent now
+            # yields the empty string, which is not "0", so the terminal verdict does not fire.
+            LAST_NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null | tail -1 \
+                | jq -Rr 'fromjson? | objects | select(.type == "result")
+                          | .num_turns | numbers | select(. == floor and . >= 0)' 2>/dev/null)"
+            if [ "$LAST_NT" = "0" ]; then
+                ZERO_WHY="the engine failed before taking a single turn (num_turns=0) — an argument or start-up refusal, not a review that died mid-flight. Retry is futile: the same invocation is refused identically"
+                if [ "$ENGINE" = "grok" ]; then
+                    ZERO_WHY="$ZERO_WHY. The usual cause is a --effort the model does not accept: the CLI validates it PER MODEL at argument parsing, and the accepted sets differ (grok-4.6 takes xhigh|high|medium|low, not max). output.txt carries the CLI's own message; fix grok.reasoning_effort / grok.model_efforts in config.yaml, which is user-owned"
+                fi
+                fail BROKEN "$ZERO_WHY" 4
+            fi
             fail STALLED "final result event is_error:true — the delivered output is the failed segment, not a review" 2
         fi
 
@@ -411,24 +489,14 @@ case "$ENGINE" in
             # finalized dir but no successful result event carried an integer num_turns
             fail STALLED "no usable result event in raw.jsonl — killed mid-flight" 2
         fi
-        # `fail`, not `emit`, and this is the one BROKEN that a signal DOES move. A run that
-        # dispatches a background subagent answers "started" with num_turns 1 and delivers the
-        # review in a later segment of the same stream; a kill landing between the two leaves
-        # exactly this shape. BROKEN is terminal — mesh-review never retries it — and its reason
-        # tells the user to swap a model that did nothing wrong, so on a signalled run the honest
-        # verdict is KILLED. Unsignalled, it stays BROKEN.
-        if [ "$NT" -le 1 ]; then
-            fail BROKEN "num_turns=$NT: model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)" 4
-        fi
-        # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
-        OUT_BYTES="$(out_bytes "$OUT")"
-        if [ "$OUT_BYTES" = 0 ]; then
-            fail STALLED "num_turns=$NT but output.txt has no content — retry" 2
-        elif [ "$OUT_BYTES" -lt "$MIN_REVIEW_BYTES" ]; then
-            fail STALLED "num_turns=$NT but output.txt holds only $OUT_BYTES non-space bytes — the run worked and then delivered a notice, not a review (the shortest genuine review in the archive is 460)" 2
-        fi
-
-        # --- was it allowed to READ what it reviewed? ---
+        # Read the denials HERE, above the BROKEN promotion, because BOTH verdicts consume them.
+        # A run can be refused its very first tool call and stop after one turn: the promotion
+        # below then calls it BROKEN — rightly, a single turn is not a review whatever caused it
+        # — but its own text says "retry futile", i.e. swap the model, about a model that did
+        # nothing wrong, while the branch that knows better sits past the floor checks and is
+        # never reached. Reading the field once, before both, is what lets the BROKEN reason name
+        # the refusal while the DEGRADED reason below keeps its own wording. The EMIT stays down
+        # there: a denied run that did review must still pass the floor checks first.
         # Every check above can pass on a run that never got outside its own cwd. Under `-p`
         # a permission prompt has nobody to answer it, so the CLI auto-denies: the reviewer
         # loses the sibling repositories it needs to check an API signature against real
@@ -455,17 +523,65 @@ case "$ENGINE" in
         # the same file by the same jq; a broken jq, an unreadable $RAW or a stream with no
         # parsable result event leaves NT empty and exits STALLED before reaching this line. A
         # result event that simply omits the field (an older build) yields no entries and stays
-        # REAL — absent is not denied.
+        # REAL — absent is not denied. Note what that costs in the other direction: DENIED=0 is
+        # "no denials" and "no such field" at once, and nothing here can tell them apart. On
+        # grok every measured run has been the second case — the field was absent from every
+        # result event observed while this branch was written — so a grok run scoring REAL is
+        # not evidence that its CLI refused nothing, and DEGRADED stays a verdict grok is
+        # eligible for rather than one it has been seen to reach. Read raw.jsonl to settle it.
         DENIED_TOOLS="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
             | jq -Rr 'fromjson? | objects | select(.type == "result" and .is_error == false)
                       | .permission_denials | arrays | .[] | .tool_name // "unknown"' 2>/dev/null)"
         DENIED="$(printf '%s\n' "$DENIED_TOOLS" | grep -c '[^[:space:]]')"
+
+        # `fail`, not `emit`, and this is the one BROKEN that a signal DOES move. A run that
+        # dispatches a background subagent answers "started" with num_turns 1 and delivers the
+        # review in a later segment of the same stream; a kill landing between the two leaves
+        # exactly this shape. BROKEN is terminal — mesh-review never retries it — and its reason
+        # tells the user to swap a model that did nothing wrong, so on a signalled run the honest
+        # verdict is KILLED. Unsignalled, it stays BROKEN.
+        if [ "$NT" -le 1 ]; then
+            BROKEN_WHY="model produced no agentic review (thinking-only / DSML / answered without reading code — retry futile)"
+            if [ "$DENIED" -gt 0 ]; then
+                BROKEN_WHY="the CLI refused $DENIED tool call(s) ($(denial_breakdown)) and the model stopped after one turn — a permission problem, not an unsuitable model. Check the CLI's own permission configuration before swapping the model; the verdict stays terminal because one turn is not a review"
+            fi
+            fail BROKEN "num_turns=$NT: $BROKEN_WHY" 4
+        fi
+        # The floor is one number for both engines; the sentence that explains it is not.
+        # The archive citation (336 runs) is a fact about ext-claude, so ext-claude is what
+        # names it — not `*)`. grok has no archive yet and quoting one would be a measurement
+        # nobody made, and the same is true of any engine appended to this branch later: the
+        # default arm states the floor itself, which is true of every engine judged by it.
+        case "$ENGINE" in
+            ext-claude) FLOOR_NOTE="the shortest genuine review in the archive is 460" ;;
+            *)          FLOOR_NOTE="the floor is $MIN_REVIEW_BYTES non-space bytes" ;;
+        esac
+        # num_turns > 1: genuinely agentic — require output with actual content to call it REAL.
+        OUT_BYTES="$(out_bytes "$OUT")"
+        if [ "$OUT_BYTES" = 0 ]; then
+            fail STALLED "num_turns=$NT but output.txt has no content — retry" 2
+        elif [ "$OUT_BYTES" -lt "$MIN_REVIEW_BYTES" ]; then
+            fail STALLED "num_turns=$NT but output.txt holds only $OUT_BYTES non-space bytes — the run worked and then delivered a notice, not a review ($FLOOR_NOTE)" 2
+        fi
+
+        # --- was it allowed to READ what it reviewed? ---
+        # DENIED and DENIED_TOOLS are computed above, before the BROKEN promotion, because that
+        # promotion consumes them too — see the comment there. This branch owns only what to DO
+        # about a refusal on a run that WAS agentic.
         if [ "$DENIED" -gt 0 ]; then
-            # "Read×2, Bash×1" — which tools were refused says whether the reviewer lost source
-            # files, searches, or both, and a bare count does not.
-            BREAKDOWN="$(printf '%s\n' "$DENIED_TOOLS" | grep '[^[:space:]]' | sort | uniq -c |
-                         sort -rn | awk '{printf "%s%s×%s", (n++ ? ", " : ""), $2, $1}')"
-            emit DEGRADED "num_turns=$NT but the CLI refused $DENIED tool call(s) ($BREAKDOWN) — the reviewer was confined to its working directory and reviewed on incomplete context. Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The remedy is the user's, not an agent's: the ext-claude run needs --permission-mode bypassPermissions, and an installed plugin only picks that up through a release" 5
+            BREAKDOWN="$(denial_breakdown)"
+            # The refusal is the same event on both engines; what to DO about it is not.
+            # ext-claude's remedy is the missing flag — grok-exec already passes it, so naming
+            # it here would send the reader after a setting that cannot be the cause.
+            # Each arm is named, and the default one names no engine: an engine appended to
+            # this branch's `ext-claude|grok)` head would otherwise be handed ext-claude's
+            # remedy — a flag its own exec skill may already pass, or may not accept at all.
+            case "$ENGINE" in
+                grok)       DENIAL_REMEDY="grok-exec already passes --permission-mode bypassPermissions, so this is not the missing-flag case: the CLI refused for a reason of its own (a sandbox profile, or a deny rule in ~/.grok). Keep the findings; do NOT re-dispatch, and check the CLI's own permission configuration" ;;
+                ext-claude) DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The remedy is the user's, not an agent's: the ext-claude run needs --permission-mode bypassPermissions, and an installed plugin only picks that up through a release" ;;
+                *)          DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The cause sits outside the run: read how this engine's exec skill invokes the CLI, and the CLI's own permission configuration" ;;
+            esac
+            emit DEGRADED "num_turns=$NT but the CLI refused $DENIED tool call(s) ($BREAKDOWN) — the reviewer was confined to its working directory and reviewed on incomplete context. $DENIAL_REMEDY" 5
         fi
         emit REAL "delegated, agentic review (num_turns=$NT)" 0
         ;;

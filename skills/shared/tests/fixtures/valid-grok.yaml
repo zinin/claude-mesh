@@ -1,0 +1,12 @@
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+grok:
+  models: [grok-4.6, grok-4.5]
+  reasoning_effort: xhigh

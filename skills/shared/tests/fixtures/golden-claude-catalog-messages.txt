@@ -1,0 +1,16 @@
+--- case: claude:\n  models: opus\n
+config-loader: claude.models: must be a list of Claude model aliases, got string
+--- case: claude:\n  models:\n    - 5\n
+config-loader: claude.models[0]: must be a string (got number) — quote it, e.g. - "opus"
+--- case: claude:\n  models:\n    - "-opus"\n
+config-loader: claude.models[0]: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got "-opus"
+--- case: claude:\n  models: [opus, "claude fable"]\n
+config-loader: claude.models[1]: must start with a letter/digit and match [A-Za-z0-9._:@-] (a model alias or id), got "claude fable"
+--- case: claude:\n  models: [opus, fable, opus]\n
+config-loader: claude.models[2]: duplicate model "opus" (two reviewers would be indistinguishable)
+--- case: claude:\n  models: [opus, ""]\n
+config-loader: claude.models[1]: empty value
+--- case: claude:\n  models: []\n
+--- case: claude:\n  other_key: x\n
+--- case: claude: false\n
+config-loader: claude: must be a mapping with a models key (got boolean)

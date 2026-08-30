@@ -673,6 +673,9 @@ assert_eq "verdict DEGRADED" "DEGRADED" "$VERDICT"
 assert_eq "exit 5" "5" "$RC"
 assert_eq "reason counts exactly 1 denial" "1" "$(reason_count)"
 assert_match "reason names the refused tool" "Read" "$REASON"
+# The remedy sentence became a `case "$ENGINE"` arm when grok joined this branch, so pin the
+# ext-claude one too — otherwise swapping the two arms is only half-detected, by the grok test.
+assert_match "keeps the ext-claude remedy" "the ext-claude run needs" "$REASON"
 rm -rf "$TDIR"
 
 echo "=== Test: ext-claude DEGRADED counts every denial and names each tool ==="
@@ -1186,6 +1189,9 @@ run_full ext-claude deepseek/v4-pro 1 "$TDIR"
 assert_eq "verdict STALLED" "STALLED" "$VERDICT"
 assert_eq "exit 2" "2" "$RC"
 assert_match "reason names the delivered length" "non-space bytes" "$REASON"
+# Same reason as the DEGRADED remedy above: the sentence that EXPLAINS the floor is a per-engine
+# `case` arm now, and ext-claude's is the measured archive number rather than the bare floor.
+assert_match "cites the ext-claude archive floor" "archive is 460" "$REASON"
 rm -rf "$TDIR"
 
 # A short review is still a review. The floor is deliberately below the shortest genuine one in
@@ -1245,6 +1251,230 @@ EOF
 run ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict KILLED" "KILLED" "$VERDICT"
 assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+# === grok: the engine shares ext-claude's classification, because it shares its stream format ===
+# grok --output-format streaming-messages-json emits the Claude Code wire format verbatim, so
+# every signal the ext-claude branch reads — is_error, num_turns, permission_denials — is on
+# disk here too. These tests exist to keep the two wired together: a future edit that splits
+# the branch must keep grok scoring the same way.
+echo "=== Test: grok FLIP (no run dir) ==="
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/runs/grok/grok-4.6"
+run grok grok-4.6 1 "$TDIR"
+assert_eq "verdict FLIP" "FLIP" "$VERDICT"
+assert_eq "exit 3" "3" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: grok REAL (num_turns 12, real review) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-00-00-1000-review)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":12}' > "$rd/raw.jsonl"
+run grok grok-4.6 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: grok BROKEN (num_turns 1 — answered without reading code) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-00-00-1000-lazy)
+mk_output "$rd/output.txt" 'Looks fine to me.'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$rd/raw.jsonl"
+run grok grok-4.6 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: grok STALLED (torn stream, no result event) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.5" 2026-08-28-11-00-00-1000-torn)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}' > "$rd/raw.jsonl"
+run grok grok-4.5 1 "$TDIR"
+assert_eq "verdict STALLED" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# Design §5 promises grok coverage for REAL, STALLED, BROKEN, FLIP, DEGRADED **and KILLED**;
+# KILLED and the engine-specific STALLED floor note are the two the first draft omitted.
+echo "=== Test: grok KILLED (watchdog cleanup 143, no watchdog.exit) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-30-00-1000-killed)
+printf '%s\n' '{"ts":"2026-08-28T11:40:00+0300","event":"cleanup","attempt":1,"details":{"exit_code":143}}' > "$rd/watchdog.log"
+: > "$rd/output.txt"
+run_full grok grok-4.6 1 "$TDIR"
+assert_eq "verdict KILLED" "KILLED" "$VERDICT"
+assert_eq "exit 6" "6" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: grok STALLED floor note is grok's, not ext-claude's archive number ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-45-00-1000-short)
+# Written directly and NOT with mk_output: that helper pads the headline with five filler lines
+# — 527 non-space bytes, above MIN_REVIEW_BYTES=400 — so the run would score REAL and the floor
+# branch under test would never execute. The suite's other floor tests write theirs the same way.
+printf 'ok\n' > "$rd/output.txt"
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":4}' > "$rd/raw.jsonl"
+run_full grok grok-4.6 1 "$TDIR"
+# "the shortest genuine review in the archive is 460" is a measured ext-claude fact; quoting it
+# for grok would cite evidence that does not exist for this engine.
+assert_no_match "no ext-claude archive number" "archive" "$REASON"
+assert_match "names the floor itself" "400 non-space" "$REASON"
+rm -rf "$TDIR"
+
+echo "=== Test: grok DEGRADED (denials on an otherwise real review) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-00-00-1000-denied)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":9,"permission_denials":[{"tool_name":"Read"},{"tool_name":"Bash"}]}' > "$rd/raw.jsonl"
+run_full grok grok-4.6 1 "$TDIR"
+assert_eq "verdict DEGRADED" "DEGRADED" "$VERDICT"
+assert_eq "exit 5" "5" "$RC"
+assert_eq "counts both denials" "2" "$(reason_count)"
+# The ext-claude remedy prescribes a flag grok already passes — saying it here would send the
+# reader after a setting that is not the cause.
+assert_no_match "does not prescribe the ext-claude remedy" "the ext-claude run needs" "$REASON"
+# assert_no_match alone would also pass on an EMPTY or generic reason, so pin the grok text too:
+# the branch must say something true about grok, not merely avoid saying something false.
+assert_match "names the grok remedy" "grok-exec already passes" "$REASON"
+rm -rf "$TDIR"
+
+echo "=== Test: grok BROKEN — a single turn because the CLI refused the first tool call ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-28-11-30-00-1000-denied-first)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"permission_denials":[{"tool_name":"Bash"},{"tool_name":"Read"}]}' > "$rd/raw.jsonl"
+run_full grok grok-4.6 1 "$TDIR"
+# The VERDICT does not move: one turn is not a review whatever caused it, and BROKEN is
+# terminal for the right reason. What must move is the DIAGNOSIS. BROKEN's own text says
+# "retry futile" — swap the model — about a model that did nothing wrong, while the DEGRADED
+# branch that knows better is 45 lines further down and unreachable from here.
+assert_eq "verdict stays BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+assert_match "names the refusal and its count" "refused 2 tool call" "$REASON"
+assert_match "…and which tools" "Bash" "$REASON"
+assert_no_match "does not send the user off to swap the model" "retry futile" "$REASON"
+rm -rf "$TDIR"
+
+echo "=== Test: grok requires a model argument ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/grok"
+run grok - 1 "$TDIR"
+assert_eq "exit 1 (usage error, no verdict)" "1" "$RC"
+assert_eq "no verdict printed" "" "$VERDICT"
+rm -rf "$TDIR"
+
+echo "=== Test: grok rejects a model that is not a catalog id ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/grok"
+# `<provider>/<short>` is ext-claude's spelling, and both orchestrators TEMPLATE this call, so
+# it is the copy-paste that actually happens. It used to pass the guard and resolve
+# runs/grok/zai/glm — a path nothing ever writes — reported as FLIP, i.e. "this reviewer never
+# delegated", about a reviewer that ran and delivered. Usage error, not a verdict.
+run grok zai/glm 1 "$TDIR"
+assert_eq "slashed model: exit 1 (usage error)" "1" "$RC"
+assert_eq "slashed model: no verdict printed" "" "$VERDICT"
+# Anchored at the first character, like GROK_IDENT_RE: a leading dot would climb out of the
+# runs tree once joined to a path.
+run grok .hidden 1 "$TDIR"
+assert_eq "leading dot: exit 1 (usage error)" "1" "$RC"
+# The positive control that stops the new pattern from rejecting everything: a real catalog id
+# reaches a VERDICT. There is no run dir, so that verdict is FLIP (exit 3), not a usage error.
+run grok grok-4.6 1 "$TDIR"
+assert_eq "a real catalog id still reaches a verdict" "3" "$RC"
+assert_eq "…and that verdict is FLIP" "FLIP" "$VERDICT"
+rm -rf "$TDIR"
+
+# === A failed run that took ZERO turns is BROKEN, not STALLED ===
+# The shape a CLI produces when it refuses its own arguments. Measured 2026-08-30:
+# `grok -m grok-4.6 --effort max` exits 1 in 4.7s BEFORE any API call, emitting one
+# {"type":"result","is_error":true,"num_turns":0,"errors":[…]} event. watchdog.sh counts that as
+# attempt success and extract-result.py's F4 arm makes output.txt non-empty, so the run reaches
+# the guard looking finished. Scored STALLED it prescribes a re-dispatch, and the whole
+# max_redispatch budget is spent on 4.7-second deaths.
+echo "=== Test 66: grok BROKEN (is_error, num_turns 0 — an argument refusal) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-30-16-32-35-2064858-review-feat-grok-engine)
+mk_output "$rd/output.txt" 'API Error: unknown effort level'; ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["--effort/--reasoning-effort: unknown effort level '"'"'max'"'"'; use one of: xhigh, high, medium, low"]}' > "$rd/raw.jsonl"
+run_full grok grok-4.6 1 "$TDIR"
+assert_eq "verdict BROKEN, not STALLED" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+assert_match "reason names the zero turn count" "num_turns=0" "$REASON"
+assert_match "reason names the per-model effort cause" "PER MODEL" "$REASON"
+assert_no_match "reason does not prescribe a retry" "retry helps" "$REASON"
+rm -rf "$TDIR"
+
+# The condition is engine-agnostic — a run that took no turn did no work whatever produced it —
+# but the grok-specific --effort sentence must not be told to an ext-claude user.
+echo "=== Test 67: ext-claude with num_turns 0 is BROKEN too, without grok's remedy ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-12-00-00-1000-zero-turns)
+mk_output "$rd/output.txt" 'API Error'; ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0}' > "$rd/raw.jsonl"
+run_full ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_match "reason names the zero turn count" "num_turns=0" "$REASON"
+assert_no_match "no grok effort remedy on ext-claude" "model_efforts" "$REASON"
+rm -rf "$TDIR"
+
+# THE REFUTATION, pinned. The first proposal was to treat "is_error:true with a non-empty
+# errors[]" as BROKEN. Measured across 1067 archived ext-claude run files: that shape is
+# ORDINARY there — num_turns 2 through 62, dozens of runs — while num_turns == 0 appears in
+# NONE of them (the archive's minimum is 1). Had errors[] entered the condition, retryable
+# ext-claude failures would have become terminal. This test is what stops it coming back.
+echo "=== Test 68: ext-claude is_error with errors[] but real turns stays STALLED ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/deepseek/v4-pro" 2026-08-30-12-30-00-1000-mid-flight)
+mk_output "$rd/output.txt" 'partial'; ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":18,"errors":["Insufficient Balance"]}' > "$rd/raw.jsonl"
+run ext-claude deepseek/v4-pro 1 "$TDIR"
+assert_eq "a non-empty errors[] alone does NOT make it BROKEN" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
+# === Test 69: the zero-turn read must come from the LAST result event, not the last INTEGER ===
+# The pipeline dropped null/absent counts BEFORE `tail -1`, so LAST_NT could be elected from an
+# EARLIER event than the one being judged. Both directions below were reachable on a split
+# stream — progress-monitor.sh appends every segment to one raw.jsonl — and the first is the
+# damaging one: BROKEN is the verdict mesh-review never retries, so a run whose body did real
+# work was dropped terminally under a reason ("failed before taking a single turn") that was
+# false about it. The control that follows keeps the arm working where it should.
+echo "=== Test 69: zero-turn verdict reads the last event, not the last integer ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-13-00-00-1000-split-no-nt)
+mk_output "$rd/output.txt" 'a real review'; ln -s attempt-1 "$rd/final"
+{ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":0}'
+  echo '{"type":"result","subtype":"error","is_error":true}'; } > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "a final event with NO num_turns does not inherit an earlier 0" "STALLED" "$VERDICT"
+rm -rf "$TDIR"
+
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-13-10-00-1000-split-null-nt)
+mk_output "$rd/output.txt" 'a real review'; ln -s attempt-1 "$rd/final"
+{ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":5}'
+  echo '{"type":"result","subtype":"error","is_error":true,"num_turns":null}'; } > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "…nor is a final null judged by the healthy segment's count" "STALLED" "$VERDICT"
+rm -rf "$TDIR"
+
+# CONTROL: the arm still fires when the last event genuinely reports zero, even behind a
+# successful earlier segment. Without this the two assertions above are satisfied by simply
+# deleting the arm.
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-13-20-00-1000-split-real-zero)
+mk_output "$rd/output.txt" 'a real review'; ln -s attempt-1 "$rd/final"
+{ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":7}'
+  echo '{"type":"result","subtype":"error","is_error":true,"num_turns":0}'; } > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "a genuine final zero still scores BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
 rm -rf "$TDIR"
 
 echo ""

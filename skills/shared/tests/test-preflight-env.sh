@@ -426,7 +426,7 @@ assert_match "…naming the executor gap"       "ext-claude prerequisites absent
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" \
           SHIM_HTTP_CODE=000 PREFLIGHT_SKIP_NETWORK=1
 assert_eq "skip-network -> provider UNKNOWN"  UNKNOWN "$(field provider:zai "$OUT")"
-assert_match "…and says why"                  "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
+assert_match "…and says the network was skipped" "skipped by PREFLIGHT_SKIP_NETWORK" "$OUT"
 
 # Secrets: the token from the fixture must not appear anywhere, and no exported env file
 # may survive the run (TMPDIR is private to this run, so a leftover is visible).
@@ -444,10 +444,11 @@ echo "== Task 3: CLI, git and clipboard rows =="
 # codex and gemini ship via npm, so a developer's PATH very likely has both — and then
 # "section present, CLI absent" could never be reached and the suite would be reporting the
 # laptop instead of the fixture.
-mkfarm "$WORK/nocli" codex gemini
+mkfarm "$WORK/nocli" codex gemini grok
 # `timeout` is GNU-only: absent on a stock macOS, which is exactly the unconfigured machine
 # this probe exists for.
 mkfarm "$WORK/notimeout" timeout
+mkfarm "$WORK/nopy3" python3
 
 # Both CLIs, shimmed. EVERY scenario below pins the CLI's presence or absence explicitly —
 # neither verdict may depend on what the machine running the suite happens to have installed.
@@ -473,7 +474,7 @@ chmod +x "$WORK/cli-gemini/gemini"
 # thing that can produce MISSING, on this machine and on a bare CI box alike.
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/cli-gemini:$PATH"
 assert_eq   "no codex section -> MISSING"      MISSING "$(field codex "$OUT")"
-assert_match "and says why"                    "no codex: section" "$OUT"
+assert_match "and says the codex section is absent" "no codex: section" "$OUT"
 assert_eq   "no gemini section -> MISSING"     MISSING "$(field gemini "$OUT")"
 
 # A section that exists but that the typed getter rejects: the UI would offer it and then die
@@ -509,6 +510,171 @@ assert_eq   "no curl -> codex UNKNOWN"         UNKNOWN "$(field codex "$OUT")"
 assert_eq   "no curl -> its own row"           MISSING "$(field curl "$OUT")"
 assert_no_match "…and announces no probe it never made" "probing codex" "$ERR"
 
+# --- grok ---------------------------------------------------------------------------------
+# Unlike codex and gemini, grok's reachability is probed with the CLI itself: `grok models`
+# answers only when the machine has network AND a live login, and the subscription path never
+# touches the public api.x.ai an HTTP probe would have to guess at.
+mkdir -p "$WORK/cli-grok"
+cat > "$WORK/cli-grok/grok" <<'SH'
+#!/usr/bin/env bash
+# Records EVERY invocation, before any branch. "The flag skipped the probe" is a claim about
+# what did NOT run, and no assertion on the report can make it: the skip row and the HTTP
+# fallback's row carry the same sentence, so "ran the CLI, then printed the skip message
+# anyway" is invisible from stdout. Defaults to /dev/null, so the scenarios that do not set
+# GROK_SHIM_LOG are unaffected by it.
+printf '%s\n' "$*" >> "${GROK_SHIM_LOG:-/dev/null}"
+case "${1:-}" in
+  models) [ "${GROK_SHIM_FAIL:-0}" = 1 ] && { echo "not logged in" >&2; exit 1; }
+          printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n' ;;
+  *)      exit 0 ;;
+esac
+SH
+chmod +x "$WORK/cli-grok/grok"
+GROK_LOG="$WORK/grok-calls.log"
+
+# No grok: section -> MISSING, and the reason says the UI will not offer it.
+run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/cli-grok:$PATH"
+assert_eq   "no grok section -> MISSING"    MISSING "$(field grok "$OUT")"
+assert_match "and says the grok section is absent" "no grok: section" "$OUT"
+
+# Section present, CLI present, `grok models` answers -> OK, and the catalog reaches the summary.
+: > "$GROK_LOG"
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
+          GROK_SHIM_LOG="$GROK_LOG"
+assert_eq   "grok CLI + login -> OK"        OK "$(field grok "$OUT")"
+assert_match "summary names each grok model" "grok:grok-4.6" "$OUT"
+assert_match "…including the second one"     "grok:grok-4.5" "$OUT"
+# The POSITIVE CONTROL for the skip-network scenario below, which asserts this same log is
+# empty: an unset GROK_SHIM_LOG, a shim that never records, or a PATH that finds a different
+# grok would all satisfy "empty" for the wrong reason. Here the identical plumbing must record
+# exactly one `models` call, so "empty" there can only mean the probe was not run.
+assert_eq   "…and the CLI really was invoked, once, as \`grok models\`" "models" "$(cat "$GROK_LOG")"
+
+# The CLI is there but not logged in -> NO-NETWORK, and the hint names the fix.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1
+assert_eq   "grok models fails -> NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
+assert_match "…and suggests logging in"       "grok login" "$OUT"
+
+# A machine without python3 must not be told a grok reviewer is available. grok-exec STOPs on
+# shared/extract-result.py — the only one of the three CLI engines that does — while `bc` only
+# WARNs there and the `claude` binary is never invoked, so the gate is on python3 alone and not
+# on the composite EXT_DEPS_MISSING. It matters because commands/*-fresh-session.md call
+# `SUMMARY available` the eligibility decision in so many words, and `default` is
+# non-interactive: nobody is there to cross-read the deps row and infer the dispatch will die.
+# The grok ROW stays OK on purpose — the CLI really is installed and really did answer; it is
+# the SUMMARY, the line that decides, which must not advertise it.
+: > "$GROK_LOG"
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$WORK/nopy3" \
+          GROK_SHIM_LOG="$GROK_LOG"
+assert_eq   "no python3 -> the grok row still reads OK" OK "$(field grok "$OUT")"
+assert_match "…but SUMMARY withdraws it, naming why" "grok (python3 missing" "$OUT"
+# The positive half FIRST, so the negative one below cannot pass against an empty haystack —
+# a grep that matched nothing would satisfy assert_no_match for the wrong reason, which this
+# suite has been bitten by before.
+assert_match "…the available line is present and non-empty" "claude" "$(grep '^SUMMARY available' <<<"$OUT")"
+assert_no_match "…and no grok model is advertised as available" "grok:grok-4.6" "$(grep '^SUMMARY available' <<<"$OUT")"
+assert_match "…while the deps row names grok, not ext-claude alone" "grok-exec STOPs without python3" "$OUT"
+
+# An UNUSABLE PREFLIGHT_CLI_TIMEOUT must not be able to invent a verdict. The budget is pasted
+# straight into `timeout "$CLI_TIMEOUT" $5`, so before it joined the normalisation block above
+# HTTP_TIMEOUT and GIT_TIMEOUT, `--help` made timeout(1) print its usage and exit 0 WITHOUT
+# running the probe — and the row then read `grok OK ... answered` about a CLI that was never
+# contacted, putting grok into SUMMARY available, which is exactly what the *-fresh-session
+# commands read to decide whether `default` is safe. The same three shapes the comment above
+# the normalisation block already records for PREFLIGHT_GIT_TIMEOUT. The shim FAILS throughout,
+# so OK is only reachable by not running it; the invocation log discriminates "probe ran and
+# failed" from "probe never ran", which the row text alone cannot.
+for _bad in --help abc 0; do
+    : > "$GROK_LOG"          # per-iteration, or the log accumulates and iteration 2 fails
+    run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
+              GROK_SHIM_FAIL=1 GROK_SHIM_LOG="$GROK_LOG" PREFLIGHT_CLI_TIMEOUT="$_bad"
+    assert_eq "unusable PREFLIGHT_CLI_TIMEOUT=$_bad -> still NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
+    assert_eq "…and the probe really was run once under $_bad" "models" "$(cat "$GROK_LOG")"
+done
+unset _bad
+
+# Section present, binary absent -> MISSING (the section gate passes, the CLI gate does not).
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli"
+assert_eq   "grok binary absent -> MISSING"  MISSING "$(field grok "$OUT")"
+
+# A malformed grok: section is INVALID before any CLI or network claim — same order as codex.
+run_probe broken-grok-valid-codex.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_eq   "malformed grok section -> INVALID" INVALID "$(field grok "$OUT")"
+assert_match "…with the validator's own reason" "grok.models" "$OUT"
+
+# The REFERENCED broken catalog — config.example.yaml's own shape with one typo, and the case
+# the fixture above cannot reach: there `builtin: [codex]` never mentions grok. Here BOTH
+# presets do. The invariant under test is the whole point of the lazy check: CONFIG stays OK
+# and every other row keeps its own verdict, while grok alone reports INVALID. Until the
+# loader degraded instead of dying, this printed `config INVALID` with SKIPPED on every row —
+# claude and codex included — off one typo in a user-owned file, which is the `ultra`
+# incident's shape. The defaults line is asserted SCOPED: an unscoped "no grok" over the whole
+# report is false by construction, because the grok row itself says grok.
+run_probe broken-grok-referenced.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_eq   "referenced broken grok catalog -> config stays OK" OK "$(field config "$OUT")"
+assert_eq   "…and grok alone is INVALID"        INVALID "$(field grok "$OUT")"
+assert_eq   "…claude-models keeps its verdict"  OK      "$(field claude-models "$OUT")"
+# NB: $OUT holds the report TEXT, not a path — grep it with a here-string. `grep … "$OUT"`
+# reads it as a FILENAME, and the resulting error message becomes the haystack: the no_match
+# below then passes against grep's own "No such file or directory", asserting nothing.
+assert_match "…claude survives into available"  "claude:opus" "$(grep 'SUMMARY available' <<<"$OUT")"
+assert_no_match "…and the preset dispatches no grok" "grok" "$(grep 'SUMMARY defaults code_review' <<<"$OUT")"
+
+# PREFLIGHT_SKIP_NETWORK must skip the command probe too, not run it silently. TWO assertions
+# are needed and neither is redundant. The message is matched against the grok ROW, not the
+# whole report: provider:zai and git-remote print that same sentence in this very scenario, so
+# an unscoped substring test is green even when the grok row says nothing of the kind — and it
+# WAS, against a build with no grok row at all. The shim's log is the other half: it separates
+# "skipped" from "ran the CLI, then printed the skip message anyway", which stdout cannot.
+: > "$GROK_LOG"
+run_probe valid-grok.yaml PREFLIGHT_SKIP_NETWORK=1 PATH="$WORK/cli-grok:$SHIM:$PATH" \
+          GROK_SHIM_LOG="$GROK_LOG"
+assert_eq   "skip-network -> UNKNOWN"        UNKNOWN "$(field grok "$OUT")"
+assert_match "…named as the flag's doing"    "skipped by PREFLIGHT_SKIP_NETWORK" "$(grep '^grok' <<<"$OUT")"
+assert_eq   "…and the CLI was never invoked" "" "$(cat "$GROK_LOG")"
+
+# No timeout(1): `timeout … grok models` would exit 127 and the row would read NO-NETWORK — a
+# not-logged-in accusation fabricated out of a missing binary, on a machine that is online and
+# logged in. Exactly the defect the git-remote gate below exists to prevent, and the same farm.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$WORK/notimeout"
+assert_eq   "no timeout(1) -> grok UNKNOWN, not NO-NETWORK" UNKNOWN "$(field grok "$OUT")"
+assert_match "…naming the missing binary"                   "timeout" "$(grep '^grok' <<<"$OUT")"
+
+# The command probe has its OWN budget, PREFLIGHT_CLI_TIMEOUT, and does not share the HTTP one.
+# `grok models` is a full CLI start plus an authenticated round-trip — measured 1.83-2.30s on
+# grok 1.0.13, against 1.0-1.2s when the design wrote the shared 5s budget around "roughly
+# fourfold headroom" — while codex's and gemini's probes are a curl. A slow-but-healthy CLI
+# timing out prints "no network, or not logged in" as a fact and drops grok from SUMMARY, which
+# the *-fresh-session commands read to decide whether `default` is safe: a false negative
+# feeding an automatic decision.
+mkdir -p "$WORK/cli-grok-slow"
+cat > "$WORK/cli-grok-slow/grok" <<'SH'
+#!/usr/bin/env bash
+# Slower than a 1s budget, far inside the 15s default. Nothing here depends on the real CLI.
+case "${1:-}" in
+  models) sleep 2; printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n' ;;
+  *)      exit 0 ;;
+esac
+SH
+chmod +x "$WORK/cli-grok-slow/grok"
+
+# THE SEPARATION, and the assertion that would have been red before the split: squeezing the
+# HTTP budget must no longer touch the grok row. Measured on the pre-fix build, the very same
+# invocation produced `grok NO-NETWORK`.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok-slow:$SHIM:$PATH" \
+          PREFLIGHT_HTTP_TIMEOUT=1
+assert_eq   "a squeezed HTTP budget no longer fails the grok row" OK "$(field grok "$OUT")"
+
+# …and the CLI budget does govern it.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok-slow:$SHIM:$PATH" \
+          PREFLIGHT_CLI_TIMEOUT=1
+assert_eq   "PREFLIGHT_CLI_TIMEOUT does govern the command probe" NO-NETWORK "$(field grok "$OUT")"
+# Scoped to the grok ROW: provider:zai and git-remote print their own sentences in this report.
+assert_match "…and the row names the knob to turn" "PREFLIGHT_CLI_TIMEOUT" "$(grep '^grok' <<<"$OUT")"
+assert_match "…reporting the budget it actually used" "after 1s" "$(grep '^grok' <<<"$OUT")"
+
 # git: absent binary is MISSING, and a hanging remote is NO-NETWORK rather than a hang.
 run_probe none PREFLIGHT_GIT_BIN="$WORK/no-such-git"
 assert_eq   "no git -> MISSING"                MISSING "$(field git-remote "$OUT")"
@@ -518,6 +684,7 @@ assert_eq   "missing git still exits 0"        0       "$RC"
 # are present, so only the gate order can produce this verdict.
 assert_eq   "no config -> codex SKIPPED"       SKIPPED "$(field codex "$OUT")"
 assert_eq   "no config -> gemini SKIPPED"      SKIPPED "$(field gemini "$OUT")"
+assert_eq   "no config -> grok SKIPPED"        SKIPPED "$(field grok "$OUT")"
 
 # Not a repository at all: still a local fact, never a network verdict.
 mkdir -p "$WORK/gitnorepo"
@@ -587,7 +754,9 @@ assert_eq   "…with nothing on stderr at all"            ""      "$ERR"
 run_probe none PREFLIGHT_GIT_BIN="$WORK/gitok/git" PREFLIGHT_CURL_BIN="$SHIM/curl" \
           PATH="$SHIM:$WORK/notimeout"
 assert_eq   "no timeout(1) -> UNKNOWN, not NO-NETWORK" UNKNOWN "$(field git-remote "$OUT")"
-assert_match "…naming the missing binary"              "timeout" "$OUT"
+# Scoped to the row, exactly as the grok twin above is: the row NAME `bash-timeout` prints in
+# every scenario, so an unscoped match here holds whatever the git-remote row happens to say.
+assert_match "…naming the missing binary"              "timeout" "$(grep '^git-remote' <<<"$OUT")"
 
 assert_match "gh row present"        "gh"        "$OUT"
 assert_match "clipboard row present" "clipboard" "$OUT"
@@ -779,6 +948,18 @@ assert_match "…and the orchestrator's spelling on the preset line" \
     "SUMMARY defaults design_review: claude, zai/glm" "$OUT"
 assert_eq "…and the two are reconciled, not reported as a mismatch" "" "$(defaults_not_available "$OUT")"
 
+# The grok half of the same expansion, and the reason it has to exist: SUMMARY available spells
+# this reviewer grok:<model>, so a defaults line printing a bare `grok` would name a reviewer the
+# available line never offers, and the membership check would answer the wrong question. The
+# preset's grok_models is a strict SUBSET of the catalog, and differs per preset, on purpose.
+run_probe valid-grok-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "grok on a defaults line is spelled grok:<model>" \
+    "SUMMARY defaults design_review: grok:grok-4.6, zai/glm" "$OUT"
+assert_match "…from the preset's own list, not the whole catalog" \
+    "SUMMARY defaults code_review: grok:grok-4.5" "$OUT"
+assert_eq "…so default mode stays a plain membership check" "" "$(defaults_not_available "$OUT")"
+
 # A fast re-run probes nothing, so every network verdict is UNKNOWN. UNKNOWN is not a degraded
 # OK — treating it as unavailable reports a fully working machine as "claude only", and the
 # reading session cannot see the flag it did not set. The summary has to say so itself.
@@ -789,8 +970,8 @@ assert_eq   "skip-network still offers claude"      "SUMMARY available: claude" 
 assert_match "…and names the unprobed model UNKNOWN" "zai/glm (UNKNOWN)"        "$UNAVAIL"
 assert_match "…with the summary saying nothing was probed" "SUMMARY note: PREFLIGHT_SKIP_NETWORK" "$OUT"
 
-# A rejected `claude:` section is not just the claude-models row: commands/mesh-review.md:71 and
-# skills/mesh-design-review/SKILL.md:256 both `|| exit 1` on that same list-claude-models read,
+# A rejected `claude:` section is not just the claude-models row: both orchestrators `|| exit 1`
+# on that same list-claude-models read in their Step 1 / Step 5.0 fence,
 # BEFORE any reviewer is offered. So nothing is selectable — not claude, not a reachable model —
 # and offering any of it sends the session into the dead end the config gate exists to prevent.
 run_probe invalid-claude-scalar.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
@@ -824,7 +1005,7 @@ assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin yq jq config builtin-claude claude-models codex gemini provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "plugin yq jq config builtin-claude claude-models codex gemini grok provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines

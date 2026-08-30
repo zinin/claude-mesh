@@ -12,6 +12,11 @@
 #     a session, then re-read between bash invocations (edit → effect is immediate).
 #   * The loader VALIDATES the whole file on load. ANY error → the command refuses
 #     to start and prints, on stderr, the exact yaml location + how to fix it.
+#     ONE deliberate exception, on the preset-read path only: if a preset names `grok`
+#     while the `grok:` section does not validate — a broken catalog, or a section that is
+#     not a mapping at all, such as `grok: false` — the read DEGRADES grok alone —
+#     that reviewer is not offered, the orchestrator says so out loud, and every other
+#     engine runs. `config-loader.sh validate` still rejects the file.
 #   * Sections are independent: omit an optional section to disable that feature.
 #
 # Legend used below:  [required] / [optional]  and  "valid: a | b | c" enumerations.
@@ -137,13 +142,13 @@ models:
 # ============================================================================
 # (3) Built-in reviewers                                          [optional]
 # ============================================================================
-# Configuration for the three built-in reviewer types selectable in
-# `defaults.*.builtin`: claude, codex, gemini.
+# Configuration for the four built-in reviewer types selectable in
+# `defaults.*.builtin`: claude, codex, gemini, grok.
 #
-#   * codex: / gemini: are GATES — they shell out to the codex / gemini CLIs and
-#     are NOT Anthropic-API endpoints. Omit a section entirely to remove that tool
-#     from the UI and from any `defaults.*.builtin` list (referencing it in builtin
-#     then becomes a hard error).
+#   * codex: / gemini: / grok: are GATES — they shell out to the codex / gemini /
+#     grok CLIs and are NOT Anthropic-API endpoints. Omit a section entirely to
+#     remove that tool from the UI and from any `defaults.*.builtin` list
+#     (referencing it in builtin then becomes a hard error).
 #   * claude: is NOT a gate — the built-in claude reviewer is your own Claude Code
 #     and has no external dependency, so `builtin: [claude]` works with no section
 #     here at all. The section only WIDENS it to several Claude models.
@@ -181,6 +186,76 @@ codex:
 gemini:
   model: gemini-3.1-pro-preview                # [required when gemini: present]
 
+grok:
+  # Catalog of grok models offered when you pick the built-in `grok` reviewer. REQUIRED when
+  # this section exists, and it must hold at least one entry: the grok reviewer agent refuses
+  # to start without a model, so an empty catalog would offer a reviewer that cannot run.
+  # (claude:'s catalog is optional; this one is not — and note the narrower CHARSET below.)
+  #
+  # Each entry becomes ONE independent reviewer, exactly as under claude: — same diff, same
+  # prompt, different model.
+  #
+  # What belongs here: the names THIS MACHINE's grok CLI accepts after `-m`, which is not the
+  # same set as "the grok family" — run `grok models` to see them. The catalog is yours: it may
+  # well list models proxied in from other vendors (deepseek-*, glm-*, minimax-*, kimi-*,
+  # codex-*), and your own CLI default may be one of those. claude-mesh does not police the
+  # names and cannot: a model your CLI does not accept is not caught here, it fails that
+  # reviewer's run instead.
+  #
+  # Still, prefer keeping this catalog to the grok family. claude-mesh cannot tell that a grok
+  # alias and one of your ext-claude models (section 2) are the same model underneath —
+  # `grok models` prints names, never the provider behind them — so listing both makes ONE
+  # opinion count twice in the attribution table.
+  #
+  # CHARSET: [A-Za-z0-9._-] (first char alphanumeric), narrower than claude.models. A grok
+  # model id becomes a directory name (runs/grok/<model>/) and a roster entry for the run
+  # watcher, and neither accepts ':'.
+  models: [grok-4.6, grok-4.5]                 # [required when grok: present, >=1 entry]
+
+  # [optional] values this loader passes without a WARN, as of 2026-08 (grok 1.0.5):
+  # low | medium | high | xhigh | max. NOT an enum — the set goes stale as xAI ships levels,
+  # so unknown values pass through with a WARN and the grok CLI decides. This list is the
+  # canonical copy — keep config-loader.sh's known-value case and the README row in sync
+  # with it, and re-read `grok --help` whenever you touch any of the three.
+  #
+  # The SECTION-WIDE default — but the CLI validates the flag PER MODEL, and rejects at
+  # ARGUMENT PARSING with rc=1, before any API call, so an unsupported pair costs you the
+  # whole reviewer run and no diagnostic from here. Measured 2026-08-30 on grok 1.0.5:
+  # grok-4.6 accepts xhigh|high|medium|low, grok-4.5 only high|medium|low, and that CLI's
+  # own default model all five — three different sets behind one binary. So this value must
+  # be valid for every catalog entry that `model_efforts` below does not override. To read a
+  # model's own set for free (it fails on the flag, never reaching the API):
+  # `grok -m <id> --effort __bogus__ -p x`.
+  #
+  # Omit the key and the CLI's own default applies (~/.grok/config.toml, [models]
+  # default_reasoning_effort) — which is per-CLI, not per-model, and may well be `low`.
+  reasoning_effort: xhigh
+
+  # [optional] PER-MODEL overrides of the level above — the key that lets one catalog hold
+  # models with different accepted sets. That is why grok-4.5 can sit beside grok-4.6 here:
+  # the section default `xhigh` is not a level grok-4.5 accepts, and without the override
+  # below every grok-4.5 run would die at argument parsing.
+  #
+  # Keys must be entries of `models:` above — a key outside the catalog is a HARD ERROR, not
+  # a no-op, because a silent no-op would leave you believing a model ran at a level it never
+  # got. Values follow `reasoning_effort`'s rules exactly: unknown ones pass through with a
+  # WARN, an empty one means "use the section default".
+  #
+  # Write only the EXCEPTIONS. Most models accept the top level, so one or two entries beside
+  # a section default usually cover a whole catalog. To regenerate the table when your catalog
+  # or your CLI changes — it never reaches the API, every probe fails on the flag:
+  #
+  #   for m in $(grok models | sed -n 's/^ *[-*] \([A-Za-z0-9._-]*\).*/\1/p'); do
+  #       printf '%-28s %s\n' "$m" "$(grok -m "$m" --effort __bogus__ -p x 2>&1 |
+  #           sed -n 's/.*use one of: //p' | head -1)"
+  #   done
+  #
+  # Rank each printed set by low < medium < high < xhigh < max and take the top one: the CLI
+  # prints them in different ORDERS per model, so position is not rank. A model that prints no
+  # set at all does not validate the flag — leave it out and it will ignore whatever it gets.
+  model_efforts:
+    grok-4.5: high
+
 
 # ============================================================================
 # (4) defaults — preset reviewer sets for the "default" command argument
@@ -190,12 +265,14 @@ gemini:
 # is [optional] too.
 defaults:
   code_review:                                 # used by: /mesh-review default
-    builtin: [claude, codex, gemini]           # [optional] list; subset of { claude, codex, gemini }.
+    builtin: [claude, codex, gemini, grok]     # [optional] list; subset of { claude, codex, gemini, grok }.
                                                #   claude  — your own Claude Code via superpowers:requesting-code-review
                                                #             (needs NO config section; see claude: above to fan it
                                                #             out over several models).
                                                #   codex   — requires the codex: section above.
                                                #   gemini  — requires the gemini: section above.
+                                               #   grok    — requires the grok: section above AND a non-empty
+                                               #             grok_models below; see that key for why.
     claude_models: [opus, fable]               # [optional] list; each entry must be in the claude.models
                                                #   catalog above, and "claude" must be present in builtin.
                                                #   In `default` mode: one reviewer per entry, each overriding
@@ -205,6 +282,19 @@ defaults:
                                                #   Omit it and `default` mode runs exactly ONE claude reviewer,
                                                #   on runtime.dispatch_model — or on your current session model
                                                #   when that is unset — i.e. the behaviour from before this feature.
+    grok_models: [grok-4.6]                    # [optional] list; each entry must be in the grok.models
+                                               #   catalog above. Same reviewer-per-entry and ★-recommended
+                                               #   semantics as claude_models — but the pairing with builtin
+                                               #   is REQUIRED IN BOTH DIRECTIONS, and each direction is a
+                                               #   hard error, never a silent skip:
+                                               #     grok_models without "grok" in builtin  -> config invalid
+                                               #     "grok" in builtin without grok_models  -> config invalid
+                                               #   There is no single-reviewer fallback the way claude has one:
+                                               #   the grok reviewer agent cannot start without a model, so
+                                               #   there is nothing to fall back TO.
+                                               #   COST, as under claude:. This preset as shipped is NINE
+                                               #   reviewers of one diff: 2 claude + codex + gemini + 1 grok
+                                               #   + 4 external. Trim the lists before using it as-is.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # [optional] list; each entry must be a model id from section 2.
     run_mode: background                       # [optional] valid: background | team
@@ -216,9 +306,11 @@ defaults:
                                                #         works poorly — prefer 'background' (the default).
 
   design_review:                               # used by: /mesh-design-review default
-    builtin: [claude, codex, gemini]           # [optional] same valid set { claude, codex, gemini }.
+    builtin: [claude, codex, gemini, grok]     # [optional] same valid set { claude, codex, gemini, grok }.
     claude_models: [opus]                      # [optional] deliberately narrower than code_review's —
                                                #   the two presets are independent.
+    grok_models: [grok-4.6]                    # [optional] narrower than code_review's for the same reason.
+                                               #   Still required, because "grok" is in builtin above.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # NOTE: design_review has NO run_mode field (ignored if present).
 
@@ -238,7 +330,7 @@ runtime:
                                                #   150k milestone, so a lower STOP could never fire).
                                                #   `/do-plan <N>` overrides this for a single invocation.
 
-  # /mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/ext-claude)
+  # /mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/grok/ext-claude)
   # flips to self-review (no run dir) or stalls mid-flight, re-dispatch it up to this many
   # rounds. Three verdicts are never retried, because a second identical run cannot differ:
   # BROKEN (the engine finished having done no work — swap the model instead), DEGRADED (the
@@ -263,9 +355,9 @@ runtime:
     stall_sec: 600                             # no output for this long → supervised mode kills and retries;
                                                #   the /mesh-review and /mesh-design-review watcher
                                                #   (shared/watch-runs.sh) reports the run SILENT. default 600.
-                                               #   The watcher floors this at 600: codex-exec and gemini-exec
-                                               #   hardcode HARD_ZERO_TIMEOUT=600 and ignore this key, so a
-                                               #   lower value would call a live run silent before its own
+                                               #   The watcher floors this at 600: codex-exec, gemini-exec and
+                                               #   grok-exec hardcode HARD_ZERO_TIMEOUT=600 and ignore this key,
+                                               #   so a lower value would call a live run silent before its own
                                                #   watchdog acts on it.
     global_sec: 3600                           # supervised mode: overall wall-clock budget. default 3600
     max_retries: 2                             # supervised mode: retries after a kill. default 2

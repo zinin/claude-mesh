@@ -1,0 +1,29 @@
+# A broken grok catalog referenced by ONE preset only: design_review names grok, code_review
+# never mentions it. GROK_CATALOG_BROKEN is one variable for the whole run while
+# validate_defaults iterates BOTH presets, so the preset that never asked for a grok reviewer
+# must still come back grok_degraded:false — the flag is the only signal saying a reviewer the
+# caller ASKED FOR is not running, and spending it on a reviewer nobody asked for sends the
+# user to edit a user-owned config.yaml for a review that was not degraded at all.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+grok:
+  models: grok-4.6
+codex:
+  model: gpt-5.5
+claude:
+  models: [opus, fable]
+defaults:
+  code_review:
+    builtin: [claude, codex]
+    claude_models: [opus, fable]
+  design_review:
+    builtin: [claude, grok]
+    claude_models: [opus]
+    grok_models: [grok-4.6]

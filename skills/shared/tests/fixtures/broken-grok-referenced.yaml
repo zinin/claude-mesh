@@ -1,0 +1,27 @@
+# The REFERENCED broken catalog: `grok` is named by BOTH presets while grok.models is a scalar.
+# This is config.example.yaml's own shape with one typo, so it is the out-of-the-box exposure.
+# `get-defaults` must degrade grok alone and keep answering; `validate` must still reject.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+grok:
+  models: grok-4.6
+codex:
+  model: gpt-5.5
+claude:
+  models: [opus, fable]
+defaults:
+  code_review:
+    builtin: [claude, codex, grok]
+    claude_models: [opus, fable]
+    grok_models: [grok-4.6]
+  design_review:
+    builtin: [claude, codex, grok]
+    claude_models: [opus]
+    grok_models: [grok-4.6]

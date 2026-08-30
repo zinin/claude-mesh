@@ -353,8 +353,9 @@ assert_eq "exit 0" "0" "$RC"
 rm -rf "$TDIR"
 
 # === Test 23: the stall threshold is floored at 600 and says so ===
-# codex-exec and gemini-exec hardcode HARD_ZERO_TIMEOUT=600, so a lower watcher threshold would
-# call a live run silent 300s before its own watchdog would act on it.
+# every exec skill that pins its own stall budget hardcodes HARD_ZERO_TIMEOUT=600 — codex,
+# gemini and grok today, ext-claude reads the configured one — so a lower watcher
+# threshold would call a live run silent 300s before its own watchdog would act on it.
 echo "=== Test 23: --stall-sec below 600 is floored, with a warning ==="
 TDIR=$(mktemp -d)
 a=$(mk_run "$TDIR" codex -700); : > "$a/raw.jsonl"; touch -d '300 seconds ago' "$a/raw.jsonl" "$a"
@@ -392,6 +393,29 @@ if [ "$GS" -gt 80000 ]; then
     FAIL=$((FAIL+1))
     echo "  FAIL: runtime.timeouts.global_sec=$GS leaves no room inside the --since plausibility window; Tests 25-27 cannot run"
 else
+
+# === Test 24b: SILENT with no stream file at all says so ===
+echo "=== Test 24b: SILENT before the first stream byte names its source ==="
+# The freshness fallback reads the run dir's own mtime, so a watchdog that died before writing
+# its first line is indistinguishable from a CLI that has not answered yet. The row now says
+# which of the two the number came from; without that a reader sees "quiet=700s" and assumes a
+# stream went silent, when nothing was ever written.
+TDIR="$(mktemp -d)"
+a=$(mk_run "$TDIR" grok/grok-4.6 -700); touch -d '700 seconds ago' "$a"
+run --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" grok/grok-4.6
+assert_match "no stream file -> SILENT" "SILENT" "$(row grok/grok-4.6)"
+assert_match "…and the row names the fallback" "no stream file" "$(row grok/grok-4.6)"
+# The counter-case: one byte on the stream and the note is gone, because freshness now has a
+# real source. Same age, same threshold — only the file differs.
+: > "$a/raw.jsonl"; touch -d '700 seconds ago' "$a/raw.jsonl" "$a"
+run --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" grok/grok-4.6
+assert_match "with a stream file -> still SILENT" "SILENT" "$(row grok/grok-4.6)"
+if [[ "$(row grok/grok-4.6)" == *"no stream file"* ]]; then
+    FAIL=$((FAIL+1)); echo "  FAIL: the note survives a run that HAS a stream file"
+else
+    PASS=$((PASS+1)); echo "  PASS: the note is gone once the stream exists"
+fi
+rm -rf "$TDIR"
 
 # === Test 25: the watcher blocks while everything is RUN, and returns when one goes silent ===
 # The 2026-07-26 blind spot: nothing finishes, so a count-based watcher never wakes. There is no
@@ -504,6 +528,18 @@ TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
 run --since "$SINCE_OK" --once --data-dir "$TDIR" 'codex/.'
 assert_eq "exit 64" "64" "$RC"
 assert_match "stderr names the entry" "invalid roster entry" "$ERR"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 30c: the COLON spelling is a usage error — grok:grok-4.6 is a reviewer name, not a roster entry"
+# The two spellings are not interchangeable: `grok:grok-4.6` names a reviewer (dispatch tables,
+# verify-delegation, finding attribution) while `grok/grok-4.6` names a run directory, which is
+# what this watcher takes. Until now nothing pinned that, and the rejection happened only as a
+# side effect of the charset above — one widened bracket away from silently watching nothing.
+TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs"
+run --since "$SINCE_OK" --once --data-dir "$TDIR" 'grok:grok-4.6'
+assert_eq "exit 64" "64" "$RC"
+assert_match "stderr names the entry" "invalid roster entry 'grok:grok-4.6'" "$ERR"
 rm -rf "$TDIR"
 
 echo ""
@@ -620,6 +656,32 @@ theirs=$(mk_run "$TDIR" gemini -60 100003); sid_stamp "$theirs" sid-B
 run_as sid-A --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" gemini
 assert_match "follows the own retry" "$(basename "$retry")" "$(row gemini)"
 assert_match "row is DONE" "DONE" "$(row gemini)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 40: a grok roster entry follows runs/grok/<model>/"
+TDIR="$(mktemp -d)"
+a="$(mk_run "$TDIR" grok/grok-4.6)"
+wd_log "$a" 0; printf 'findings\n' > "$a/output.txt"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" grok/grok-4.6
+assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_match "grok row is DONE" "DONE" "$(row grok/grok-4.6)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 41: two grok models are watched independently"
+TDIR="$(mktemp -d)"
+a="$(mk_run "$TDIR" grok/grok-4.6)"
+wd_log "$a" 0; printf 'findings\n' > "$a/output.txt"
+b="$(mk_run "$TDIR" grok/grok-4.5 0 100001)"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" grok/grok-4.6 grok/grok-4.5
+assert_match "4.6 is DONE" "DONE" "$(row grok/grok-4.6)"
+assert_match "4.5 is still RUN" "RUN" "$(row grok/grok-4.5)"
+# RUN is also what an entry that resolved NOTHING reports inside the MISSING grace, so the
+# status alone stays green against a watcher blind to runs/grok/ — mutating resolve_run_dir to
+# skip grok entries leaves it passing, with an em dash where the dir name belongs. The dir name
+# is what proves the 4.5 run was found on its own, one directory over from the 4.6 one.
+assert_match "4.5 row names its own dir" "$(basename "$b")" "$(row grok/grok-4.5)"
 rm -rf "$TDIR"
 
 echo ""

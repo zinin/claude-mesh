@@ -2,6 +2,134 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Added
+- **grok is a third CLI reviewer engine**, alongside codex and gemini: `grok-exec` /
+  `grok-code-review` skills, `grok-executor` / `grok-code-reviewer` agents, a gated `grok:`
+  config section, a row in the environment probe, and a place in the selection UI of both
+  `/mesh-review` and `/mesh-design-review`. Unlike codex and gemini, grok carries a model
+  CATALOG — `grok.models`, with `defaults.<preset>.grok_models` choosing which entries a
+  preset runs — so one review can cross-check itself across several grok models, exactly as
+  `claude.models` already allows for the built-in reviewer. Cost scales the same way: each
+  entry is one more full review of the same diff.
+- The grok runs speak the Claude Code wire format (`--output-format streaming-messages-json`),
+  so the report renderer serves them unchanged and `verify-delegation.sh` judges them on the
+  same branch as `ext-claude` — which is why grok reaches the `DEGRADED` verdict, a state
+  codex and gemini cannot express. Sharing that branch was not free: it now forks in two
+  places, on the remedy for a refused tool call (`grok-exec` already passes
+  `--permission-mode bypassPermissions`, so ext-claude's "add the flag" advice would be
+  wrong) and on the sentence that explains the review-length floor, whose archived
+  measurement is ext-claude's alone. Separately — because of the shared WIRE FORMAT rather
+  than the shared branch — `shared/extract-result.py` learned grok's TOP-LEVEL
+  `{"type":"error","message":…}` shape, the one a bad `-m` produces, which until now
+  rendered as the literal `API Error: {}` with the message lost.
+- **`grok.model_efforts` — per-model reasoning effort.** `grok.reasoning_effort` is one value
+  for the whole section, but the grok CLI validates `--effort` PER MODEL at argument parsing and
+  rejects a bad pair with rc=1 before any API call, and the accepted sets genuinely differ:
+  measured 2026-08-30 on grok 1.0.5, `grok-4.6` takes `xhigh` but not `max`, `grok-4.5` takes
+  neither, and most proxied entries take all five. A catalog of more than one model therefore
+  could not be served by a single level — the pairing `config.example.yaml` shipped was itself
+  unrunnable for half its own catalog, which is why that example had been cut to one model.
+  `model_efforts` maps a model id to the level that model runs at and overrides the section
+  default for it alone, so the example ships two models again. Keys must be catalog entries: a
+  key outside `models:` is a hard error rather than a silent no-op, because the point of the
+  key is being able to trust that a model ran at the level you wrote. `get-grok` takes an
+  optional model argument for this; called with none — as a direct `grok-exec` invocation
+  naming no model does — it answers the whole-section question exactly as before. Nothing in
+  the orchestrators, the wrapper agents or `grok-code-review` changed: `grok-exec` resolves the
+  level itself and already knew which model it was running.
+
+### Changed
+- **The reviewer-type question of both orchestrators is three options, not five.** `claude`,
+  one option for the external CLIs, and one for the Anthropic-API models; picking the CLI
+  option opens a second page listing the engines actually configured, skipped when there is
+  only one. `AskUserQuestion` accepts four options at most, so a fourth engine had nowhere to
+  go — and a fifth one still will not need this question to change. A catalog holding exactly
+  one entry is still asked about rather than chosen for you: the second option is that page's
+  own "run none of them".
+- **A broken optional section fails its own row, not the environment.** A `grok:` section that
+  does not validate — a malformed catalog, or a section that is not a mapping at all, such as
+  `grok: false` — now degrades grok alone on the preset-read path: it is dropped from the
+  preset, `get-defaults` reports `grok_degraded`, and the orchestrator says out loud that the
+  reviewer you asked for is not running. Before, one typo made `preflight-env.sh` print
+  `config INVALID` and skip EVERY row, codex and gemini included. `config-loader.sh validate`
+  is unchanged and still rejects the file, and the flag is now reported to the preset that
+  actually named grok rather than to both.
+- **`report.md` shows the whole run again.** The shared renderer read only the first content
+  block of each message, so a message beginning with a `thinking` block — the ordinary shape
+  for a reasoning model — vanished from the report entirely, tool call included. Measured on a
+  real grok review: 22 of 23 assistant messages began that way, and the 904 KB report held
+  none of the run's 79 tool calls, only their outputs. It now renders every block, and has a
+  regression suite of its own (`shared/tests/test-stream-json-report.sh`) — its first.
+- `verify-delegation.sh` reads a refused tool call before it decides a run is `BROKEN`, so a
+  reviewer that was denied its very first call is no longer told to swap a model that did
+  nothing wrong. It also rejects a grok model that is not a catalog id: the `<provider>/<short>`
+  spelling belongs to ext-claude, and it used to resolve a path nothing writes and come back
+  as `FLIP` — "this reviewer never delegated" — about a reviewer that had just delivered.
+- `skills/ext-claude-exec/generate-md.sh` moved to `skills/shared/stream-json-report.sh`. Two
+  engines render reports from the same stream format; the renderer had been living inside one
+  of them. Same signature, same output.
+- The model-catalog validator is now one function serving `claude:` and `grok:`. Its error
+  messages for `claude.models` are unchanged, byte for byte — pinned by a golden fixture.
+- `preflight-env.sh` probes a CLI with a command when an HTTP request cannot answer for it:
+  `grok models` reports network and login together, while a curl against `api.x.ai` would
+  describe an endpoint a grok.com subscription never calls. Read the table accordingly — `OK`
+  on the codex and gemini rows remains a heuristic that says nothing about auth, while `OK` on
+  the grok row means the CLI answered, so the login is live.
+
+### Requirements
+- `grok` CLI (only when using the grok agents). It authenticates itself; claude-mesh never
+  handles a grok token, and never checks or substitutes a model id — an id your CLI does not
+  accept fails that one reviewer's run. Note that grok also reads `~/.claude/CLAUDE.md` and
+  every installed claude-* plugin — the review prompt therefore forbids it from invoking any
+  skill.
+
+### Fixed
+These four are engine-agnostic: they were found while building grok, but every one of them had
+been costing codex, gemini and ext-claude runs the same way.
+
+- **A review split across stream segments was delivered as its wake-up line.** `output.txt` took
+  the LAST `result` event, and a run that dispatches a background subagent ends on a short
+  acknowledgement rather than on its review — so the report, the merge and the delegation guard
+  all saw the acknowledgement. Measured over the run archive on the development machine: of the
+  streams carrying more than one result event, 36 had a last event shorter than the longest, up
+  to 16817 of 17882 characters of review discarded — this plugin's own review of 2026-08-29
+  among them. The longest result now wins, ties going to the last so single-result runs stay
+  byte-identical to what they produced before. A failed segment never wins over a successful
+  one whatever its length; an error result is used only when the stream has no successful one,
+  which keeps a quota or balance message from being replaced by silence.
+- **A stream whose last line had no newline lost that line** — and the last line is the `result`
+  event. Measured: a three-event log ending without a newline reached `raw.jsonl` as two events,
+  the missing one being exactly what `verify-delegation.sh` requires to call a run finished. A
+  completed review was therefore one truncated line away from being scored `STALLED` — "killed
+  mid-flight" — and re-dispatched. Fixed in every stream consumer: `codex-exec`, `gemini-exec`,
+  `grok-exec` and the shared report renderer.
+- **A run that died before its first turn was called `STALLED`, which prescribes a retry.** It
+  is now `BROKEN`, the verdict that says the next identical run dies identically. The rule is
+  narrow on purpose: an archive sweep showed a non-empty `errors[]` is ordinary in healthy
+  ext-claude runs — dozens of them, 2 to 62 turns — so only a zero-turn result event carries
+  the new verdict. The turn count itself is now read from the last result EVENT rather than
+  from the last integer seen anywhere in the stream.
+- **A CLI that refused its own arguments produced an empty review and no reason.** When the
+  terminal `result` event carries its cause in `errors[]` and the stream holds no `error`
+  event — the shape an unsupported `--effort` value produces — `output.txt` was zero bytes, the
+  reason survived only in `stderr.txt` where nothing downstream reads it, and the guard scored
+  a deterministic 15-second death as a stall worth retrying. The reason now reaches
+  `output.txt`, every entry of it.
+
+- **An ext-claude reviewer dispatched with `BASE_BRANCH=` got the base in front of `MODEL=`.**
+  `/mesh-review` prescribed a one-line `MODEL=<id> Review the changes…` prompt and then told
+  the caller to prefix the whole thing with `BASE_BRANCH=<branch> ` — which puts the base at
+  the head of the first line, where `agents/ext-claude-code-reviewer.md` requires MODEL to be.
+  Nothing parses that prompt mechanically, so the agent either stops with its own
+  `ERROR: MODEL parameter is required on first line` or forwards a guess: a reviewer that
+  never runs, or one reviewing a range nobody asked for. Both the initial dispatch and the
+  auto-redispatch retry are now the same three-line shape grok already used — `MODEL=` alone
+  on the first line, `BASE_BRANCH=` directly under it, then the request — and the prefix rule
+  says what it is really about: it belongs to codex and gemini, whose agents claim no first
+  line, and a wrapper that does claim one takes the two-line shape instead.
+
 ## [0.11.0] - 2026-08-26
 
 ### Requirements

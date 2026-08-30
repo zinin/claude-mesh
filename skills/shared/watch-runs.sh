@@ -140,7 +140,7 @@ if [ -z "$STALL_SEC" ]; then
     }
 fi
 if [ "$STALL_SEC" -lt "$STALL_FLOOR" ]; then
-    echo "watch-runs: stall threshold $STALL_SEC raised to $STALL_FLOOR — codex-exec and gemini-exec hardcode HARD_ZERO_TIMEOUT=600, so a lower threshold would call a live run silent before its own watchdog acts" >&2
+    echo "watch-runs: stall threshold $STALL_SEC raised to $STALL_FLOOR — every exec skill that pins its own stall budget hardcodes HARD_ZERO_TIMEOUT=600 (codex, gemini and grok today; ext-claude reads the configured threshold instead), so a lower threshold would call a live run silent before its own watchdog acts" >&2
     STALL_SEC="$STALL_FLOOR"
 fi
 
@@ -240,12 +240,18 @@ newest_mtime() {
         [ -n "$m" ] || continue
         [ "$m" -gt "$NEWEST" ] && NEWEST="$m"
     done
-    [ "$NEWEST" != 0 ] || NEWEST="$(stat -c %Y "$d" 2>/dev/null || printf '0')"
+    # No stream file yet — fall back to the run dir's own mtime, which is the launch time. That
+    # keeps a just-created run out of SILENT, but it also means freshness says nothing about the
+    # CLI during this window: a watchdog that died before writing its first line looks exactly
+    # like a CLI that has not answered yet. NEWEST_FROM_DIR carries that to the row, so a SILENT
+    # verdict in this state reads as "nothing was ever written" rather than "it went quiet".
+    NEWEST_FROM_DIR=0
+    [ "$NEWEST" != 0 ] || { NEWEST="$(stat -c %Y "$d" 2>/dev/null || printf '0')"; NEWEST_FROM_DIR=1; }
 }
 
 classify() {
     local entry="$1" d wl line rc out has_out
-    STATUS=""; QUIET=""; LAST=""; DETAIL=""; RUNDIR=""
+    STATUS=""; QUIET=""; LAST=""; DETAIL=""; RUNDIR=""; NEWEST_FROM_DIR=0
 
     if ! resolve_run_dir "$entry"; then
         # No dir yet is normal right after dispatch: an executor still booting must not be
@@ -334,7 +340,8 @@ evaluate() {
         STATUSES[$i]="$STATUS"
         row="$(printf '%-8s %-26s %s' "$STATUS" "$entry" "${RUNDIR:-—}")"
         case "$STATUS" in
-            SILENT)  row="$row  quiet=${QUIET}s last=$LAST" ;;
+            SILENT)  row="$row  quiet=${QUIET}s last=$LAST"
+                     [ "${NEWEST_FROM_DIR:-0}" = 1 ] && row="$row  (no stream file — quiet measured from the run dir's mtime)" ;;
             RUN)     [ -n "$QUIET" ] && row="$row  quiet=${QUIET}s" ;;
             FAILED)  [ -n "$DETAIL" ] && row="$row  $DETAIL" ;;
             MISSING) [ -n "$DETAIL" ] && row="$row  $DETAIL" ;;

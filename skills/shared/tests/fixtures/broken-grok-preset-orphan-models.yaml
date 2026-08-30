@@ -1,0 +1,20 @@
+# The mirror shape: a broken grok catalog AND grok_models set while `grok` is absent from
+# builtin. The same gate covers both rules — fixing only the emptiness one would leave this
+# half still grounding every other engine.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+codex:
+  model: gpt-5.5
+grok:
+  models: "this-is-a-scalar-not-a-list"
+defaults:
+  code_review:
+    builtin: [codex]
+    grok_models: [grok-4.6]
