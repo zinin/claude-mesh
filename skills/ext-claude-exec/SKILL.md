@@ -398,7 +398,7 @@ LATEST=$(find "$PLUGIN_DATA/runs/ext-claude" -mindepth 3 -maxdepth 3 -type d 2>/
 |------|---------|
 | `-p` | Headless (print) mode — no interactive session, prompt arrives on stdin |
 | `--permission-mode bypassPermissions` | Skip every permission check, **including the confinement to the launch directory**. Not optional: under `-p` nobody can answer a permission prompt, so without it every access outside the cwd is auto-denied and the reviewer silently loses the sibling repositories it needs to check an API signature against real source — the review degrades to guesswork instead of failing. `--add-dir` is NOT needed alongside it (the bypass lifts the directory confinement too). Parity with codex `--dangerously-bypass-approvals-and-sandbox` and gemini `--approval-mode yolo`; `--dangerously-skip-permissions` was measured equivalent and is spelled this way to match the mode vocabulary the other engines use. |
-| `--output-format stream-json` | Emit JSONL events, consumed by `progress-monitor.sh` (default mode) and `extract-result.py` / `shared/stream-json-report.sh` (supervised) |
+| `--output-format stream-json` | Emit JSONL events, consumed by `progress-monitor.sh` (default mode), `extract-result.py` (supervised) and `shared/stream-json-report.sh` (BOTH modes — default renders from `log.jsonl`, supervised from `raw.jsonl`) |
 | `timeout $SINGLE_RUN` | Per-run limit from the `runtime` timeouts in config.yaml (default 1800s) |
 
 > If `--add-dir` is ever added here, note it takes a **variadic** value (`--add-dir <directories...>`)

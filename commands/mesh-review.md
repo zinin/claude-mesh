@@ -189,9 +189,9 @@ as it did when Q1 named the engines directly; no other step changes shape.
 - "external models" not selected → skip Step 3 entirely.
 
 **Bind `SELECTED_TYPES` here**, to Q1's answer with «внешние CLI» replaced by whatever Step 2.1
-selects — by nothing at all when that option was not chosen and the page is skipped. Q1 and
+selects — by nothing at all when that option was not chosen and Step 2.1 never runs. Q1 and
 Step 2.1's fold are the ONLY two writes to this set in the file; Step 2.45's gate, Step 2.5's
-list and Step 5a / Step 5b's dispatch only ever read it.
+list, Step 5a / Step 5b's dispatch and Step 6.0's roster only ever read it.
 
 ## Step 2.1: CLI-engine selection
 
@@ -587,6 +587,8 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 The builtin `claude` / `general-purpose` reviewers (one per selected Claude model, or a single fallback one) are **skipped by the guard** — they review inline by design, so every one of them whose Task actually completed is accepted into Step 6.1. `verify-delegation.sh` is never invoked for them. (A claude reviewer whose Task errored is the exception — see the `FAILED` rule below.)
 
+Run points 1 and 2 in the SAME Bash call: `$VERIFY` and `$DATA_DIR` are stamped in point 1's fence and do not survive into a second call, and `bash "" …` is not a verdict but a "No such file or directory".
+
 **1. Locate the loader, data dir, and guard:**
 ```bash
 # Same resolution as Step 1 — the guard MUST come from the plugin copy that is actually
@@ -609,7 +611,6 @@ for spec in "codex:-" "grok:grok-4.6" "ext-claude:zai/glm" "ext-claude:ollama/ki
 done
 ```
 
-Run points 1 and 2 in the SAME Bash call: `$VERIFY` and `$DATA_DIR` are stamped in point 1's fence and do not survive into a second call, and `bash "" …` is not a verdict but a "No such file or directory".
 
 A grok pair carries the BARE catalog id (`grok:grok-4.6`), never a `<provider>/<short>` pair. `verify-delegation.sh` rejects an empty model and `-` for grok with a usage error, but a slashed one is not rejected: `grok zai/glm` resolves `runs/grok/zai/glm`, which nothing ever writes, and the guard then reports `FLIP` — the statement that the reviewer never delegated — about a reviewer that ran and delivered.
 
@@ -628,12 +629,12 @@ Verdicts:
 |---------------------|---------|-----------------|
 | claude:opus         | INLINE  | ✅ по построению |
 | claude:fable        | INLINE  | ✅ по построению |
-| ext-claude/zai/glm  | REAL    | ✅ kept          |
+| ext-claude:zai/glm  | REAL    | ✅ kept          |
 | grok:grok-4.6       | REAL    | ✅ kept          |
 | codex               | FLIP    | ↻ re-dispatch   |
-| ext-claude/ollama/… | BROKEN  | ✗ dropped       |
-| ext-claude/deepseek/… | DEGRADED | ⚠ kept — 14 denials, partial context |
-| ext-claude/alibaba/… | KILLED  | ✗ excluded — killed from outside at 600s |
+| ext-claude:ollama/… | BROKEN  | ✗ dropped       |
+| ext-claude:deepseek/… | DEGRADED | ⚠ kept — 14 denials, partial context |
+| ext-claude:alibaba/… | KILLED  | ✗ excluded — killed from outside at 600s |
 ```
 
 A `DEGRADED` row must say **how many** tool calls were denied — the count is the whole content of the verdict, and a row that hides it reads like a `REAL` with decoration.
