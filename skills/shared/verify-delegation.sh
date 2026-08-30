@@ -437,6 +437,36 @@ case "$ENGINE" in
         LAST_ERR="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
             | jq -Rr 'fromjson? | objects | select(.type == "result") | .is_error' 2>/dev/null | tail -1)"
         if [ "$LAST_ERR" = "true" ]; then
+            # A failed run that took ZERO turns did not die mid-flight — it never started, and
+            # STALLED's "retry helps" is the wrong instruction for it. The shape is a CLI that
+            # refused its own arguments: measured 2026-08-30, `grok -m grok-4.6 --effort max`
+            # exits 1 in 4.7s BEFORE any API call with a single
+            # {"type":"result","is_error":true,"num_turns":0,"errors":[…]} event, which
+            # watchdog.sh:260 counts as attempt success and extract-result.py's F4 arm turns into
+            # a non-empty output.txt. Every retry dies identically, so a STALLED here spends the
+            # whole max_redispatch budget on an error no retry can fix.
+            #
+            # The discriminator is num_turns == 0 and NOTHING ELSE — specifically NOT "errors[]
+            # is non-empty", which was the first proposal. Measured across 1067 archived
+            # ext-claude run files: is_error:true with a non-empty errors[] is ORDINARY there
+            # (num_turns 2 through 62, dozens of runs, several of which a retry did fix), while
+            # num_turns == 0 appears in NONE of them — the archive's minimum is 1. So the errors[]
+            # form would have made retryable ext-claude failures terminal.
+            #
+            # This is the SAME judgement the `NT <= 1` arm below already makes for both engines,
+            # reaching runs that cannot get there because this check fires first. Read from the
+            # last result event whatever its is_error, since the NT scan below deliberately
+            # counts only successful events.
+            LAST_NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
+                | jq -Rr 'fromjson? | objects | select(.type == "result")
+                          | .num_turns | numbers | select(. == floor and . >= 0)' 2>/dev/null | tail -1)"
+            if [ "$LAST_NT" = "0" ]; then
+                ZERO_WHY="the engine failed before taking a single turn (num_turns=0) — an argument or start-up refusal, not a review that died mid-flight. Retry is futile: the same invocation is refused identically"
+                if [ "$ENGINE" = "grok" ]; then
+                    ZERO_WHY="$ZERO_WHY. The usual cause is a --effort the model does not accept: the CLI validates it PER MODEL at argument parsing, and the accepted sets differ (grok-4.6 takes xhigh|high|medium|low, not max). output.txt carries the CLI's own message; fix grok.reasoning_effort / grok.model_efforts in config.yaml, which is user-owned"
+                fi
+                fail BROKEN "$ZERO_WHY" 4
+            fi
             fail STALLED "final result event is_error:true — the delivered output is the failed segment, not a review" 2
         fi
 

@@ -1390,6 +1390,54 @@ assert_eq "a real catalog id still reaches a verdict" "3" "$RC"
 assert_eq "…and that verdict is FLIP" "FLIP" "$VERDICT"
 rm -rf "$TDIR"
 
+# === A failed run that took ZERO turns is BROKEN, not STALLED ===
+# The shape a CLI produces when it refuses its own arguments. Measured 2026-08-30:
+# `grok -m grok-4.6 --effort max` exits 1 in 4.7s BEFORE any API call, emitting one
+# {"type":"result","is_error":true,"num_turns":0,"errors":[…]} event. watchdog.sh counts that as
+# attempt success and extract-result.py's F4 arm makes output.txt non-empty, so the run reaches
+# the guard looking finished. Scored STALLED it prescribes a re-dispatch, and the whole
+# max_redispatch budget is spent on 4.7-second deaths.
+echo "=== Test 66: grok BROKEN (is_error, num_turns 0 — an argument refusal) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/grok/grok-4.6" 2026-08-30-16-32-35-2064858-review-feat-grok-engine)
+mk_output "$rd/output.txt" 'API Error: unknown effort level'; ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["--effort/--reasoning-effort: unknown effort level '"'"'max'"'"'; use one of: xhigh, high, medium, low"]}' > "$rd/raw.jsonl"
+run_full grok grok-4.6 1 "$TDIR"
+assert_eq "verdict BROKEN, not STALLED" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+assert_match "reason names the zero turn count" "num_turns=0" "$REASON"
+assert_match "reason names the per-model effort cause" "PER MODEL" "$REASON"
+assert_no_match "reason does not prescribe a retry" "retry helps" "$REASON"
+rm -rf "$TDIR"
+
+# The condition is engine-agnostic — a run that took no turn did no work whatever produced it —
+# but the grok-specific --effort sentence must not be told to an ext-claude user.
+echo "=== Test 67: ext-claude with num_turns 0 is BROKEN too, without grok's remedy ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-12-00-00-1000-zero-turns)
+mk_output "$rd/output.txt" 'API Error'; ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0}' > "$rd/raw.jsonl"
+run_full ext-claude zai/glm 1 "$TDIR"
+assert_eq "verdict BROKEN" "BROKEN" "$VERDICT"
+assert_match "reason names the zero turn count" "num_turns=0" "$REASON"
+assert_no_match "no grok effort remedy on ext-claude" "model_efforts" "$REASON"
+rm -rf "$TDIR"
+
+# THE REFUTATION, pinned. The first proposal was to treat "is_error:true with a non-empty
+# errors[]" as BROKEN. Measured across 1067 archived ext-claude run files: that shape is
+# ORDINARY there — num_turns 2 through 62, dozens of runs — while num_turns == 0 appears in
+# NONE of them (the archive's minimum is 1). Had errors[] entered the condition, retryable
+# ext-claude failures would have become terminal. This test is what stops it coming back.
+echo "=== Test 68: ext-claude is_error with errors[] but real turns stays STALLED ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/deepseek/v4-pro" 2026-08-30-12-30-00-1000-mid-flight)
+mk_output "$rd/output.txt" 'partial'; ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":18,"errors":["Insufficient Balance"]}' > "$rd/raw.jsonl"
+run ext-claude deepseek/v4-pro 1 "$TDIR"
+assert_eq "a non-empty errors[] alone does NOT make it BROKEN" "STALLED" "$VERDICT"
+assert_eq "exit 2" "2" "$RC"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
