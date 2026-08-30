@@ -366,7 +366,20 @@ EXT_DEPS_MISSING=""
 for T in $EXT_DEPS_BINS; do
     command -v "$T" >/dev/null 2>&1 || EXT_DEPS_MISSING="${EXT_DEPS_MISSING:+$EXT_DEPS_MISSING, }$T"
 done
-[ -z "$EXT_DEPS_MISSING" ] || row ext-claude-deps MISSING "$EXT_DEPS_MISSING — ext-claude executors cannot run here"
+# python3 is NOT an ext-claude-only prerequisite: shared/extract-result.py is what grok-exec
+# reads its own run with, and grok-exec STOPs without it — the only one of the three CLI engines
+# that does (codex-exec and gemini-exec have no python3 gate at all). `bc` and `claude` are not
+# in that class: grok-exec only WARNs about bc ("the review itself is unaffected") and never
+# invokes the claude binary. So the row names grok exactly when python3 is the binary missing.
+GROK_DEPS_MISSING=""
+command -v python3 >/dev/null 2>&1 || GROK_DEPS_MISSING="python3"
+if [ -n "$EXT_DEPS_MISSING" ]; then
+    if [ -n "$GROK_DEPS_MISSING" ]; then
+        row ext-claude-deps MISSING "$EXT_DEPS_MISSING — ext-claude executors cannot run here, and grok-exec STOPs without python3"
+    else
+        row ext-claude-deps MISSING "$EXT_DEPS_MISSING — ext-claude executors cannot run here"
+    fi
+fi
 
 # ---------------------------------------------------------------- CLI reviewers
 probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
@@ -838,7 +851,14 @@ fi
 # spells out its progress gate rather than chaining it (SC2015).
 if [ "$CODEX_STATUS"  = "OK" ]; then add_avail codex;  else add_unavail "codex ($CODEX_STATUS)";   fi
 if [ "$GEMINI_STATUS" = "OK" ]; then add_avail gemini; else add_unavail "gemini ($GEMINI_STATUS)"; fi
-if [ "$GROK_STATUS" = "OK" ]; then
+# `SUMMARY available` is what commands/*-fresh-session.md call the eligibility decision in so
+# many words, and `default` is non-interactive, so nobody is there to cross-read three rows and
+# infer that a grok reviewer will die. The design declines to cross-check availability against
+# the SUBSCRIPTION, for a stated reason that does not reach here: it would mean parsing the
+# human-readable output of `grok models`. `command -v python3` needs no parsing.
+if [ "$GROK_STATUS" = "OK" ] && [ -n "$GROK_DEPS_MISSING" ]; then
+    add_unavail "grok (python3 missing — grok-exec STOPs on shared/extract-result.py)"
+elif [ "$GROK_STATUS" = "OK" ]; then
     # One entry per catalog model, exactly as claude expands over claude.models above. The bare
     # `grok` fallback cannot normally happen — the validator requires a non-empty catalog
     # whenever the section exists — but a reader is better served by a name than by silence if

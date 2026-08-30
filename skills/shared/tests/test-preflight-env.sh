@@ -448,6 +448,7 @@ mkfarm "$WORK/nocli" codex gemini grok
 # `timeout` is GNU-only: absent on a stock macOS, which is exactly the unconfigured machine
 # this probe exists for.
 mkfarm "$WORK/notimeout" timeout
+mkfarm "$WORK/nopy3" python3
 
 # Both CLIs, shimmed. EVERY scenario below pins the CLI's presence or absence explicitly —
 # neither verdict may depend on what the machine running the suite happens to have installed.
@@ -553,6 +554,26 @@ assert_eq   "…and the CLI really was invoked, once, as \`grok models\`" "model
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1
 assert_eq   "grok models fails -> NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
 assert_match "…and suggests logging in"       "grok login" "$OUT"
+
+# A machine without python3 must not be told a grok reviewer is available. grok-exec STOPs on
+# shared/extract-result.py — the only one of the three CLI engines that does — while `bc` only
+# WARNs there and the `claude` binary is never invoked, so the gate is on python3 alone and not
+# on the composite EXT_DEPS_MISSING. It matters because commands/*-fresh-session.md call
+# `SUMMARY available` the eligibility decision in so many words, and `default` is
+# non-interactive: nobody is there to cross-read the deps row and infer the dispatch will die.
+# The grok ROW stays OK on purpose — the CLI really is installed and really did answer; it is
+# the SUMMARY, the line that decides, which must not advertise it.
+: > "$GROK_LOG"
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$WORK/nopy3" \
+          GROK_SHIM_LOG="$GROK_LOG"
+assert_eq   "no python3 -> the grok row still reads OK" OK "$(field grok "$OUT")"
+assert_match "…but SUMMARY withdraws it, naming why" "grok (python3 missing" "$OUT"
+# The positive half FIRST, so the negative one below cannot pass against an empty haystack —
+# a grep that matched nothing would satisfy assert_no_match for the wrong reason, which this
+# suite has been bitten by before.
+assert_match "…the available line is present and non-empty" "claude" "$(grep '^SUMMARY available' <<<"$OUT")"
+assert_no_match "…and no grok model is advertised as available" "grok:grok-4.6" "$(grep '^SUMMARY available' <<<"$OUT")"
+assert_match "…while the deps row names grok, not ext-claude alone" "grok-exec STOPs without python3" "$OUT"
 
 # An UNUSABLE PREFLIGHT_CLI_TIMEOUT must not be able to invent a verdict. The budget is pasted
 # straight into `timeout "$CLI_TIMEOUT" $5`, so before it joined the normalisation block above
