@@ -307,6 +307,58 @@ assert_eq "tie: exit 0" "0" "$RC"
 assert_eq "tie goes to the last" "ZZZZ" "$(cat "$TDIR/output.txt")"
 rm -rf "$TDIR"
 
+# === Test 24: a FAILED segment never shadows a genuine review ===
+# The candidate loop read length alone, so an is_error:true result longer than the review
+# would win — while verify-delegation.sh judges the LAST result event and scores such a
+# run REAL: the orchestrator would merge the failure text as the review.
+# The failed shape is real — five historical run dirs hold {"subtype":"success",
+# "is_error":true,"result":"Prompt is too long"} (subtype lies; is_error is the signal).
+# Latent, not observed: across 1095 archived ext-claude+grok streams an error candidate and
+# a success candidate never co-occur (swept 2026-08-30). Closed for the LAST_NT reason:
+# real mechanism, cheap to exclude.
+echo "=== Test 24: a longer failed segment loses to the successful review ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":true,"num_turns":95,"result":"Prompt is too long — A_VERY_LONG_FAILED_SEGMENT_THAT_MUST_NOT_WIN"}' \
+    '{"type":"result","subtype":"success","is_error":false,"num_turns":20,"result":"THE_REVIEW"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "failed+success: exit 0" "0" "$RC"
+assert_eq "the success wins whatever its length" "THE_REVIEW" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+# === Test 25: an error-ONLY stream still surfaces the CLI's own message ===
+# 56 archived streams hold nothing but is_error:true results ("API Error: 402 Insufficient
+# Balance", 429 texts, "Prompt is too long"). Excluding errors outright would extract those
+# to EMPTY — the exact silence Test 16 exists to prevent. The error pool is a fallback, not
+# discarded, and it keeps the result branch's trailing newline (byte-parity with the old
+# behaviour on all 56).
+echo "=== Test 25: error-only stream keeps the error text, with the result newline ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"API Error: 402 Insufficient Balance"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "error-only: exit 0" "0" "$RC"
+assert_eq "error-only: the message survives" "API Error: 402 Insufficient Balance" "$(cat "$TDIR/output.txt")"
+assert_eq "error-only: result-branch newline kept (35 + 1)" "36" "$(stat -c %s "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
+# === Test 26: among errors only, the LONGEST still wins ===
+# The fallback pool follows the same longest-ties-last rule as the primary one; a "last
+# error" or "first error" shortcut would flip which text the 56 archived error-only
+# streams extract. First-longer-wins pins the rule against both shortcuts.
+echo "=== Test 26: multiple errors, no success -> longest error wins ==="
+TDIR=$(mktemp -d)
+printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":true,"num_turns":2,"result":"API Error: the long first failure text"}' \
+    '{"type":"result","subtype":"success","is_error":true,"num_turns":3,"result":"API Error"}' \
+    > "$TDIR/raw.jsonl"
+python3 "$EXTRACT" "$TDIR"; RC=$?
+assert_eq "errors-only: exit 0" "0" "$RC"
+assert_eq "errors-only: the longest error is kept" "API Error: the long first failure text" "$(cat "$TDIR/output.txt")"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

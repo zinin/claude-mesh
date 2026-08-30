@@ -81,14 +81,36 @@ def main() -> int:
     # other result event at all — they would extract to nothing, which verify-delegation.sh reads
     # as STALLED and answers with a re-dispatch. Length is a proxy for "carries the review", and
     # on the whole archive it is the only rule that is right everywhere.
+    # is_error:true results are a SEPARATE, fallback-only pool. The guard judges the LAST
+    # result event (verify-delegation.sh's ext-claude/grok branch), so a failed segment
+    # longer than the review would put failure text into output.txt on a run the guard
+    # scores REAL — {"subtype":"success","is_error":true,"result":"Prompt is too long"} is
+    # a real shape, five historical run dirs hold it. Never merged into one pool with a
+    # demotion rule: across 1095 archived streams (swept 2026-08-30) an error candidate and
+    # a success candidate never co-occur, and 56 error-only streams depend on the fallback
+    # keeping the CLI's own message ("API Error: 402 …") — excluding errors outright would
+    # extract those to empty, the silence the errors[] arm below exists to prevent.
     best_len = -1
+    err_len = -1
+    err_text: list[str] = []
     for ev in events:
         if ev.get("type") == "result":
             r = ev.get("result")
-            if isinstance(r, str) and r and len(r) >= best_len:
+            if not (isinstance(r, str) and r):
+                continue
+            if ev.get("is_error") is True:
+                if len(r) >= err_len:
+                    err_text = [r]
+                    err_len = len(r)
+            elif len(r) >= best_len:
                 final_text = [r]
                 from_result = True
                 best_len = len(r)
+    if not final_text and err_text:
+        # from_result stays True: these streams took the result branch before the split,
+        # and its trailing-newline parity (E) must survive byte for byte.
+        final_text = err_text
+        from_result = True
     if not final_text:
         for ev in reversed(events):
             if ev.get("type") != "assistant":
