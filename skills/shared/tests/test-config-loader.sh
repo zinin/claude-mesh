@@ -1670,13 +1670,36 @@ CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects an entry for a model outside the catalog" "1" "$RC"
 assert_stderr_contains "names the offending key" "grok-4.7" "$ERR"
 assert_stderr_contains "…and says which list it must belong to" "grok.models" "$ERR"
-# The laziness pin: this is a validate_grok error, so the catalog-only gates must NOT see it.
-# Without this, a later "restore parity" edit could move the check up and take a codex-only
-# review down with a grok typo — the `ultra` incident's shape.
-assert_eq_str "has_grok still answers 1 — it validates the catalog, not the table" \
-    "1" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)"
+# `has_grok` is consumed as "can a grok reviewer be dispatched" — its own comment says so — and
+# a broken table makes dispatch impossible, so the flag has to see it. It used to answer 1 here,
+# and this suite pinned that as the contract: the orchestrator then offered grok, dispatched it,
+# and the reviewer died on `get-grok "$MODEL"` AFTER its run dir existed, which the guard reads
+# as STALLED — "killed mid-flight" — and STALLED means re-dispatch, so a max_redispatch round
+# went on an error no retry can fix. Found independently by all three reviewers of this branch.
+#
+# This is NOT the `ultra` incident returning. That was about a broken grok section GROUNDING the
+# environment; here rc=1 is what both orchestrators already handle by degrading grok ALONE and
+# printing the validator's message (commands/mesh-review.md Step 1), and what makes preflight
+# print INVALID on the grok row rather than MISSING. The unconditional type gate at the top of
+# validate_defaults is untouched, so an UNREFERENCED broken section still grounds nothing.
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+assert_exit "has_grok exits 1 on a broken model_efforts table" "1" "$RC"
+assert_stderr_contains "…with the validator's own message" "not in grok.models" "$ERR"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 >/dev/null 2>"$ERR"; RC=$?
-assert_exit "get-grok is where it fails, so grok-exec STOPs on it" "1" "$RC"
+assert_exit "get-grok fails on it too, so a direct grok-exec call STOPs" "1" "$RC"
+
+# A preset that REFERENCES grok with a broken table must degrade grok alone and say so — the
+# same shape a broken catalog already gets, so `default` mode announces the missing reviewer
+# instead of dispatching one that cannot start. The other engines are untouched.
+{ printf '%b' "$ME_BASE"
+  printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.7: max\n'
+  printf 'defaults:\n  code_review:\n    builtin: [claude, grok]\n    grok_models: [grok-4.6]\n'; } > "$TDIR/config.yaml"
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$TDIR/gd.json" 2>"$ERR"; RC=$?
+assert_exit "get-defaults still answers when a preset names grok and the table is broken" "0" "$RC"
+assert_eq_str "…flagged degraded" "true" "$(jq -r '.grok_degraded' "$TDIR/gd.json" 2>/dev/null)"
+assert_eq_str "…grok dropped from builtin" "claude" "$(jq -r '.builtin | join(" ")' "$TDIR/gd.json" 2>/dev/null)"
+assert_eq_str "…and its model list emptied" "0" "$(jq '.grok_models | length' "$TDIR/gd.json" 2>/dev/null)"
+rm -f "$TDIR/gd.json"
 
 { printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts: [xhigh]\n'; } > "$TDIR/config.yaml"
 CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?

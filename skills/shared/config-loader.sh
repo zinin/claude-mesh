@@ -921,12 +921,20 @@ validate_defaults() {
         # preflight-env.sh print INVALID on the grok row rather than a MISSING one.
         if { [ "$gm_count" -gt 0 ] || [ "$grok_in_builtin" -gt 0 ]; } && [ "$grok_catalog_read" -eq 0 ]; then
             local grok_catalog_err
-            if grok_catalog_err=$(validate_grok_catalog 2>&1); then
+            # validate_grok, not validate_grok_catalog: a preset that references grok must
+            # degrade on ANY reason grok cannot be dispatched, and a broken model_efforts table
+            # is such a reason. Still in the subshell, so the message is captured and grok is
+            # dropped from this preset alone — every other engine is unaffected, which is the
+            # whole point of the branch. It can also `warn` (an unknown effort level); that
+            # warning is captured here rather than printed, which is why the UNCONDITIONAL gate
+            # above still must not call this function: that call site runs twice per read and
+            # would print such a warning twice.
+            if grok_catalog_err=$(validate_grok 2>&1); then
                 grok_catalog=$(jq -r '(.grok.models // [])[]' "$CONFIG_JSON" | tr '\n' ' ')
             else
                 GROK_CATALOG_BROKEN=1
                 grok_catalog=""
-                warn "defaults.$preset references grok but the grok: catalog does not validate — grok is disabled for this read, every other engine is unaffected. The catalog says: ${grok_catalog_err#config-loader: }"
+                warn "defaults.$preset references grok but the grok: section does not validate — grok is disabled for this read, every other engine is unaffected. The loader says: ${grok_catalog_err#config-loader: }"
             fi
             grok_catalog_read=1
         fi
@@ -1252,7 +1260,21 @@ cmd_get_flag() {
             # is the same promise has_claude_models makes, and the reason no separate
             # has_grok_models flag is needed — a bare probe would make that false. Do NOT
             # "restore parity" by simplifying this to `jq -e '.grok'`.
-            validate_grok_catalog
+            #
+            # validate_grok, not validate_grok_catalog: `model_efforts` and a typed
+            # `reasoning_effort` make dispatch impossible exactly as an unusable catalog does,
+            # so a flag that promises "can be dispatched" has to see them. It answered 1 on a
+            # broken table until all three reviewers of this branch found the same hole
+            # independently — grok was offered, dispatched, and died on `get-grok "$MODEL"`
+            # AFTER its run dir existed, which the guard reads as STALLED, "killed mid-flight",
+            # and STALLED means re-dispatch: a max_redispatch round on an error no retry fixes.
+            #
+            # This is NOT the `ultra` incident returning. rc=1 here is what both orchestrators
+            # already handle by degrading grok ALONE and printing this validator's own message,
+            # and what makes preflight print INVALID on the grok row instead of MISSING. The
+            # unconditional type gate at the top of validate_defaults is untouched, so a broken
+            # section NO preset references still grounds nothing.
+            validate_grok
             jq -e '.grok' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
         has_models)
