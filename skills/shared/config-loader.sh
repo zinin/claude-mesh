@@ -506,6 +506,8 @@ validate_grok() {
         # Known today (verified against grok 1.0.5). New levels ship with new models, so an
         # unknown value is NOT an error: warn and pass through, exactly as codex.reasoning_level
         # does — the grok CLI is the final validator. Never turn this into an enum.
+        # Canonical copy of this list: config.example.yaml's grok.reasoning_effort comment.
+        # The README row is the third. All three move together.
         low|medium|high|xhigh|max) ;;
         *) warn "grok.reasoning_effort: unknown value \"$effort\" — passing through (the grok CLI will validate)" ;;
     esac

@@ -164,9 +164,37 @@ See `config.example.yaml` for the canonical example. Sections:
 | `claude:` | no | `models:` — catalog of Claude model aliases offered for the built-in `claude` reviewer; each selected entry becomes one independent reviewer. Omit it (together with any `defaults.*.claude_models`) for the previous single-reviewer behaviour |
 | `codex:` | no | model + reasoning_level for codex CLI — the default for `/codex-*` skills and reviews unless the caller overrides; unknown levels pass through with a WARN (known set as of 2026-07 is listed in `config.example.yaml`) |
 | `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
-| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer. Required when the section exists, **and it must hold at least one entry**: both a missing `models:` and an empty `models: []` are hard errors, because the grok reviewer agent refuses to start without a model (`claude:`'s catalog is optional; this one is not, and its charset is narrower — see `config.example.yaml`). `reasoning_effort:` — one of low/medium/high/xhigh/max (run `grok --help` for the current set), unknown values pass through with a WARN. **Those five are what this loader passes without a WARN — they are no single model's set.** The CLI validates the value PER MODEL at argument parsing, before any API call, and rejects with rc=1: measured 2026-08-29 on grok 1.0.5, `grok-4.6` accepts `xhigh|high|medium|low`, `grok-4.5` only `high|medium|low`, and that CLI's own default model all five. So the value must be valid for EVERY entry of your catalog, or the entries that reject it lose their whole run with no diagnostic from this plugin — read a model's own set for free with `grok -m <id> --effort __bogus__ -p x`. Each selected entry becomes one independent reviewer, and **cost scales the same way it does for `claude.models`**. Entries are never checked against your CLI's own list and never substituted: an id your `grok` does not accept fails that reviewer's run, and the others carry on |
+| `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer, **required and non-empty** while the section exists. `reasoning_effort:` — optional, one value per section. One reviewer per selected entry, so cost scales as for `claude.models`. Both keys have rules worth reading before you edit them — see below |
 | `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |
 | `runtime:` | no | UI defaults + timeouts |
+
+
+### The `grok:` section: a mandatory catalog, and an effort key the CLI checks per model
+
+**`models:` is required and non-empty whenever the section exists** — a missing `models:` and an
+empty `models: []` are both hard errors, because the grok reviewer agent refuses to start without
+a model. (`claude:`'s catalog is optional; this one is not.) Its charset is narrower than
+`claude.models`, since a grok model id becomes a directory name and a run-watcher roster entry —
+`config.example.yaml` states the exact set. Entries are never checked against your CLI's own list
+and never substituted: an id your `grok` does not accept fails that reviewer's run, and the other
+reviewers carry on.
+
+**`reasoning_effort:` is one value per section — the CLI validates it per model.** This loader
+passes five values without a WARN — `low`, `medium`, `high`, `xhigh`, `max` — and anything else
+with one, so a level xAI ships tomorrow needs no plugin release. Run `grok --help` for the
+current set; `config.example.yaml`'s `grok.reasoning_effort` comment is the canonical copy of
+the list, and this note and `config-loader.sh` follow it.
+
+**Those five are no single model's set.** The CLI validates the flag PER MODEL at argument
+parsing, before any API call, and rejects with rc=1. Measured 2026-08-29 on grok 1.0.5:
+`grok-4.6` accepts `xhigh|high|medium|low`, `grok-4.5` only `high|medium|low`, and that CLI's own
+default model all five — three sets behind one binary. So the value must be valid for EVERY entry
+of your catalog, or the entries that reject it lose their whole run with no diagnostic from this
+plugin. Reading a model's own set is free — it fails on the flag and never reaches the API:
+
+```sh
+grok -m <id> --effort __bogus__ -p x
+```
 
 ## WARNING: Uninstall wipes config
 

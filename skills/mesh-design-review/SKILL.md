@@ -221,6 +221,11 @@ This composed prompt is self-contained and gets passed to each executor agent in
 
 ### Step 5: Select Review Agents (first iteration only)
 
+<!-- SYNC: the remembered set is ONE list living in two places — the sentence below
+     (in prose, because Step 5 introduces the set before any variable exists to name it)
+     and Step 5.4's "Remember the confirmed set" line (the names that hold it). The drift
+     this guards against already happened once: grok was added to Step 5.4 and not here.
+     Change both or neither. -->
 Reviewer selection is **config-driven** — there are no hardcoded provider/model lists. Read the available executors and models from `config.yaml` via the loader, then either honor the `defaults.design_review` preset (`default` argument) or run the paginated selection UI. **Selection is made on the FIRST iteration only and reused for every subsequent iteration in the loop** — remember the resulting agent set (built-ins + Claude models + grok models + ext-claude model ids). Step 5.4 states the same four items, three of them named variables — the built-in TYPES is the one Q1 and Step 5.2.1 write directly, with no variable of its own ("What Q1's answer becomes" below says so in as many words); the two must always agree about what is remembered.
 
 **Bind `AUTODECIDE` here, before anything else in this step** — unconditionally, whether or not `default` was passed: it is `true` when `autodecide` appears among the arguments, `false` otherwise. Echo it (`AUTODECIDE=true|false`) so it is on screen. Step 5.1 is the wrong home for it — that sub-step runs in `default` mode only, while `autodecide` is orthogonal to `default` and just as valid on an interactive run. Its only consumer is Step 12, a whole review cycle and a background watch loop away; an unbound name raises no error in a prompt — the reader improvises, and a run started with `autodecide` quietly waits for the user after all. Like the agent set, it is bound on the first iteration and holds for any further iteration run in THIS session — it does not survive into a fresh one, since `/claude-mesh:design-review-fresh-session` builds the next invocation out of DESIGN_PATH/PLAN_PATH/TOPIC and carries no `autodecide`, so a next iteration that should also run unattended needs the word typed into that generated prompt by hand. Same reason `/claude-mesh:mesh-review` binds it in its Step 0.
@@ -507,6 +512,8 @@ options:
 
 On "Перевыбрать": clear the selection — `SELECTED_CLAUDE_MODELS` and `SELECTED_GROK_MODELS` included, or the re-select leaves the previous round's models standing behind a new set of TYPES — and restart from Step 5.2. Loop guard: cap re-selects at 3; on the 4th, message "Слишком много перевыборов; запустите /claude-mesh:mesh-design-review заново" and exit. If the user deselected everything — no built-in left that can actually produce a reviewer (`grok` with an empty `SELECTED_GROK_MODELS` counts as nothing, per Step 5.2.6) and no models — STOP with "ничего не выбрано для ревью".
 
+<!-- SYNC: this list is the twin of the prose enumeration at the head of Step 5 ("remember
+     the resulting agent set"). Change both or neither. -->
 Remember the confirmed set (built-in TYPES + `SELECTED_CLAUDE_MODELS` + `SELECTED_GROK_MODELS` + `SELECTED_IDS`) for all subsequent iterations in the loop. Miss `SELECTED_GROK_MODELS` in that list and the grok reviewers run on iteration 1 and silently vanish on iteration 2 — the "silently ignored list" failure the `validate_defaults` comment names as the very reason `claude_models` is fail-closed.
 
 ### Step 6: Execute Review via Selected Agents
