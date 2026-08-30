@@ -1,0 +1,21 @@
+# A broken grok catalog AND a preset that names grok in builtin without grok_models — two
+# independent config errors at once. Before this pair was gated, the preset read DIED here
+# (rc=1) one line after the WARN promised "every other engine is unaffected", and
+# preflight-env.sh then skipped every codex, gemini and claude row: the `ultra` incident's
+# shape, reachable from an ordinary half-finished setup.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn"
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+codex:
+  model: gpt-5.5
+grok:
+  models: "this-is-a-scalar-not-a-list"
+defaults:
+  code_review:
+    builtin: [codex, grok]

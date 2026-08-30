@@ -947,11 +947,35 @@ validate_defaults() {
         # -gt/-eq throughout, never `= 0`: these are jq integers, and the claude block beside
         # this one uses the arithmetic form everywhere. Mixing the string and arithmetic
         # comparators for the same values invites a future `= 00` that silently never matches.
+        # Both rules are fatal only while grok can still RUN. Their whole purpose is to stop the
+        # orchestrator dispatching a grok reviewer the agent then refuses to start for want of a
+        # MODEL — so when GROK_CATALOG_BROKEN is 1 they guard against something that cannot
+        # happen: the degrade below strips grok from builtin and empties grok_models, and no grok
+        # reviewer is dispatched at all. What the die DOES do in that state is ground codex,
+        # gemini and claude — one line after the WARN above has promised, in as many words, that
+        # "every other engine is unaffected". That is the `ultra` incident's shape, and closing it
+        # is what 8c8583f and eaf3ad4 already did for the two neighbouring cases.
+        #
+        # BOTH rules, not just the emptiness one: measured 2026-08-30, a broken catalog reaches
+        # each of them and each answers with the same WARN-then-die pair. Fixing one would leave
+        # the other stating the contradiction.
+        #
+        # `validate` is untouched, and not by argument: validate_all runs validate_grok BEFORE
+        # validate_defaults and dies there, so GROK_CATALOG_BROKEN is never 1 on the strict path
+        # and this branch is unreachable from it. Measured on all three broken shapes — every one
+        # still exits 1 from `config-loader.sh validate`.
+        grok_preset_die() {
+            if [ "$GROK_CATALOG_BROKEN" -eq 1 ]; then
+                warn "$1 — reported and NOT fatal here: the grok: section does not validate either, so grok is dropped from this read whatever the preset says. Fix both; \`config-loader.sh validate\` still rejects the file."
+            else
+                die "$1"
+            fi
+        }
         if [ "$gm_count" -gt 0 ] && [ "$grok_in_builtin" -eq 0 ]; then
-            die "defaults.$preset.grok_models is set but \"grok\" is missing from defaults.$preset.builtin (add \"grok\" to builtin, or drop grok_models)"
+            grok_preset_die "defaults.$preset.grok_models is set but \"grok\" is missing from defaults.$preset.builtin (add \"grok\" to builtin, or drop grok_models)"
         fi
         if [ "$grok_in_builtin" -gt 0 ] && [ "$gm_count" -eq 0 ]; then
-            die "defaults.$preset.builtin lists \"grok\" but defaults.$preset.grok_models is empty — a grok reviewer cannot start without a model (name one from the grok.models catalog)"
+            grok_preset_die "defaults.$preset.builtin lists \"grok\" but defaults.$preset.grok_models is empty — a grok reviewer cannot start without a model (name one from the grok.models catalog)"
         fi
 
         # <!-- SYNC: this preset loop is the deliberate TWIN of the claude_models loop above.

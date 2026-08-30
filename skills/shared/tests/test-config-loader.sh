@@ -1741,6 +1741,54 @@ assert_eq_str "…and an unlisted model resolves to nothing, so no --effort is p
 
 rm -rf "$TDIR" "$ERR"
 
+# === Test 61: a broken grok catalog must not let a PRESET error ground the environment ===
+# The two fail-closed preset rules — grok in builtin without grok_models, and grok_models
+# without grok in builtin — exist to stop the orchestrator dispatching a reviewer the agent
+# refuses to start for want of a MODEL. When the catalog itself does not validate, grok is
+# dropped from the read anyway, so those rules guard a dispatch that cannot happen while their
+# `die` grounds codex, gemini and claude — one line after the WARN has promised the opposite.
+# Both shapes measured 2026-08-30; both answered WARN-then-die before the gate.
+echo "=== Test 61: broken grok catalog + a preset error degrades, never grounds ==="
+for FX in broken-grok-preset-no-models broken-grok-preset-orphan-models; do
+    TDIR=$(mktemp -d); ERR=$(mktemp); GD_OUT=$(mktemp)
+    cp "$FIXTURES/$FX.yaml" "$TDIR/config.yaml"
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+    assert_exit "$FX: get-defaults answers instead of dying" "0" "$RC"
+    assert_eq_str "$FX: codex survives" "codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
+    assert_eq_str "$FX: degradation flagged" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
+    # The invariant the whole suppression rests on: while degraded, grok is never dispatchable.
+    # If either of these ever fails, the fail-closed rules must come back — a preset carrying
+    # grok with no model would then reach an orchestrator.
+    assert_eq_str "$FX: grok never left in builtin while degraded" "0" \
+        "$(jq '[.builtin[] | select(. == "grok")] | length' "$GD_OUT" 2>/dev/null)"
+    assert_eq_str "$FX: grok_models emptied while degraded" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
+    # Reported, not silenced: the preset error still reaches the user, as a WARN.
+    assert_stderr_contains "$FX: the preset error is still reported" "NOT fatal here" "$ERR"
+    # And the strict path is untouched — validate_grok runs before validate_defaults in
+    # validate_all and dies there, so the gate above is unreachable from `validate`.
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+    assert_exit "$FX: validate still rejects the file" "1" "$RC"
+    rm -f "$ERR" "$GD_OUT"; rm -rf "$TDIR"
+done
+
+# A HEALTHY catalog must still make both preset rules fatal — the gate keys on the broken
+# catalog, never on the preset error itself.
+echo "=== Test 62: with a valid catalog both preset rules stay fatal ==="
+for PAIR in "builtin: [codex, grok]|grok_models is empty" "builtin: [codex]
+    grok_models: [grok-4.6]|is missing from"; do
+    PRESET="${PAIR%%|*}"; NEEDLE="${PAIR##*|}"
+    TDIR=$(mktemp -d); ERR=$(mktemp)
+    { printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\n'
+      printf 'models:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
+      printf 'codex:\n  model: gpt-5.5\n'
+      printf 'grok:\n  models: [grok-4.6]\n'
+      printf 'defaults:\n  code_review:\n    %s\n' "$PRESET"; } > "$TDIR/config.yaml"
+    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+    assert_exit "valid catalog: the preset error is still fatal" "1" "$RC"
+    assert_stderr_contains "…and says which rule" "$NEEDLE" "$ERR"
+    rm -f "$ERR"; rm -rf "$TDIR"
+done
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
