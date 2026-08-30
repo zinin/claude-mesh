@@ -384,6 +384,14 @@ fi
 if [ "$PIPELINE_RC" -ne 0 ]; then
   echo "WARN: grok pipeline exited rc=$PIPELINE_RC" >&2
   if [ -s "$WORK_DIR/stderr.txt" ]; then echo "--- stderr ---" >&2; cat "$WORK_DIR/stderr.txt" >&2; fi
+  # Print the output before leaving. It is non-empty (the check above already returned on empty),
+  # and on the run this branch exists for — a top-level `error` event, the shape a typo in `-m`
+  # produces — output.txt holds the extracted `API Error: Couldn't set model to <id>`, the one
+  # line that says WHY. Exiting before `=== OUTPUT ===` handed the caller a bare rc and left the
+  # reason in the run dir. The supervised branch has no such gap: it always reaches its own
+  # OUTPUT section.
+  echo "=== OUTPUT ==="
+  cat "$WORK_DIR/output.txt"
   exit "$PIPELINE_RC"
 fi
 

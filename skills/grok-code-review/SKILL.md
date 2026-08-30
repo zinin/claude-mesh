@@ -102,7 +102,10 @@ echo "OK: git repo"
 GROK_ERR=$(mktemp) || { echo "STOP: mktemp failed"; exit 1; }
 FLAG_RC=0
 HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GROK_ERR") || FLAG_RC=$?
-if [ "$FLAG_RC" -ne 0 ]; then
+if [ "$FLAG_RC" -eq 2 ]; then
+    echo "STOP: there is no config.yaml yet — copy config.example.yaml into the plugin data dir and add a grok: section. It is user-owned; agents never create or edit it. The loader says:"
+    cat "$GROK_ERR"; rm -f "$GROK_ERR"; exit 1
+elif [ "$FLAG_RC" -ne 0 ]; then
     echo "STOP: config-loader could not read the grok: section (rc=$FLAG_RC) — config.yaml is user-owned; agents never edit it. The loader says:"
     cat "$GROK_ERR"; rm -f "$GROK_ERR"; exit 1
 fi
@@ -115,6 +118,14 @@ fi
 # line and it is what reports a config.yaml edited between the two calls.
 GROK_CAT=$("$LOADER" list-grok-models) || { echo "STOP: grok: section is present but its catalog does not validate — fix config.yaml (user-owned; agents never edit it)" >&2; exit 1; }
 echo "OK: grok: section present ($(printf '%s' "$GROK_CAT" | tr '\n' ' '))"
+# The catalog is in hand, so check the caller's MODEL against it HERE — a typo then fails before
+# a run dir exists and before the CLI spends an invocation being told the id is unknown. `grep
+# -Fxq` matches whole lines only, so `grok-4` never passes for `grok-4.6`. Substitute the MODEL
+# argument into the line below; an empty value means the caller sent none, which is the
+# `ERROR: MODEL is required` case above.
+MODEL="<the MODEL argument this skill was called with>"
+[ -n "$MODEL" ] || { echo "STOP: MODEL is required and was not substituted into this fence. Example: MODEL=grok-4.6"; exit 1; }
+printf '%s\n' "$GROK_CAT" | grep -Fxq -- "$MODEL" || { echo "STOP: MODEL '$MODEL' is not in the grok.models catalog ($(printf '%s' "$GROK_CAT" | tr '\n' ' ')) — pick one of those, or add it to config.yaml yourself. claude-mesh never substitutes a model of its own."; exit 1; }
 ```
 
 If any pre-flight check fails, STOP and report the error to the user verbatim. Do NOT edit config.yaml (or any plugin config) yourself — only the user changes it.
