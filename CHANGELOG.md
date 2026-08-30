@@ -93,9 +93,11 @@ been costing codex, gemini and ext-claude runs the same way.
   the LAST `result` event, and a run that dispatches a background subagent ends on a short
   acknowledgement rather than on its review — so the report, the merge and the delegation guard
   all saw the acknowledgement. Measured over the run archive on the development machine: of the
-  streams carrying more than one result event, 36 had a last event shorter than the longest, up
-  to 16817 of 17882 characters of review discarded — this plugin's own review of 2026-08-29
-  among them. The longest result now wins, ties going to the last so single-result runs stay
+  56 streams carrying more than one result event with usable text, 33 had a last event shorter
+  than the longest, up to 16817 of 17882 characters of review discarded — the same sweep counts
+  59 and 36 if result events with no text of their own are included, which the extractor never
+  had to choose between. This plugin's own review of 2026-08-29 is among them.
+  The longest result now wins, ties going to the last so single-result runs stay
   byte-identical to what they produced before. A failed segment never wins over a successful
   one whatever its length; an error result is used only when the stream has no successful one,
   which keeps a quota or balance message from being replaced by silence.
