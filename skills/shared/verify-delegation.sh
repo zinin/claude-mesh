@@ -457,9 +457,20 @@ case "$ENGINE" in
             # reaching runs that cannot get there because this check fires first. Read from the
             # last result event whatever its is_error, since the NT scan below deliberately
             # counts only successful events.
-            LAST_NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null \
+            # `tail -1` FIRST, on the LINE, then read that one event. With the order reversed
+            # `numbers` dropped null and absent counts BEFORE tail saw them, so LAST_NT could
+            # come from an EARLIER event than the one being judged — the name and the sentence
+            # above it both promise the last. Two shapes it got wrong: a final event with no
+            # num_turns and an earlier success at 0 elected that 0 and fired BROKEN with "failed
+            # before taking a single turn" about a run that took several; a final null with an
+            # earlier 5 judged the failure by the healthy segment's count. Neither is reachable
+            # in 904 archived streams — the two readings disagree on exactly one, a file whose
+            # last line is truncated, and there neither value is 0 — so this corrects the read
+            # without moving any verdict that has ever been issued. Unparseable or absent now
+            # yields the empty string, which is not "0", so the terminal verdict does not fire.
+            LAST_NT="$(grep -h '"type":"result"' "$RAW" 2>/dev/null | tail -1 \
                 | jq -Rr 'fromjson? | objects | select(.type == "result")
-                          | .num_turns | numbers | select(. == floor and . >= 0)' 2>/dev/null | tail -1)"
+                          | .num_turns | numbers | select(. == floor and . >= 0)' 2>/dev/null)"
             if [ "$LAST_NT" = "0" ]; then
                 ZERO_WHY="the engine failed before taking a single turn (num_turns=0) — an argument or start-up refusal, not a review that died mid-flight. Retry is futile: the same invocation is refused identically"
                 if [ "$ENGINE" = "grok" ]; then

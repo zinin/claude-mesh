@@ -1438,6 +1438,45 @@ assert_eq "a non-empty errors[] alone does NOT make it BROKEN" "STALLED" "$VERDI
 assert_eq "exit 2" "2" "$RC"
 rm -rf "$TDIR"
 
+# === Test 69: the zero-turn read must come from the LAST result event, not the last INTEGER ===
+# The pipeline dropped null/absent counts BEFORE `tail -1`, so LAST_NT could be elected from an
+# EARLIER event than the one being judged. Both directions below were reachable on a split
+# stream — progress-monitor.sh appends every segment to one raw.jsonl — and the first is the
+# damaging one: BROKEN is the verdict mesh-review never retries, so a run whose body did real
+# work was dropped terminally under a reason ("failed before taking a single turn") that was
+# false about it. The control that follows keeps the arm working where it should.
+echo "=== Test 69: zero-turn verdict reads the last event, not the last integer ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-13-00-00-1000-split-no-nt)
+mk_output "$rd/output.txt" 'a real review'; ln -s attempt-1 "$rd/final"
+{ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":0}'
+  echo '{"type":"result","subtype":"error","is_error":true}'; } > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "a final event with NO num_turns does not inherit an earlier 0" "STALLED" "$VERDICT"
+rm -rf "$TDIR"
+
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-13-10-00-1000-split-null-nt)
+mk_output "$rd/output.txt" 'a real review'; ln -s attempt-1 "$rd/final"
+{ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":5}'
+  echo '{"type":"result","subtype":"error","is_error":true,"num_turns":null}'; } > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "…nor is a final null judged by the healthy segment's count" "STALLED" "$VERDICT"
+rm -rf "$TDIR"
+
+# CONTROL: the arm still fires when the last event genuinely reports zero, even behind a
+# successful earlier segment. Without this the two assertions above are satisfied by simply
+# deleting the arm.
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/ext-claude/zai/glm" 2026-08-30-13-20-00-1000-split-real-zero)
+mk_output "$rd/output.txt" 'a real review'; ln -s attempt-1 "$rd/final"
+{ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":7}'
+  echo '{"type":"result","subtype":"error","is_error":true,"num_turns":0}'; } > "$rd/raw.jsonl"
+run ext-claude zai/glm 1 "$TDIR"
+assert_eq "a genuine final zero still scores BROKEN" "BROKEN" "$VERDICT"
+assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
