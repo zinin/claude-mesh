@@ -292,7 +292,24 @@ assert_eq "design review prints it too" "1" \
 for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
     assert_ge "${f#"$REPO"/} binds SELECTED_GROK_MODELS" "4" \
         "$(grep -c 'SELECTED_GROK_MODELS' "$f")"
+    assert_ge "${f#"$REPO"/} binds SELECTED_NATIVE_MODELS" "4" \
+        "$(grep -c 'SELECTED_NATIVE_MODELS' "$f")"
+    assert_ge "${f#"$REPO"/}: spawn_subagent is the Grok host test" "1" \
+        "$(grep -c 'spawn_subagent' "$f")"
+    assert_ge "${f#"$REPO"/}: Grok CLI order names claude first" "1" \
+        "$(grep -c 'claude / codex / gemini / grok' "$f")"
+    assert_ge "${f#"$REPO"/}: native degrade notice" "1" \
+        "$(grep -c 'native не запущен' "$f")"
 done
+# mesh-review dispatches claude-code-reviewer; design review dispatches claude-executor.
+assert_ge "design review dispatches claude-executor" "1" \
+    "$(grep -c 'claude-mesh:claude-executor' "$DESIGN_SKILL")"
+assert_eq "design review never dispatches claude-code-reviewer" "0" \
+    "$(grep -c 'claude-mesh:claude-code-reviewer' "$DESIGN_SKILL")"
+assert_ge "mesh-review dispatches claude-code-reviewer" "1" \
+    "$(grep -c 'claude-mesh:claude-code-reviewer' "$MESH_REVIEW")"
+assert_eq "mesh-review never dispatches claude-executor" "0" \
+    "$(grep -c 'claude-mesh:claude-executor' "$MESH_REVIEW")"
 
 # Every `ни одной …` sentinel must carry its own drop clause. The sentinel exists because
 # AskUserQuestion refuses a one-option page, so each of the three model pages offers its empty

@@ -236,9 +236,16 @@ This composed prompt is self-contained and gets passed to each executor agent in
      and Step 5.4's "Remember the confirmed set" line (the names that hold it). The drift
      this guards against already happened once: grok was added to Step 5.4 and not here.
      Change both or neither. -->
-Reviewer selection is **config-driven** — there are no hardcoded provider/model lists. Read the available executors and models from `config.yaml` via the loader, then either honor the `defaults.design_review` preset (`default` argument) or run the paginated selection UI. **Selection is made on the FIRST iteration only and reused for every subsequent iteration in the loop** — remember the resulting agent set (built-ins + Claude models + grok models + ext-claude model ids). Step 5.4 states the same four items, three of them named variables — the built-in TYPES is the one Q1 and Step 5.2.1 write directly, with no variable of its own ("What Q1's answer becomes" below says so in as many words); the two must always agree about what is remembered.
+Reviewer selection is **config-driven** — there are no hardcoded provider/model lists. Read the available executors and models from `config.yaml` via the loader, then either honor the `defaults.design_review` preset (`default` argument) or run the paginated selection UI. **Selection is made on the FIRST iteration only and reused for every subsequent iteration in the loop** — remember the resulting agent set (built-ins + native models + Claude models + grok models + ext-claude model ids). Step 5.4 states the same items, named variables among them — the built-in TYPES is the one Q1 and Step 5.2.1 write directly, with no variable of its own ("What Q1's answer becomes" below says so in as many words); the two must always agree about what is remembered.
 
 **Bind `AUTODECIDE` here, before anything else in this step** — unconditionally, whether or not `default` was passed: it is `true` when `autodecide` appears among the arguments, `false` otherwise. Echo it (`AUTODECIDE=true|false`) so it is on screen. Step 5.1 is the wrong home for it — that sub-step runs in `default` mode only, while `autodecide` is orthogonal to `default` and just as valid on an interactive run. Its only consumer is Step 12, a whole review cycle and a background watch loop away; an unbound name raises no error in a prompt — the reader improvises, and a run started with `autodecide` quietly waits for the user after all. Like the agent set, it is bound on the first iteration and holds for any further iteration run in THIS session — it does not survive into a fresh one, since `/claude-mesh:design-review-fresh-session` builds the next invocation out of DESIGN_PATH/PLAN_PATH/TOPIC and carries no `autodecide`, so a next iteration that should also run unattended needs the word typed into that generated prompt by hand. Same reason `/claude-mesh:mesh-review` binds it in its Step 0.
+
+**Detect HOST here**, after AUTODECIDE, before Step 5.0: `HOST=grok` if this session has a
+`spawn_subagent` tool, else `HOST=claude-code`. Presence of `spawn_subagent` is the test. Do not
+require `Task` to be missing: a future Grok build that also exposes `Task` would otherwise be
+classified as Claude Code. Echo it (`HOST=grok|claude-code`) so it is on screen. `$HOST` is prompt
+state, not a shell variable across Bash calls — when a later fence branches on host, substitute
+the literal `grok` or `claude-code` you echoed.
 
 #### Step 5.0: Read available reviewers from config
 
@@ -296,7 +303,7 @@ MODELS=$("$LOADER" list-models)            # `<id>|<label>` per line, ready for 
 DJ_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 DEFAULTS_JSON=$("$LOADER" get-defaults design_review 2>"$DJ_ERR") \
     || { echo "config.yaml невалиден (defaults.design_review):" >&2; cat "$DJ_ERR" >&2; rm -f "$DJ_ERR"; exit 1; }
-rm -f "$DJ_ERR"   # {"builtin":[...],"claude_models":[...],"grok_models":[...],"models":[...],"run_mode":null}
+rm -f "$DJ_ERR"   # {"builtin":[...],"claude_models":[...],"native_models":[...],"grok_models":[...],"models":[...],"run_mode":null}
 echo "$DEFAULTS_JSON"
 DM_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
@@ -313,9 +320,23 @@ CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
 rm -f "$CM_ERR"
 echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
 echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
+# HOST=grok extra probes. `$HOST` is prompt state from Step 5 — substitute the literal
+# `grok` or `claude-code` you echoed; it is not a shell variable across Bash calls.
+HAS_CLAUDE_CLI=0
+command -v claude >/dev/null 2>&1 && HAS_CLAUDE_CLI=1
+echo "HAS_CLAUDE_CLI=$HAS_CLAUDE_CLI"
+HOST_MODELS=""
+if [ "$HOST" = grok ]; then
+  GM=$(mktemp)
+  if grok models >"$GM" 2>/dev/null; then
+    HOST_MODELS=$(bash "$(dirname "$LOADER")/list-host-models.sh" --from-file "$GM")
+  fi
+  rm -f "$GM"
+fi
+echo "HOST_MODELS=[$(printf '%s' "$HOST_MODELS" | tr '\n' ' ')]"
 ```
 
-rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.grok_models`, `.models`, `.grok_degraded`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models), `GROK_DEFAULT_IDS` (recommended grok models — the ★ set Step 5.2.6 marks with, so that page needs no loader read of its own) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_GROK` / `HAS_MODELS` / `HAS_CLAUDE_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
+rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.native_models`, `.grok_models`, `.models`, `.grok_degraded`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models), `NATIVE_DEFAULT_IDS` (recommended native slugs — the ★ set Step 5.2.3 marks with), `GROK_DEFAULT_IDS` (recommended grok models — the ★ set Step 5.2.6 marks with, so that page needs no loader read of its own) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_GROK` / `HAS_MODELS` / `HAS_CLAUDE_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
 
 #### Step 5.1: `default` argument → use the preset
 
@@ -329,6 +350,9 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
     <!-- SYNC: the fallback rule in the next bullet is ONE rule living in four places — this file's Step 5.2.5 ("Empty selection is not an error"), and `commands/mesh-review.md` Step 0 / Step 2.4. Change all four or none. -->
     - list absent/empty → exactly **one** reviewer named `claude`, with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise no `model:` at all (inherits the session model).
   - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (`.claude_models`, or empty in the fallback case), exactly as `/mesh-review` Step 0 does. Step 5.4 remembers `SELECTED_CLAUDE_MODELS` for iterations 2..N, so in `default` mode it must actually hold something by then.
+  - **On HOST=claude-code, `native` in builtin collapses to this same host set.** Treat `native` as `claude` for host reviewers — `native ∪ claude` is one set sourced from `claude_models` (and the empty-list fallback above). Ignore `.native_models`. **Bind `SELECTED_NATIVE_MODELS` to the empty list** — on Claude Code the host set is `SELECTED_CLAUDE_MODELS`; native bullets must not appear on confirm.
+  - **On HOST=grok, `native` is a separate type.** `claude` in builtin is the Claude Code CLI (`claude-mesh:claude-executor`), not host slugs. If `native` is in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to `.native_models`**. An empty/absent list stays empty — that is the signal for one session-model reviewer (omit `model:` at dispatch). If `native` is not in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to the empty list**. If `.native_models` is non-empty and `native` is not in builtin, the loader already rejected the file.
+  - On HOST=grok, intersect the bound `SELECTED_NATIVE_MODELS` with `HOST_MODELS` from Step 5.0 (`grep -Fxq`); skip missing slugs with **one WARN**, not one per slug. If `native` was requested and `HOST_MODELS` is empty: print `native не запущен; остальные работают.` and **bind `SELECTED_NATIVE_MODELS` empty** (`native_degraded` spoken, not a loader flag).
   - `codex` → spawn `claude-mesh:codex-executor`
   - `gemini` → spawn `claude-mesh:gemini-executor`
   <!-- SYNC: the "no fallback" rule in the next bullet is ONE rule living in five places — this
@@ -358,6 +382,7 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
     must actually hold something by then; an undefined name in a shell script raises an error
     under `set -u`, while in a prompt it raises nothing at all — the reader improvises.
 - For each model id in `.models` → spawn `claude-mesh:ext-claude-executor` with `MODEL=<id>`.
+- **If HOST=grok and the preset `run_mode` is `team`: STOP** with `На Grok team mode не поддерживается — остановите запуск и используйте background.` Do not dispatch. Grok has no TeamCreate; always background.
 
 Remember this agent set for all subsequent iterations. Go directly to Step 6.
 
@@ -371,60 +396,115 @@ Use AskUserQuestion (multiSelect: true, max 4, header: "Reviewers"):
 ```
 question: "Какие типы reviewers запустить? (★ = recommended, в defaults.design_review)"
 options:
-  - "claude ★ default (свой Claude Code)"           — show ALWAYS; ★ if "claude" in defaults.builtin
+  HOST=claude-code:
+  - "claude ★ default (свой Claude Code)"           — show ALWAYS; ★ if "claude" OR "native" in defaults.builtin (`native` ≡ `claude` on CC)
   - "внешние CLI (<the configured engines, " / "-joined>) ★ default" — show only if HAS_CODEX=1 OR HAS_GEMINI=1 OR HAS_GROK=1; ★ if ANY of codex/gemini/grok is in defaults.builtin.
     Build the parenthesis from the flags that are 1, in the order codex / gemini / grok: a codex-only machine reads «внешние CLI (codex)», never a roster of two
     engines it does not have. The ★ still fires on ANY of the three appearing in `builtin`, because it marks the OPTION, not an individual engine.
+    `claude` is **not** in this parenthesis and is **not** on the CLI page.
+  - "external models (Anthropic-API) ★ default"     — show only if HAS_MODELS=1; ★ if defaults.models is non-empty
+  HOST=grok:
+  - "свои модели хоста ★ default" (`native`)        — show ALWAYS; ★ if "native" in defaults.builtin. Do not add `native` as a fourth Q1 option.
+  - "внешние CLI (<the configured engines, " / "-joined>) ★ default" — show if HAS_CLAUDE_CLI=1 OR HAS_CODEX=1 OR HAS_GEMINI=1 OR HAS_GROK=1; ★ if ANY of claude/codex/gemini/grok is in defaults.builtin.
+    Build the parenthesis from the flags that are 1, in the order claude / codex / gemini / grok, only those whose flags are 1.
   - "external models (Anthropic-API) ★ default"     — show only if HAS_MODELS=1; ★ if defaults.models is non-empty
 ```
 
-**Q1 is three options and stays three however many CLI engines exist later.** AskUserQuestion accepts at most FOUR, and one option is already spent on `claude` and one on the external models, so the CLI engines share the third — a fourth CLI engine belongs on Step 5.2.1's page, never as a fifth option here. Do **not** "restore symmetry" by splitting this option back into one per engine: on a machine with codex, gemini and grok all configured that call has five options and fails outright, and the failure is the whole question, not one dropped row.
+**Q1 is three options and stays three however many CLI engines exist later.** AskUserQuestion accepts at most FOUR, and one option is already spent on the host (`claude` on CC, `native` / «свои модели хоста» on Grok) and one on the external models, so the CLI engines share the third — a fourth CLI engine belongs on Step 5.2.1's page, never as a fifth option here. Do **not** "restore symmetry" by splitting this option back into one per engine: on a machine with codex, gemini and grok all configured that call has five options and fails outright, and the failure is the whole question, not one dropped row. Do **not** add `native` as a fourth Q1 option: on Claude Code it duplicates `claude`; on Grok the host already occupies option 1.
 
-(Show the «внешние CLI» and external-models options only when their gating flag is `1` — «внешние CLI» is gated by the OR of the three engine flags, since it stands for all of them. The `claude` option is shown unconditionally — the built-in claude reviewer is your own Claude Code and needs no config section, so the old no-reviewer-types-available STOP is unreachable and has been removed.)
+(Show the «внешние CLI» and external-models options only when their gating flag is `1` — «внешние CLI» is gated by the OR of the engine flags, since it stands for all of them. The host option is shown unconditionally.)
 
-**What Q1's answer becomes.** «внешние CLI» is not itself a reviewer type and **never enters the selected built-in TYPES** — Step 5.2.1 turns it into the individual engine names (`codex`, `gemini`, `grok`), and those are what land in that set. It is the same set Step 5.4 confirms and remembers; there is no second selection variable. Everything downstream — Step 5.4's bullet list, the Step 6 dispatch, its watcher roster and its guard — keys off it exactly as it did when Q1 named the engines directly, and no other step changes shape.
+**What Q1's answer becomes.** «внешние CLI» is not itself a reviewer type and **never enters the selected built-in TYPES** — Step 5.2.1 turns it into the individual engine names (`codex`, `gemini`, `grok`, and on Grok also `claude`), and those are what land in that set. The host option enters as `claude` (CC) or `native` (Grok). It is the same set Step 5.4 confirms and remembers; there is no second selection variable. Everything downstream — Step 5.4's bullet list, the Step 6 dispatch, its watcher roster and its guard — keys off it exactly as it did when Q1 named the engines directly, and no other step changes shape.
 
+- HOST=grok, «свои модели хоста» selected → go to **Step 5.2.3**. If `HOST_MODELS` is empty: print `native не запущен; остальные работают.` and **bind `SELECTED_NATIVE_MODELS` empty** (`native_degraded` spoken, not a loader flag); skip Step 5.2.3.
+- HOST=grok, «свои модели хоста» NOT selected → skip Step 5.2.3; **bind `SELECTED_NATIVE_MODELS` to the empty list**.
+- HOST=claude-code → skip Step 5.2.3 always; **bind `SELECTED_NATIVE_MODELS` to the empty list** (host set is `SELECTED_CLAUDE_MODELS`).
 - «внешние CLI» selected → go to **Step 5.2.1** and pick which of them.
-- «внешние CLI» NOT selected → **skip Step 5.2.1**; no `codex` / `gemini` / `grok` enters the selected TYPES, no CLI reviewer runs at all, and **bind `SELECTED_GROK_MODELS` to the empty list** — Step 5.2.6 never runs on this path, while Step 5.4 and the Step 6 dispatch read that name unconditionally.
+- «внешние CLI» NOT selected → **skip Step 5.2.1**; no `codex` / `gemini` / `grok` (and on Grok no `claude`) enters the selected TYPES, no CLI reviewer runs at all, and **bind `SELECTED_GROK_MODELS` to the empty list** — Step 5.2.6 never runs on this path, while Step 5.4 and the Step 6 dispatch read that name unconditionally. On Grok, `claude` not entering TYPES is what Step 5.2.5's skip uses to **bind `SELECTED_CLAUDE_MODELS` empty**.
 - If "external models" is not selected → skip Step 5.3 entirely.
-- If `claude` is not selected → skip Step 5.2.5 and run no claude reviewer at all.
+- If `claude` is not in the selected TYPES → skip Step 5.2.5 and run no claude reviewer at all.
 - If `grok` is not selected (in Step 5.2.1) → skip Step 5.2.6 and run no grok reviewer.
 
 #### Step 5.2.1: CLI-engine selection
 
 (No `Q1.x` label. This page runs *before* Step 5.2.5 and Step 5.3, both of which are already numbered off Q1, so any `Q1.x` number here would read as an ordering error. The step number alone is unambiguous.)
 
-Runs ONLY when Q1 selected «внешние CLI». The engines on offer are exactly those whose Step 5.0 flag is `1`: `codex` (`HAS_CODEX=1`), `gemini` (`HAS_GEMINI=1`), `grok` (`HAS_GROK=1`). Never offer an engine whose flag is `0` — it has no config section to run from, and for grok a `0` may also mean Step 5.0 degraded it after a validator error it already printed.
+Runs ONLY when Q1 selected «внешние CLI». The engines on offer are exactly those whose Step 5.0 flag is `1`. HOST=claude-code: `codex` (`HAS_CODEX=1`), `gemini` (`HAS_GEMINI=1`), `grok` (`HAS_GROK=1`). HOST=grok: the same three plus `claude` (`HAS_CLAUDE_CLI=1`). `claude` appears on this page **only when HOST=grok**. Never offer an engine whose flag is `0` — it has no config section to run from (and for grok a `0` may also mean Step 5.0 degraded it after a validator error it already printed; for `claude` on Grok, `HAS_CLAUDE_CLI=0` means the binary is missing).
 
 **Exactly one engine configured → skip the page and select that engine implicitly**, saying so in one line (`Внешний CLI: codex (единственный настроенный)`). The engine enters the selected TYPES exactly as a page selection would, per the fold below. Without this, every single-engine user pays an extra screen for a problem they do not have.
 
-Otherwise ask ONE page — **not** a pagination loop. AskUserQuestion caps options at 4 and there are three CLI engines, so a `chunk of 4` loop would have exactly one iteration today and still exactly one at four engines. A FIFTH CLI engine is what would need this file's Step 5.3 pagination mechanic; add it then, not now.
+Otherwise ask ONE page — **not** a pagination loop. AskUserQuestion caps options at 4. HOST=claude-code has three CLI engines; HOST=grok order is `claude, codex, gemini, grok` — that is exactly four. A FIFTH CLI engine is what would need this file's Step 5.3 pagination mechanic; add it then, not now.
 
 AskUserQuestion (multiSelect, max 4):
 ```
 header: "CLI"
 question: "Какие внешние CLI-движки запустить? (★ = recommended, в defaults.design_review.builtin)"
 options:
-  For each CONFIGURED engine, in this order — codex, gemini, grok:
+  HOST=claude-code — for each CONFIGURED engine, in this order — codex, gemini, grok:
     label:       "<engine> CLI"                     if NOT in defaults.design_review.builtin
                  "★ <engine> CLI (recommended)"     if in defaults.design_review.builtin
     description: "внешнее ревью через <engine> CLI"
+  HOST=grok — for each CONFIGURED engine, in this order — claude, codex, gemini, grok:
+    claude label: "Claude Code CLI"                 if "claude" NOT in defaults.design_review.builtin
+                  "★ Claude Code CLI (recommended)" if "claude" in defaults.design_review.builtin
+    claude description: "внешнее ревью через claude -p (`claude-mesh:claude-executor`); never «свой Claude Code»"
+    other engines: same "<engine> CLI" / "★ <engine> CLI (recommended)" labels as on CC
 ```
 
 The ★ comes from the same `defaults.design_review.builtin` list Q1's own ★ markers came from — `DEFAULTS_JSON` was read and echoed in Step 5.0, so there is no loader read here. AskUserQuestion has no `preSelected` API, which is why the recommendation travels in the label text, exactly as in Steps 5.2.5, 5.2.6 and 5.3.
 
-**Fold the selection — the page's answer, or the single engine chosen implicitly above — into the selected built-in TYPES as the individual engine names** (`codex`, `gemini`, `grok`), never as the «внешние CLI» option itself. The implicit path folds exactly as the page does: skipping the question is not skipping the write. An engine that never reaches that set is dropped at Step 5.2.6's gate and dispatched by nothing — and on a machine where grok is the only configured CLI engine, that is *every* grok reviewer, gone silently if `claude` was also selected and the run still produced a review. That set is what Step 5.4 lists and confirms, what Step 6 dispatches from, and what its watcher roster and guard are built from.
+**Fold the selection — the page's answer, or the single engine chosen implicitly above — into the selected built-in TYPES as the individual engine names** (`codex`, `gemini`, `grok`, and on Grok `claude`), never as the «внешние CLI» option itself. The implicit path folds exactly as the page does: skipping the question is not skipping the write. An engine that never reaches that set is dropped at Step 5.2.6's gate and dispatched by nothing — and on a machine where grok is the only configured CLI engine, that is *every* grok reviewer, gone silently if `claude` was also selected and the run still produced a review. That set is what Step 5.4 lists and confirms, what Step 6 dispatches from, and what its watcher roster and guard are built from.
 
 **Selecting no engine is not an error** — the same rule the model pages already follow. It means no CLI reviewer runs; do not re-ask and do not STOP.
 
 **If `grok` is not among the selected engines** — however they were selected, on the page above or implicitly because it is the only one configured — **bind `SELECTED_GROK_MODELS` to the empty list here.** Step 5.2.6's own skip bullet states the same binding, deliberately: Step 5.4 and the Step 6 dispatch read the name unconditionally, and an unbound name in a prompt raises nothing at all — the reader improvises.
 
+**If HOST=grok and `claude` is not among the selected engines**, Step 5.2.5's skip **binds `SELECTED_CLAUDE_MODELS` to the empty list** — same reason.
+
+#### Step 5.2.3: Native-model selection
+
+Runs ONLY when HOST=grok and Q1 selected «свои модели хоста» (`native`) **and** `HOST_MODELS` is non-empty. Slugs in `native_models` missing from live `grok models` do not appear on the page.
+
+- HOST=claude-code → skip; **bind `SELECTED_NATIVE_MODELS` to the empty list**.
+- HOST=grok and `native` NOT selected in Q1 → skip; **bind `SELECTED_NATIVE_MODELS` to the empty list**.
+- HOST=grok, `native` selected, `HOST_MODELS` empty → skip; print `native не запущен; остальные работают.` and **bind `SELECTED_NATIVE_MODELS` empty** (`native_degraded` spoken, not a loader flag).
+
+Both skip bindings are mandatory: Step 5.4 remembers `SELECTED_NATIVE_MODELS` for iterations 2..N and the Step 6 dispatch consumes it unconditionally. An unbound name in a prompt raises nothing at all — the reader improvises.
+
+`NATIVE_DEFAULT_IDS` is `.native_models` from Step 5.0's `DEFAULTS_JSON` parse — no new loader read. Native order is `grok models` / `HOST_MODELS` order. Do not lift starred entries to the front. A catalog of ~18 slugs is five pages; do not raise the page size (Claude Code cap is 4).
+
+If `native_models` named slugs that `HOST_MODELS` does not contain: **one WARN** at the start of this page, not one per slug.
+
+For each chunk of 4 entries from `HOST_MODELS` (in `grok models` order) — the same pagination and the same ★ convention as Steps 5.2.5 and 5.3:
+
+<!-- SYNC: empty native_models fallback (one session-model reviewer) lives in the loader's
+     pairing (absent key is valid), both orchestrators' preset branches, both native model
+     pages, and the design §6 paragraph. Change all or none. -->
+**A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — native на модели сессии`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_NATIVE_MODELS` can never contain it.** Nothing downstream recognises the sentinel — a list holding that string is NON-EMPTY, so the session-model fallback below does not fire and one reviewer is dispatched with `model: "ни одной — native на модели сессии"`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE.
+
+AskUserQuestion (multiSelect, max 4):
+```
+header: "Native"
+question: "На каких native-моделях хоста запустить design review? (страница N/M, ★ = recommended)"
+options:
+  For each slug in the chunk:
+    label:       "<slug>"                     if NOT in NATIVE_DEFAULT_IDS
+                 "★ <slug> (recommended)"     if in NATIVE_DEFAULT_IDS
+    description: "отдельный независимый ревьюер native:<slug>"
+```
+
+Collect the selections across pages into `SELECTED_NATIVE_MODELS`.
+
+**Empty selection is not an error.** It falls back to exactly one native reviewer on the session model — `SELECTED_NATIVE_MODELS` stays empty as the signal for "omit `model:`". Do not re-ask and do not STOP.
+
+Each selected slug becomes an independent reviewer named `native:<slug>`. Double-counting `native:grok-4.6` vs `grok:grok-4.6` is accepted.
+
 #### Step 5.2.5: Claude-model selection
 
-Runs ONLY when Q1 selected `claude` **and** `HAS_CLAUDE_MODELS=1`.
+Runs ONLY when `claude` is in the selected TYPES **and** `HAS_CLAUDE_MODELS=1`. On HOST=claude-code, `claude` enters TYPES from Q1 option 1. On HOST=grok, `claude` enters from Step 5.2.1 (Claude Code CLI) — Q1 option 1 is native, never `claude`. Source is still `claude.models`.
 
-- `claude` NOT selected in Q1 → skip; no claude reviewer runs at all, whatever the catalog holds. **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
-- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty). **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
+- `claude` NOT in the selected TYPES → skip; no claude reviewer runs at all, whatever the catalog holds. **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
+- `claude` selected but `HAS_CLAUDE_MODELS=0` → skip; exactly **one** reviewer named `claude` runs, on `DISPATCH_MODEL` (or on the session model when that is empty; on Grok: `claude -p` without `-m`). **Bind `SELECTED_CLAUDE_MODELS` to the empty list.**
 
 Both bindings are mandatory, for the same reason Step 5.1 binds it in `default` mode: this step holds the ONLY other assignment to `SELECTED_CLAUDE_MODELS`, and Step 5.4 and the Step 6 dispatch consume it unconditionally. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises.
 
@@ -510,7 +590,9 @@ Collect all selected model ids across pages into `SELECTED_IDS`.
 
 #### Step 5.4: Confirm selection
 
-After Q1 (and Steps 5.2.1 / 5.2.5 / 5.2.6 / 5.3, each if it ran), show the full selected set — built-in TYPES plus `SELECTED_IDS` (one per line) — and confirm (mirrors mesh-review Step 3.5). **Expand `claude` into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case, so the user sees how many Claude reviewers they are about to pay for.
+After Q1 (and Steps 5.2.1 / 5.2.3 / 5.2.5 / 5.2.6 / 5.3, each if it ran), show the full selected set — built-in TYPES plus `SELECTED_IDS` (one per line) — and confirm (mirrors mesh-review Step 3.5). **Expand `claude` into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case, so the user sees how many Claude reviewers they are about to pay for.
+
+**When `native` is in the selected TYPES (HOST=grok only), expand it into one `native:<slug>` bullet per entry of `SELECTED_NATIVE_MODELS`.** When `native` is selected and that list is empty, show `native (модель сессии)` — the empty list is the session-model fallback, not "nothing runs". **On HOST=claude-code do not show native bullets** — `native`+`claude` collapsed to one host set in Step 5.1 / Q1, so a second row would double-count. **When `native` is NOT in the selected TYPES**, the page says nothing about native at all.
 
 **When `grok` is in the selected TYPES, expand it the same way**, one bullet per entry of `SELECTED_GROK_MODELS` (`grok:grok-4.6`, `grok:grok-4.5`) — same reason: one external run, and one bill, per bullet. When `grok` is selected and that list is empty, show `grok: модели не выбраны — ревьюер не запускается` instead of a bullet, so a user who selected grok in Step 5.2.1 and then checked nothing in Step 5.2.6 sees why nothing will run. When `grok` is NOT in the selected TYPES — Step 5.2.1 did not pick it, or `HAS_GROK=0` and it was never on offer — the page says nothing about grok at all: no bullet and no such line, exactly as it says nothing about an unconfigured codex. That line is a report on a selection the user made, not a standing notice. There is no fallback bullet here: unlike `claude`, an empty grok list dispatches nothing at all (Step 5.2.6). A pair that shows no bullet contributes nothing further either — not to the Step 6 dispatch, not to its watcher roster, not to its guard. A roster entry with no dispatch behind it comes back `MISSING`, which is indistinguishable from a dead executor.
 
@@ -519,15 +601,15 @@ header: "Confirm"
 question: "Запустить ревью с этим набором? <bullet list: selected built-ins + SELECTED_IDS>"
 options:
   - "Запустить (Recommended)"  — proceeds to Step 6
-  - "Перевыбрать"              — restarts Step 5.2 from Q1 with the same DEFAULT_IDS / CLAUDE_DEFAULT_IDS / GROK_DEFAULT_IDS (Steps 5.2.1, 5.2.5 and 5.2.6 re-run too)
+  - "Перевыбрать"              — restarts Step 5.2 from Q1 with the same DEFAULT_IDS / CLAUDE_DEFAULT_IDS / NATIVE_DEFAULT_IDS / GROK_DEFAULT_IDS (Steps 5.2.1, 5.2.3, 5.2.5 and 5.2.6 re-run too)
   - "Отмена"                   — exit the skill without dispatching
 ```
 
-On "Перевыбрать": clear the selection — `SELECTED_CLAUDE_MODELS` and `SELECTED_GROK_MODELS` included, or the re-select leaves the previous round's models standing behind a new set of TYPES — and restart from Step 5.2. Loop guard: cap re-selects at 3; on the 4th, message "Слишком много перевыборов; запустите /claude-mesh:mesh-design-review заново" and exit. If the user deselected everything — no built-in left that can actually produce a reviewer (`grok` with an empty `SELECTED_GROK_MODELS` counts as nothing, per Step 5.2.6) and no models — STOP with "ничего не выбрано для ревью".
+On "Перевыбрать": clear the selection — `SELECTED_CLAUDE_MODELS`, `SELECTED_NATIVE_MODELS` and `SELECTED_GROK_MODELS` included, or the re-select leaves the previous round's models standing behind a new set of TYPES — and restart from Step 5.2. Loop guard: cap re-selects at 3; on the 4th, message "Слишком много перевыборов; запустите /claude-mesh:mesh-design-review заново" and exit. If the user deselected everything — no built-in left that can actually produce a reviewer (`native` with an empty `SELECTED_NATIVE_MODELS` still counts — session-model fallback; `grok` with an empty `SELECTED_GROK_MODELS` counts as nothing, per Step 5.2.6) and no models — STOP with "ничего не выбрано для ревью".
 
 <!-- SYNC: this list is the twin of the prose enumeration at the head of Step 5 ("remember
      the resulting agent set"). Change both or neither. -->
-Remember the confirmed set (built-in TYPES + `SELECTED_CLAUDE_MODELS` + `SELECTED_GROK_MODELS` + `SELECTED_IDS`) for all subsequent iterations in the loop. Miss `SELECTED_GROK_MODELS` in that list and the grok reviewers run on iteration 1 and silently vanish on iteration 2 — the "silently ignored list" failure the `validate_defaults` comment names as the very reason `claude_models` is fail-closed.
+Remember the confirmed set (built-in TYPES + `SELECTED_NATIVE_MODELS` + `SELECTED_CLAUDE_MODELS` + `SELECTED_GROK_MODELS` + `SELECTED_IDS`) for all subsequent iterations in the loop. Miss `SELECTED_NATIVE_MODELS` or `SELECTED_GROK_MODELS` in that list and those reviewers run on iteration 1 and silently vanish on iteration 2 — the "silently ignored list" failure the `validate_defaults` comment names as the very reason `claude_models` is fail-closed.
 
 ### Step 6: Execute Review via Selected Agents
 
