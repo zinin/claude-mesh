@@ -300,6 +300,15 @@ for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
         "$(grep -c 'claude / codex / gemini / grok' "$f")"
     assert_ge "${f#"$REPO"/}: native degrade notice" "1" \
         "$(grep -c 'native не запущен' "$f")"
+    # Empty SELECTED_NATIVE_MODELS is the session-model fallback only while native stays
+    # selected and HOST_MODELS listed. Degrade (failed grok models / empty intersect of a
+    # non-empty preset) must drop the type, or confirm shows native (модель сессии).
+    assert_ge "${f#"$REPO"/}: degrade removes native from selected types" "1" \
+        "$(grep -c 'remove native from selected types' "$f")"
+    assert_ge "${f#"$REPO"/}: empty intersect does not omit-model" "1" \
+        "$(grep -c 'do not substitute the session model' "$f")"
+    assert_ge "${f#"$REPO"/}: session-model fallback needs a live catalog" "1" \
+        "$(grep -c 'session-model fallback only when HOST_MODELS is non-empty' "$f")"
 done
 # mesh-review dispatches claude-code-reviewer; design review dispatches claude-executor.
 assert_ge "design review dispatches claude-executor" "1" \

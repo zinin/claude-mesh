@@ -56,8 +56,10 @@ substitute the literal `grok` or `claude-code` you echoed.
     - list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the behaviour from before this feature and stays the default.
   - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (it is `defaults.code_review.claude_models`, or empty in the fallback case). Step 5a and Step 5b both dispatch "one Task per entry of `SELECTED_CLAUDE_MODELS`" **unconditionally** — the interactive path fills it in Step 2.4, and without this line the variable would simply be undefined in `default` mode. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises, and `default` mode quietly dispatches one reviewer instead of N.
   - **On HOST=claude-code, `native` in builtin collapses to this same host set.** Treat `native` as `claude` for host reviewers — `native ∪ claude` is one set sourced from `claude_models` (and the empty-list fallback above). Ignore `.native_models`. **Bind `SELECTED_NATIVE_MODELS` to the empty list** — on Claude Code the host set is `SELECTED_CLAUDE_MODELS`; native bullets must not appear on confirm.
-  - **On HOST=grok, `native` is a separate type.** `claude` in builtin is the Claude Code CLI (`claude-mesh:claude-code-reviewer`), not host slugs. If `native` is in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to `.native_models`**. An empty/absent list stays empty — that is the signal for one session-model reviewer (omit `model:` at dispatch). If `native` is not in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to the empty list**. If `.native_models` is non-empty and `native` is not in builtin, the loader already rejected the file.
-  - On HOST=grok, this `default` path skipped Step 1, so run the live catalog probe here (same fence as Step 1; substitute the literal `grok` for `$HOST`). Intersect the bound `SELECTED_NATIVE_MODELS` with `HOST_MODELS` (`grep -Fxq`); skip missing slugs with **one WARN** at the start, not one per slug. If `native` was requested and `HOST_MODELS` is empty: print `native не запущен; остальные работают.` and **bind `SELECTED_NATIVE_MODELS` empty** (`native_degraded` spoken, not a loader flag).
+  - **On HOST=grok, `native` is a separate type.** `claude` in builtin is the Claude Code CLI (`claude-mesh:claude-code-reviewer`), not host slugs. If `native` is not in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to the empty list**. If `.native_models` is non-empty and `native` is not in builtin, the loader already rejected the file.
+  - On HOST=grok, this `default` path skipped Step 1, so run the live catalog probe here (same fence as Step 1; substitute the literal `grok` for `$HOST`). Then:
+    - If `native` was requested and `HOST_MODELS` is empty: print `native не запущен; остальные работают.` **bind `SELECTED_NATIVE_MODELS` empty**, and **remove native from selected types** (`native_degraded` spoken, not a loader flag). Empty `SELECTED_NATIVE_MODELS` is then "no native reviewers", not omit-`model:`.
+    - If `native` was requested and `HOST_MODELS` is non-empty: intersect `.native_models` with `HOST_MODELS` (`grep -Fxq`); skip missing slugs with **one WARN** at the start, not one per slug. **Bind `SELECTED_NATIVE_MODELS` to the intersection.** An originally empty/absent `.native_models` stays empty — that is the signal for one session-model reviewer (omit `model:` at dispatch), and `native` stays selected. If `.native_models` was **non-empty** and the intersection is empty: do not run native, **remove native from selected types**, bind `SELECTED_NATIVE_MODELS` empty, and **do not substitute the session model**.
   - `codex` / `gemini` in `defaults.code_review.builtin` → spawn the corresponding agent.
   <!-- SYNC: the "no fallback" rule in the next bullet is ONE rule living in five places — this
        bullet, this file's Step 2.45 ("An empty selection runs no grok reviewer"), and their two
@@ -221,8 +223,8 @@ list, Step 5a / Step 5b's dispatch, Step 6.0's `engine:model` roster — keys of
 as it did when Q1 named the engines directly; no other step changes shape.
 
 - HOST=grok, «свои модели хоста» selected → go to **Step 2.3**. If `HOST_MODELS` is empty: print
-  `native не запущен; остальные работают.` and **bind `SELECTED_NATIVE_MODELS` empty**
-  (`native_degraded` spoken, not a loader flag); skip Step 2.3.
+  `native не запущен; остальные работают.` **bind `SELECTED_NATIVE_MODELS` empty**, and
+  **remove native from selected types** (`native_degraded` spoken, not a loader flag); skip Step 2.3.
 - HOST=grok, «свои модели хоста» NOT selected → skip Step 2.3; **bind `SELECTED_NATIVE_MODELS`
   to the empty list**.
 - HOST=claude-code → skip Step 2.3 always; **bind `SELECTED_NATIVE_MODELS` to the empty list**
@@ -309,7 +311,7 @@ non-empty. Slugs in `native_models` missing from live `grok models` do not appea
 
 - HOST=claude-code → skip; **bind `SELECTED_NATIVE_MODELS` to the empty list**.
 - HOST=grok and `native` NOT selected in Q1 → skip; **bind `SELECTED_NATIVE_MODELS` to the empty list**.
-- HOST=grok, `native` selected, `HOST_MODELS` empty → skip; print `native не запущен; остальные работают.` and **bind `SELECTED_NATIVE_MODELS` empty** (`native_degraded` spoken, not a loader flag).
+- HOST=grok, `native` selected, `HOST_MODELS` empty → skip; print `native не запущен; остальные работают.` **bind `SELECTED_NATIVE_MODELS` empty**, and **remove native from selected types** (`native_degraded` spoken, not a loader flag).
 
 Both skip bindings are mandatory: Step 2.5 and Step 5a consume `SELECTED_NATIVE_MODELS`
 unconditionally, and an unbound name in a prompt raises nothing at all — the reader improvises.
@@ -482,8 +484,11 @@ the point is model diversity, so never differentiate their prompts.
 Mirror Step 3.5 (model confirmation): after Q1 (and Steps 2.1, 2.3, 2.4 and 2.45, each when it ran), show the full SELECTED_TYPES list (one per line) and ask. **Expand `claude` in that list into one bullet per entry of `SELECTED_CLAUDE_MODELS`** (`claude:opus`, `claude:fable`), or a single `claude (модель по умолчанию)` bullet in the fallback case — the user must see how many Claude reviewers they are about to pay for.
 
 **When `native` is in `SELECTED_TYPES` (HOST=grok only), expand it into one `native:<slug>` bullet
-per entry of `SELECTED_NATIVE_MODELS`.** When `native` is selected and that list is empty, show
-`native (модель сессии)` — the empty list is the session-model fallback, not "nothing runs".
+per entry of `SELECTED_NATIVE_MODELS`.** Show `native (модель сессии)` only if `native` is still
+selected, the list is empty because of the sentinel / absent key, **and** `HOST_MODELS` is
+non-empty — that is the **session-model fallback only when HOST_MODELS is non-empty**. If
+`HOST_MODELS` was empty or a non-empty preset intersected to nothing, `native` was already
+removed from selected types and this page says nothing about native.
 **On HOST=claude-code do not show native bullets** — `native`+`claude` collapsed to one host set
 in Step 0 / Q1, so a second row would double-count. **When `native` is NOT in `SELECTED_TYPES`**,
 the page says nothing about native at all.
@@ -504,8 +509,9 @@ dispatch, not to its watcher roster, not to Step 6.0's guard. A roster entry wit
 behind it comes back `MISSING`, which is indistinguishable from a dead executor.
 
 **If the effective roster is empty** — `SELECTED_TYPES` holds nothing that can produce a
-reviewer: no `native` (Grok host; an empty `SELECTED_NATIVE_MODELS` still counts — session-model
-fallback), no `claude`, no CLI engine with anything to run (grok with an empty model list counts
+reviewer: no `native` (Grok host; an empty `SELECTED_NATIVE_MODELS` still counts only while
+`native` remains selected — session-model fallback only when HOST_MODELS is non-empty; after
+degrade, native was removed from selected types and counts as nothing), no `claude`, no CLI engine with anything to run (grok with an empty model list counts
 as nothing), and no `external models` — STOP with `ничего не выбрано для ревью` instead of
 showing this page over an empty list and starting an orchestration with no reviewers.
 (`external models` in `SELECTED_TYPES` counts as a reviewer here even though its ids are only
