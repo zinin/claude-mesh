@@ -753,12 +753,14 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
    PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
    WATCH="$SKILL_BASE/../shared/watch-runs.sh"
    [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
-   "$WATCH" --since <DISPATCH_EPOCH> claude/opus grok/grok-4.6 ext-claude/zai/glm
+   "$WATCH" --since <DISPATCH_EPOCH> codex gemini grok/grok-4.6 ext-claude/zai/glm
+   # HOST=grok, when a claude executor was dispatched, also: claude/opus
+   # HOST=claude-code: never claude/opus — those reviewers are INLINE
    ```
 
    Substitute the **actual** `DISPATCH_EPOCH` number you stamped above. A shell variable does not survive from one Bash call to the next, and an unset name in a prompt raises nothing at all — the script rejects an implausible `--since` rather than silently watching a window that ended in 1970.
 
-   The arguments after the options are a **roster** of `engine[/provider/model]` — the subpath under `runs/` — not run directories. The depth follows the engine: `codex` and `gemini` have none, `grok` and HOST=grok `claude` take one segment (`grok/grok-4.6`, `claude/opus`, matching `runs/grok/<model>/` and `runs/claude/<alias>/`) and `ext-claude` takes two. Note the SLASH: the roster spells a grok reviewer `grok/grok-4.6` where its name and its `description` spell it `grok:grok-4.6`; the two are never interchangeable. Same split for `claude/opus` vs `claude:opus`. Native is never a roster entry. An executor that dies and self-retries creates a new run dir, so the watcher re-resolves the newest one at/after `--since` on every tick and follows the retry by itself. Pass only the executors you are still waiting for (point 5). HOST=claude-code: do not put `claude/opus` on the roster — those reviewers are INLINE. HOST=grok: do put `claude/opus` (or `claude/_default`) on the roster when a claude executor was dispatched.
+   The arguments after the options are a **roster** of `engine[/provider/model]` — the subpath under `runs/` — not run directories. The depth follows the engine: `codex` and `gemini` have none, `grok` and HOST=grok `claude` take one segment (`grok/grok-4.6`, `claude/opus`, matching `runs/grok/<model>/` and `runs/claude/<alias>/`) and `ext-claude` takes two. Note the SLASH: the roster spells a grok reviewer `grok/grok-4.6` where its name and its `description` spell it `grok:grok-4.6`; the two are never interchangeable. Same split for `claude/opus` vs `claude:opus`. Native is never a roster entry. An executor that dies and self-retries creates a new run dir, so the watcher re-resolves the newest one at/after `--since` on every tick and follows the retry by itself. Pass only the executors you are still waiting for (point 5). HOST=claude-code: do not put `claude/opus` on the roster — those reviewers are INLINE. HOST=grok: do put `claude/opus` on the roster when a claude executor was dispatched. Empty-catalog fallback: the roster may list `claude/_default` (T4 writes that dir); **If MODEL was omitted, skip verify-delegation** for that reviewer — do not pass `_default` to the guard (leading `_` is a usage error) — and read the run dir.
 
    | Status | Meaning |
    |---|---|

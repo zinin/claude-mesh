@@ -401,6 +401,30 @@ assert_ge "mesh-review Grok team STOP sentence" "1" \
 assert_ge "design review Grok team STOP sentence" "1" \
     "$(grep -c 'На Grok team mode не поддерживается' "$DESIGN_SKILL")"
 
+# Task 9 fix round: three Important review findings.
+# 1. Redispatch must not reuse the CC `DISPATCH_MODEL` form on Grok (opus is not a
+#    host slug) and must not SendMessage-ping there.
+assert_eq "redispatch does not apply CC DISPATCH_MODEL unconditionally" "0" \
+    "$(grep -c 'Apply the Step 5a \*\*Dispatch model\*\* rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit)' "$MESH_REVIEW")"
+assert_eq "redispatch does not reuse the CC ping loop on Grok" "0" \
+    "$(grep -c 'run the same disk-watch + ping loop as Step 5a' "$MESH_REVIEW")"
+assert_ge "redispatch Grok spawn model is HOST_MODELS only" "1" \
+    "$(grep -c 'HOST=grok re-dispatch: do not pass DISPATCH_MODEL unless it is in HOST_MODELS' "$MESH_REVIEW")"
+assert_ge "redispatch Grok wait reads output.txt" "1" \
+    "$(grep -c 'HOST=grok re-dispatch wait: silent+REAL reads output.txt' "$MESH_REVIEW")"
+# 2. Design-review CC watcher example must name depth-0 engines; claude/opus is Grok-only.
+assert_ge "design review CC watcher example names depth-0 engines" "1" \
+    "$(grep -c 'codex gemini grok/grok-4.6 ext-claude/zai/glm' "$DESIGN_SKILL")"
+# 3. Leading `_` fails the claude charset; never pass `_default` to the guard.
+assert_eq "mesh-review never passes claude _default to the guard" "0" \
+    "$(grep -c 'claude _default' "$MESH_REVIEW")"
+assert_eq "design review never passes claude _default to the guard" "0" \
+    "$(grep -c 'claude _default' "$DESIGN_SKILL")"
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_ge "${f#"$REPO"/}: omit-MODEL skips verify-delegation" "1" \
+        "$(grep -c 'If MODEL was omitted, skip verify-delegation' "$f")"
+done
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="
 [ "$FAIL" = "0" ]
