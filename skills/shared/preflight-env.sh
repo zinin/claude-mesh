@@ -508,6 +508,44 @@ cli_row gemini "gemini" "https://generativelanguage.googleapis.com/" "$HAS_GEMIN
 # row's shape stays uniform and a future reader can see what an HTTP fallback would target.
 cli_row grok   "grok"   "https://api.x.ai/v1/models"                 "$HAS_GROK" "grok models"; GROK_STATUS="$CLI_STATUS"
 
+# native-models: listing only. Never infer we are inside Grok Build.
+NM_STATUS=SKIP
+NM_DETAIL="grok models did not run"
+NM_LIST=""
+if command -v grok >/dev/null 2>&1; then
+    # Listing is a network+login round-trip, same as the grok CLI probe. Skip it
+    # when the flag says so, when timeout(1) is missing (otherwise bash prints
+    # "command not found" on the chatter stream), and when mktemp cannot give us
+    # a file — none of those may take the probe down.
+    if [ "$SKIP_NET" = 1 ]; then
+        NM_DETAIL="skipped by PREFLIGHT_SKIP_NETWORK"
+    elif ! command -v timeout >/dev/null 2>&1; then
+        NM_DETAIL="no timeout(1) — grok models not run (brew install coreutils)"
+    else
+        GM=""
+        if ! GM="$(mktemp_or_fail)"; then
+            NM_DETAIL="cannot create a temp file — grok models not run"
+        else
+            if timeout "${CLI_TIMEOUT}" grok models >"$GM" 2>/dev/null; then
+                NM_LIST=$(bash "$SCRIPT_DIR/list-host-models.sh" --from-file "$GM" | tr '\n' ' ')
+                NM_STATUS=OK
+                NM_DETAIL="${NM_LIST:-empty listing}"
+            else
+                NM_STATUS=SKIP
+                NM_DETAIL="grok models failed or timed out"
+            fi
+            rm -f "$GM"
+        fi
+    fi
+fi
+row native-models "$NM_STATUS" "$NM_DETAIL"
+
+if command -v claude >/dev/null 2>&1; then
+    row claude-cli OK "claude on PATH"
+else
+    row claude-cli MISSING "claude CLI not on PATH"
+fi
+
 # ---------------------------------------------------------------- providers
 # Models of one provider share an endpoint, so probe once per provider and let Task 4 expand
 # the verdict back into model ids. Rows appear in order of first appearance in `models`; a
@@ -872,6 +910,14 @@ elif [ "$GROK_STATUS" = "OK" ]; then
     fi
 else
     add_unavail "grok ($GROK_STATUS)"
+fi
+
+# Host slugs from a successful `grok models` listing. Not added when the listing
+# was SKIP/empty: SUMMARY names what can be selected, and a SKIP row is not that.
+if [ "$NM_STATUS" = "OK" ] && [ -n "$NM_LIST" ]; then
+    for NM_SLUG in $NM_LIST; do
+        [ -n "$NM_SLUG" ] && add_avail "native:$NM_SLUG"
+    done
 fi
 
 if [ -n "$MODELS" ]; then

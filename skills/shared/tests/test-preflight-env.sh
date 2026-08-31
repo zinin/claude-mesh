@@ -85,6 +85,17 @@ exit 0
 SH
 chmod +x "$WORK/curlfast/curl"
 
+# Fail-fast grok stub. native-models runs `grok models` whenever grok is on PATH,
+# which on a developer laptop is a 2s authenticated round-trip (or a 15s timeout)
+# in EVERY scenario. Hide the real binary unless the scenario planted a suite-owned
+# shim under $WORK (not a farm symlink to the real grok).
+mkdir -p "$WORK/grokskip"
+cat > "$WORK/grokskip/grok" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$WORK/grokskip/grok"
+
 # A PATH farm: every real PATH entry symlinked into one directory (first occurrence wins, as
 # in a real PATH search), minus the binaries named. The only way to make ONE tool genuinely
 # absent while the loader still finds yq, jq and the rest — curl, git and codex all live in
@@ -152,10 +163,27 @@ run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
     fi
     local errf
     errf="$(mktemp "$WORK/stderr-XXXXXX")"
+    local probe_path="$WORK/curlfast:$PATH"
+    local -a env_rest=()
+    local a grok_bin keep_grok
+    for a in "$@"; do
+        case "$a" in
+            PATH=*) probe_path="${a#PATH=}" ;;
+            *) env_rest+=("$a") ;;
+        esac
+    done
+    # Suite-owned grok is a regular file under $WORK (cli-grok, cli-grok-slow). A
+    # farm entry is a symlink to the real binary; the developer's grok is neither.
+    grok_bin="$(PATH="$probe_path" command -v grok 2>/dev/null || true)"
+    keep_grok=0
+    case "$grok_bin" in
+        "$WORK"/*) [ -L "$grok_bin" ] || keep_grok=1 ;;
+    esac
+    [ "$keep_grok" = 1 ] || [ -z "$grok_bin" ] || probe_path="$WORK/grokskip:$probe_path"
     OUT="$(env CLAUDE_PLUGIN_DATA="$CFG_DIR" TMPDIR="$CFG_DIR" \
                PREFLIGHT_GIT_BIN="$WORK/gitfast/git" \
-               PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$WORK/curlfast:$PATH" \
-               "$@" bash "$SCRIPT" 2>"$errf")"
+               PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$probe_path" \
+               "${env_rest[@]}" bash "$SCRIPT" 2>"$errf")"
     RC=$?
     ERR="$(cat "$errf")"
     rm -f "$errf"
@@ -177,6 +205,9 @@ assert_match "config detail names config.yaml" "$CFG_DIR/config.yaml" "$OUT"
 assert_eq   "builtin-claude always OK"        OK   "$(field builtin-claude "$OUT")"
 assert_eq   "claude catalog -> OK"            OK   "$(field claude-models "$OUT")"
 assert_match "catalog lists both aliases"     "opus, fable" "$OUT"
+assert_match "native-models row exists" "native-models" "$OUT"
+assert_match "claude-cli row exists" "claude-cli" "$OUT"
+assert_no_match "does not invent host grok-build from PATH" "host             grok-build" "$OUT"
 
 run_probe none
 assert_eq   "missing config exits 0"          0        "$RC"
@@ -548,12 +579,15 @@ assert_match "…including the second one"     "grok:grok-4.5" "$OUT"
 # empty: an unset GROK_SHIM_LOG, a shim that never records, or a PATH that finds a different
 # grok would all satisfy "empty" for the wrong reason. Here the identical plumbing must record
 # exactly one `models` call, so "empty" there can only mean the probe was not run.
-assert_eq   "…and the CLI really was invoked, once, as \`grok models\`" "models" "$(cat "$GROK_LOG")"
+assert_eq   "…and the CLI really was invoked as \`grok models\`" \
+    "$(printf 'models\nmodels')" "$(cat "$GROK_LOG")"
+assert_eq   "…and native-models is OK from the same listing" OK "$(field native-models "$OUT")"
 
 # The CLI is there but not logged in -> NO-NETWORK, and the hint names the fix.
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1
 assert_eq   "grok models fails -> NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
 assert_match "…and suggests logging in"       "grok login" "$OUT"
+assert_eq   "…and native-models is SKIP, not a crash" SKIP "$(field native-models "$OUT")"
 
 # A machine without python3 must not be told a grok reviewer is available. grok-exec STOPs on
 # shared/extract-result.py — the only one of the three CLI engines that does — while `bc` only
@@ -589,13 +623,18 @@ for _bad in --help abc 0; do
     run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
               GROK_SHIM_FAIL=1 GROK_SHIM_LOG="$GROK_LOG" PREFLIGHT_CLI_TIMEOUT="$_bad"
     assert_eq "unusable PREFLIGHT_CLI_TIMEOUT=$_bad -> still NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
-    assert_eq "…and the probe really was run once under $_bad" "models" "$(cat "$GROK_LOG")"
+    assert_eq "…and the probe really was run under $_bad" \
+        "$(printf 'models\nmodels')" "$(cat "$GROK_LOG")"
 done
 unset _bad
 
 # Section present, binary absent -> MISSING (the section gate passes, the CLI gate does not).
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli"
 assert_eq   "grok binary absent -> MISSING"  MISSING "$(field grok "$OUT")"
+# native-models lists host slugs via `grok models`. No grok on PATH is SKIP, never a
+# non-zero exit — the probe still answers, it just has nothing to list.
+assert_eq   "no grok -> native-models SKIP"  SKIP "$(field native-models "$OUT")"
+assert_eq   "…and the probe still exits 0"   0    "$RC"
 
 # A malformed grok: section is INVALID before any CLI or network claim — same order as codex.
 run_probe broken-grok-valid-codex.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
@@ -1005,7 +1044,7 @@ assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin yq jq config builtin-claude claude-models codex gemini grok provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "plugin yq jq config builtin-claude claude-models codex gemini grok native-models claude-cli provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines
@@ -1034,7 +1073,7 @@ chmod +x "$WORK/curlstall/curl"
 ICFG="$(mktemp -d "$WORK/int-XXXXXX")"
 cp "$TESTS_DIR/fixtures/valid-claude-models.yaml" "$ICFG/config.yaml"
 env CLAUDE_PLUGIN_DATA="$ICFG" TMPDIR="$ICFG" \
-    PREFLIGHT_CURL_BIN="$WORK/curlstall/curl" PATH="$WORK/curlstall:$PATH" \
+    PREFLIGHT_CURL_BIN="$WORK/curlstall/curl" PATH="$WORK/curlstall:$WORK/grokskip:$PATH" \
     bash "$SCRIPT" >/dev/null 2>&1 &
 IPID=$!
 IW=0
@@ -1113,7 +1152,7 @@ assert_eq   "no config -> ceiling SKIPPED"   SKIPPED "$(field bash-timeout "$OUT
 # (provider:zai, Task 2),
 # so a shape check is the same forward-compatibility trap in a new costume.
 ROWS="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ && $1 != "hint:" {print $2}' <<<"$ALL_OUT")"
-BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|LOW|SKIPPED|UNKNOWN)$' || true)"
+BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|LOW|SKIPPED|SKIP|UNKNOWN)$' || true)"
 assert_eq   "status column stays in the closed set (every scenario)" "" "$BAD"
 # Both gates above and below pass on empty input, so they must prove they looked at something.
 # Today: 7 scenarios x 4-5 rows = 29. The floor only gets safer as Tasks 2-4 add scenarios.
