@@ -1,0 +1,28 @@
+# A defaults: preset that references native — the twin of valid-grok-defaults.yaml.
+# Without expanding native_models, SUMMARY defaults would print a bare `native` (leftover
+# builtin) while SUMMARY available spells native:<slug>, and `default` would look unsafe
+# on a working Grok host after Task 11's example `builtin: [native, …]`.
+#
+# native_models names ONE of the two shim-listed slugs, and a different one per preset: an
+# expansion that printed the live listing, or read one preset and printed it on both lines,
+# would still satisfy assertions written against a fixture where those coincide.
+# No grok: section — grok:<slug> must not be how native is spelled.
+providers:
+  - id: zai
+    label: "Z.AI"
+    base_url: https://api.z.ai/api/anthropic
+    token: "tkn-zai"
+
+models:
+  - id: zai/glm
+    label: "GLM"
+    model: glm-5.1
+
+defaults:
+  design_review:
+    builtin: [native]
+    native_models: [grok-4.6]
+    models: [zai/glm]
+  code_review:
+    builtin: [native]
+    native_models: [grok-4.5]

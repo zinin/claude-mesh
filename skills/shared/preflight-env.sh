@@ -952,13 +952,15 @@ fi
 for PRESET in design_review code_review; do
     DLIST="—"
     if [ "$CONFIG_STATUS" = "OK" ] && DJ="$(bash "$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
-        # grok is expanded over grok_models exactly as claude is over claude_models, and for a
-        # harder reason: SUMMARY available spells this reviewer grok:<model>, so a bare `grok`
-        # here would print two different names for one reviewer and break the very membership
-        # check this line exists for. The validator guarantees a non-empty grok_models whenever
-        # `grok` is in builtin, so the expansion is always defined.
+        # grok and native are expanded over their *_models lists exactly as claude is over
+        # claude_models, and for the same reason: SUMMARY available spells those reviewers
+        # grok:<model> / native:<slug>, so a leftover-builtin `native` (or `grok`) here would
+        # print two different names for one reviewer and break the membership check this line
+        # exists for. Empty native_models is valid (session-model fallback) and stays a bare
+        # `native`. The validator guarantees a non-empty grok_models whenever `grok` is in
+        # builtin, so that expansion is always defined.
         DLIST="$("$JQ_BIN" -r '
-            ((.builtin // []) | map(select(. != "claude" and . != "grok"))) +
+            ((.builtin // []) | map(select(. != "claude" and . != "grok" and . != "native"))) +
             (if ((.builtin // []) | index("claude")) then
                  (if ((.claude_models // []) | length) > 0
                   then (.claude_models | map("claude:" + .))
@@ -968,6 +970,11 @@ for PRESET in design_review code_review; do
                  (if ((.grok_models // []) | length) > 0
                   then (.grok_models | map("grok:" + .))
                   else ["grok"] end)
+             else [] end) +
+            (if ((.builtin // []) | index("native")) then
+                 (if ((.native_models // []) | length) > 0
+                  then (.native_models | map("native:" + .))
+                  else ["native"] end)
              else [] end) +
             (.models // []) | join(", ")' <<<"$DJ")"
         # "—" alone would be read as "not answered", which is what the no-config case above

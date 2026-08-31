@@ -57,6 +57,10 @@ assert_no_match() {
 # Status column of a named row ("" when the row is absent).
 field() { awk -v n="$1" '$1==n {print $2; exit}' <<<"$2"; }
 
+# Exact entry on a `SUMMARY available:` line. `grok:grok-4.6` is a suffix of
+# `native:grok-4.6`; wrapping with ", " makes a substring test tell them apart.
+avail_wrap() { printf ', %s, ' "$(grep '^SUMMARY available:' <<<"$1" | sed 's/^SUMMARY available: //')"; }
+
 # Default git shim: answers instantly that there is no 'origin'. Without it every scenario
 # below would run a real `git ls-remote` against this repository's remote — up to the git
 # budget each, on a network the suite is not testing. Scenarios that DO test git pass their
@@ -556,7 +560,17 @@ cat > "$WORK/cli-grok/grok" <<'SH'
 printf '%s\n' "$*" >> "${GROK_SHIM_LOG:-/dev/null}"
 case "${1:-}" in
   models) [ "${GROK_SHIM_FAIL:-0}" = 1 ] && { echo "not logged in" >&2; exit 1; }
-          printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n' ;;
+          # List rows (`* slug` / `- slug`) are what list-host-models.sh reads.
+          # `Default model: grok-4.6` alone is dropped, and native:<slug> never
+          # reaches SUMMARY available.
+          printf '%s\n' \
+            'You are logged in with grok.com.' \
+            '' \
+            'Default model: grok-4.6' \
+            '' \
+            'Available models:' \
+            '  * grok-4.6 (default)' \
+            '  - grok-4.5' ;;
   *)      exit 0 ;;
 esac
 SH
@@ -582,6 +596,10 @@ assert_match "…including the second one"     "grok:grok-4.5" "$OUT"
 assert_eq   "…and the CLI really was invoked as \`grok models\`" \
     "$(printf 'models\nmodels')" "$(cat "$GROK_LOG")"
 assert_eq   "…and native-models is OK from the same listing" OK "$(field native-models "$OUT")"
+assert_match "native listing reaches available as native:<slug>" \
+    ", native:grok-4.6, " "$(avail_wrap "$OUT")"
+assert_match "…and grok:<slug> is a different reviewer" \
+    ", grok:grok-4.6, " "$(avail_wrap "$OUT")"
 
 # The CLI is there but not logged in -> NO-NETWORK, and the hint names the fix.
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1
@@ -606,7 +624,9 @@ assert_match "…but SUMMARY withdraws it, naming why" "grok (python3 missing" "
 # a grep that matched nothing would satisfy assert_no_match for the wrong reason, which this
 # suite has been bitten by before.
 assert_match "…the available line is present and non-empty" "claude" "$(grep '^SUMMARY available' <<<"$OUT")"
-assert_no_match "…and no grok model is advertised as available" "grok:grok-4.6" "$(grep '^SUMMARY available' <<<"$OUT")"
+# `grok:grok-4.6` is a suffix of `native:grok-4.6` — exact entries only.
+assert_no_match "…and no grok model is advertised as available" \
+    ", grok:grok-4.6, " "$(avail_wrap "$OUT")"
 assert_match "…while the deps row names grok, not ext-claude alone" "grok-exec STOPs without python3" "$OUT"
 
 # An UNUSABLE PREFLIGHT_CLI_TIMEOUT must not be able to invent a verdict. The budget is pasted
@@ -998,6 +1018,23 @@ assert_match "grok on a defaults line is spelled grok:<model>" \
 assert_match "…from the preset's own list, not the whole catalog" \
     "SUMMARY defaults code_review: grok:grok-4.5" "$OUT"
 assert_eq "…so default mode stays a plain membership check" "" "$(defaults_not_available "$OUT")"
+
+# native is the same membership trap as grok: SUMMARY available spells native:<slug>, so a
+# defaults line that printed a bare `native` (the leftover-builtin passthrough) would make
+# `default` look unsafe on a working Grok host. native_models is a strict subset, different
+# per preset, on purpose. No grok: section — grok:<slug> must not appear as the native name.
+run_probe valid-native-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "native on a defaults line is spelled native:<slug>" \
+    "SUMMARY defaults design_review: native:grok-4.6, zai/glm" "$OUT"
+assert_match "…from the preset's own list, not the whole host listing" \
+    "SUMMARY defaults code_review: native:grok-4.5" "$OUT"
+assert_match "…and available uses the same native:<slug> spelling" \
+    ", native:grok-4.6, " "$(avail_wrap "$OUT")"
+assert_no_match "…which is not grok:<slug>" \
+    ", grok:grok-4.6, " "$(avail_wrap "$OUT")"
+assert_eq "…so default mode stays a plain membership check with native too" "" \
+    "$(defaults_not_available "$OUT")"
 
 # A fast re-run probes nothing, so every network verdict is UNKNOWN. UNKNOWN is not a degraded
 # OK — treating it as unavailable reports a fully working machine as "claude only", and the
