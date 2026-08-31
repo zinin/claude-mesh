@@ -27,7 +27,15 @@ Execute arbitrary prompts via the Grok Build CLI with streaming progress and ful
 
 ## Locating plugin files (Task 2.5)
 
-When this skill loads, Claude Code prints a line `Base directory for this skill: <ABS>`. **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` are NOT available inside Bash-tool calls** (verified empty on Claude Code 2.1.156). So at the top of EACH Bash block set `SKILL_BASE` to that printed absolute path. From it:
+Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Code prints at load **if present**. Do not rely on Grok printing that line. **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` are NOT available inside Bash-tool calls** (verified empty on Claude Code 2.1.156).
+
+At the top of EACH bash fence:
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+
+When `SKILL_BASE` is empty, do not expand `$SKILL_BASE/../shared/resolve-plugin-root.sh`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1 (`LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"`); then `PLUGIN_ROOT` is two directories up from that loader, and `SKILL_BASE` is `$PLUGIN_ROOT/skills/grok-exec`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+
+From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
 - this skill's own scripts = `$SKILL_BASE/<x>`; sibling shared scripts = `$SKILL_BASE/../shared/<x>` (e.g. `watchdog.sh`, `extract-result.py`, `stream-json-report.sh`)
 - data dir = `"$LOADER" data-dir` (the loader self-discovers `~/.claude/plugins/data/claude-mesh-*`); build run paths under `$PLUGIN_DATA/runs/grok/...`
@@ -128,7 +136,8 @@ absent from `config.yaml`.
 # Bash-tool calls from skills. Locate files via the absolute base dir Claude Code
 # prints at skill load ("Base directory for this skill: <ABS>"). See "## Locating
 # plugin files (Task 2.5)" above.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 
 command -v grok >/dev/null 2>&1 || { echo "STOP: grok CLI not found — install Grok Build with 'curl -fsSL https://x.ai/cli/install.sh | bash', then run 'grok login'"; exit 1; }
@@ -212,7 +221,8 @@ MODEL="$RAW_MODEL"
 # Persist it so Step 2 reads the SAME string instead of re-expanding {MODEL} from the template
 # unfiltered — that second, unchecked read is what let the path and the -m argument diverge.
 # Mirrors the existing .task_name file.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 PLUGIN_DATA="$("$LOADER" data-dir)"
 # ONE shape, always: runs/grok/<model>/<ts>-<task>, with a model-less call landing under the
@@ -281,7 +291,8 @@ __EFFORT_BOUNDARY_9f21c6b4_EFFORT_END__
 if [ -n "$EFFORT" ] && ! printf '%s' "$EFFORT" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
     echo "STOP: REASONING_EFFORT '$EFFORT' is not a level name (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. xhigh) — an unsubstituted {REASONING_EFFORT} looks exactly like this"; exit 1
 fi
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 TASK_NAME=$(cat "$WORK_DIR/.task_name" 2>/dev/null || basename "$WORK_DIR")
 PROMPT_FILE="$WORK_DIR/prompt.md"
@@ -506,7 +517,8 @@ Key points:
 set -euo pipefail
 command -v jq >/dev/null 2>&1 || { echo "supervised mode requires jq" >&2; exit 64; }
 WORK_DIR="{WORK_DIR}"
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 WATCHDOG="$SKILL_BASE/../shared/watchdog.sh"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 # The model Step 1 validated and persisted — never a fresh {MODEL} expansion.
@@ -680,7 +692,8 @@ fi
 If Grok times out or fails, check partial results:
 ```bash
 set -uo pipefail
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 RUNS_DIR="$("$LOADER" data-dir)/runs/grok"
 # The work dir this skill returned, when the caller still has it — an exact answer beats any

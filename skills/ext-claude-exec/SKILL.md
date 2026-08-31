@@ -69,7 +69,15 @@ Why this matters (CONCERN-2): wrapping every value in a heredoc with a fixed del
 
 ## Locating plugin files (Task 2.5)
 
-When this skill loads, Claude Code prints a line `Base directory for this skill: <ABS>`. **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` are NOT available inside Bash-tool calls** (verified empty on Claude Code 2.1.156). So at the top of EACH Bash block set `SKILL_BASE` to that printed absolute path. From it:
+Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Code prints at load **if present**. Do not rely on Grok printing that line. **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` are NOT available inside Bash-tool calls** (verified empty on Claude Code 2.1.156).
+
+At the top of EACH bash fence:
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+
+When `SKILL_BASE` is empty, do not expand `$SKILL_BASE/../shared/resolve-plugin-root.sh`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1 (`LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"`); then `PLUGIN_ROOT` is two directories up from that loader, and `SKILL_BASE` is `$PLUGIN_ROOT/skills/ext-claude-exec`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+
+From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
 - sibling scripts = `$SKILL_BASE/../shared/<x>`; this skill's own scripts = `$SKILL_BASE/<x>`
 - data dir = `"$LOADER" data-dir` (the loader self-discovers `~/.claude/plugins/data/claude-mesh-*`)
@@ -89,7 +97,8 @@ HOST_CLAUDE="{HOST_CLAUDE}"
 # Bash-tool calls from skills. Locate files via the absolute base dir Claude Code
 # prints at skill load ("Base directory for this skill: <ABS>"). See "## Locating
 # plugin files (Task 2.5)" below.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 SKILL_DIR="$SKILL_BASE"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 
@@ -172,7 +181,8 @@ HOST_CLAUDE="{HOST_CLAUDE}"
 
 # Task 2.5: data dir is self-discovered by the loader (CLAUDE_PLUGIN_DATA is empty
 # in skill Bash calls). SKILL_BASE = absolute base dir Claude Code prints at load.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 PLUGIN_DATA="$("$LOADER" data-dir)"
 if [ "${HOST_CLAUDE:-}" = "1" ]; then
@@ -216,7 +226,8 @@ WORK_DIR="{WORK_DIR}"
 MODEL="{MODEL}"
 HOST_CLAUDE="{HOST_CLAUDE}"
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 SKILL_DIR="$SKILL_BASE"
 TASK_NAME=$(cat "$WORK_DIR/.task_name" 2>/dev/null || basename "$WORK_DIR")
@@ -326,7 +337,8 @@ WORK_DIR="{WORK_DIR}"
 MODEL="{MODEL}"
 HOST_CLAUDE="{HOST_CLAUDE}"
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 SKILL_DIR="$SKILL_BASE"
 WATCHDOG="$SKILL_BASE/../shared/watchdog.sh"
@@ -474,7 +486,8 @@ The supervised block mirrors default mode (Step 3 above) but uses `watchdog.sh` 
 
 ```bash
 # Task 2.5: data dir self-discovered by loader (CLAUDE_PLUGIN_DATA empty in skill Bash).
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 PLUGIN_DATA="$("$LOADER" data-dir)"
 HOST_CLAUDE="{HOST_CLAUDE}"

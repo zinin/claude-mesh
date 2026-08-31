@@ -12,7 +12,15 @@ Wraps `ext-claude-exec` skill to run a code review prompt against any configured
 
 ## Locating plugin files (Task 2.5)
 
-Claude Code prints `Base directory for this skill: <ABS>` when this skill loads. `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` are NOT available in Bash-tool calls (CC 2.1.156). Set `SKILL_BASE` to that absolute path at the top of each Bash block; shared scripts live at `$SKILL_BASE/../shared/<x>`; get the data dir via `"$LOADER" data-dir` where `LOADER="$SKILL_BASE/../shared/config-loader.sh"`.
+Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Code prints at load **if present**. Do not rely on Grok printing that line. `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` are NOT available in Bash-tool calls (CC 2.1.156).
+
+At the top of EACH bash fence:
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+
+When `SKILL_BASE` is empty, do not expand `$SKILL_BASE/../shared/resolve-plugin-root.sh`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1 (`LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"`); then `PLUGIN_ROOT` is two directories up from that loader, and `SKILL_BASE` is `$PLUGIN_ROOT/skills/ext-claude-code-review`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+
+Shared scripts live at `$SKILL_BASE/../shared/<x>`; get the data dir via `"$LOADER" data-dir` where `LOADER="$SKILL_BASE/../shared/config-loader.sh"`.
 
 ## Input
 
@@ -30,7 +38,8 @@ Claude Code prints `Base directory for this skill: <ABS>` when this skill loads.
 
 ```bash
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 SHARED_DIR="$SKILL_BASE/../shared"
 # Resolve the base branch ONCE. Auto-detect origin/HEAD, else fall back to master.
 # NB: do NOT write the fallback as `symbolic-ref | sed || echo master` — `||` binds to

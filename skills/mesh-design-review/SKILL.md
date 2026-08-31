@@ -12,7 +12,17 @@ Run iterative design review cycle with memory of previous decisions.
 
 ## Locating plugin files (Task 2.5)
 
-When this skill loads, Claude Code prints a line `Base directory for this skill: <ABS>`. **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` are NOT available inside Bash-tool calls** (verified empty on Claude Code 2.1.156). So at the top of EACH Bash block set `SKILL_BASE` to that printed absolute path. From it:
+Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Code prints at load **if present**. Do not rely on Grok printing that line. **`${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` are NOT available inside Bash-tool calls** (verified empty on Claude Code 2.1.156). This skill is not a command file: the harness does **not** substitute `${CLAUDE_PLUGIN_ROOT}` into its text.
+
+At the top of EACH bash fence:
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+
+When `SKILL_BASE` is empty, that second line cannot expand `$SKILL_BASE/../shared/…`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1:
+LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+then `PLUGIN_ROOT` is two directories up from that loader (`$(cd "$(dirname "$LOADER")/../.." && pwd)`), and `SKILL_BASE` is `$PLUGIN_ROOT/skills/mesh-design-review`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+
+From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
 - sibling shared scripts = `$SKILL_BASE/../shared/<x>`
 - data dir = `"$LOADER" data-dir` (the loader self-discovers `~/.claude/plugins/data/claude-mesh-*`); build any state paths under `$PLUGIN_DATA/state/`
@@ -239,7 +249,8 @@ Run ONE Bash call. Use `config-loader.sh` (NOT raw `yq`) so validation runs the 
 # Bash-tool calls from skills. Locate files via the absolute base dir Claude Code
 # prints at skill load ("Base directory for this skill: <ABS>"). See "## Locating
 # plugin files (Task 2.5)" near the top.
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 [ -x "$LOADER" ] || { echo "config-loader.sh not found at $LOADER" >&2; exit 1; }
 
@@ -616,7 +627,8 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
 2. Watch the disk with `shared/watch-runs.sh`, launched as a **background** Bash task — a foreground poll loop would block the session, and a background watcher that returns on each event re-invokes you per event. **Do NOT hand-roll a poller.** The one improvised here exited only when the count of finished runs grew, and death never grows a count; that is the blind spot this script exists to close.
 
    ```bash
-   SKILL_BASE="<the absolute path Claude Code printed when this skill loaded>"
+   SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
    WATCH="$SKILL_BASE/../shared/watch-runs.sh"
    [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
    "$WATCH" --since <DISPATCH_EPOCH> codex gemini grok/grok-4.6 ext-claude/zai/glm
@@ -640,7 +652,8 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
 3. When a run reaches `DONE`, check that it actually produced a review **before** pinging its executor. `DONE` means the run stopped and left a non-empty `output.txt`; it does not mean the file holds findings.
 
    ```bash
-   SKILL_BASE="<the absolute path Claude Code printed when this skill loaded>"
+   SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
    VERIFY="$SKILL_BASE/../shared/verify-delegation.sh"
    DATA_DIR="$("$SKILL_BASE/../shared/config-loader.sh" data-dir)"
    bash "$VERIFY" ext-claude zai/glm <DISPATCH_EPOCH> "$DATA_DIR"

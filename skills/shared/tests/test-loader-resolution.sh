@@ -37,7 +37,7 @@ assert_eq() {
 }
 
 PRIMARY='LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"'
-FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
+FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
 
 # === Test 1: every command site uses the same resolver ===
 # The counts are a deliberate canary, not incidental. A new command that resolves the loader

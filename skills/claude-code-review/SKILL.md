@@ -36,11 +36,15 @@ STOP (CLI default). A non-empty catalog must contain MODEL (`list-claude-models 
 
 ## Locating plugin files (Task 2.5)
 
-When this skill loads, Claude Code prints `Base directory for this skill: <ABS>`. **`${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` are NOT available in Bash-tool calls** (CC 2.1.156). Set `SKILL_BASE` to that absolute path at the top of each Bash block; shared scripts live at `$SKILL_BASE/../shared/<x>` (e.g. `code-review-prompt.md`); the loader is `$SKILL_BASE/../shared/config-loader.sh`. Auth is `claude login` — this skill does NOT source provider tokens; it delegates execution to `ext-claude-exec` with `HOST_CLAUDE=1`.
+Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Code prints at load **if present**. Do not rely on Grok printing that line. **`${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_DATA}` are NOT available in Bash-tool calls** (CC 2.1.156).
 
-Do not rely on Grok printing the base-directory line. If the print is missing, set `SKILL_BASE`
-from `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` when that path exists, otherwise from
-`find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/claude-code-review' -type d 2>/dev/null | sort -V | tail -1`.
+At the top of EACH bash fence:
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+
+When `SKILL_BASE` is empty, do not expand `$SKILL_BASE/../shared/resolve-plugin-root.sh`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1 (`LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"`); then `PLUGIN_ROOT` is two directories up from that loader, and `SKILL_BASE` is `$PLUGIN_ROOT/skills/claude-code-review`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+
+Shared scripts live at `$SKILL_BASE/../shared/<x>` (e.g. `code-review-prompt.md`); the loader is `$SKILL_BASE/../shared/config-loader.sh`. Auth is `claude login` — this skill does NOT source provider tokens; it delegates execution to `ext-claude-exec` with `HOST_CLAUDE=1`.
 
 ## CRITICAL: Tool Execution Rules
 
@@ -88,7 +92,8 @@ EOF
 
 Run in ONE Bash call:
 ```bash
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 command -v claude >/dev/null 2>&1 || { echo "STOP: claude CLI not found — install Claude Code, then run 'claude login'"; exit 1; }
 echo "OK: claude found"
@@ -187,7 +192,8 @@ If no formal plan exists, use: `{PLAN_REFERENCE}` = "No formal plan - review for
 Render the template `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` = the absolute base dir Claude Code prints at skill load; see "Locating plugin files" above) via `render-template.py`, substituting the **actual values** (not variables) collected in Steps 1-2 — SINGLE Bash call. Do **not** append a tooling constraint.
 
 ```bash
-SKILL_BASE="<absolute base dir Claude Code prints at skill load>"
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 DESC=$(cat <<'MESH_DESC_EOF'
 <what was implemented — plain prose; apostrophes, quotes, &&, $(), backticks are all safe inside this quoted heredoc>
 MESH_DESC_EOF
