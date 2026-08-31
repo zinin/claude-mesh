@@ -142,16 +142,19 @@ models:
 # ============================================================================
 # (3) Built-in reviewers                                          [optional]
 # ============================================================================
-# Configuration for the four built-in reviewer types selectable in
-# `defaults.*.builtin`: claude, codex, gemini, grok.
+# Configuration for the four YAML-gated reviewer types selectable in
+# `defaults.*.builtin`: claude, codex, gemini, grok. A fifth type, `native`, has
+# no section here — it is not a gate; see defaults below.
 #
 #   * codex: / gemini: / grok: are GATES — they shell out to the codex / gemini /
 #     grok CLIs and are NOT Anthropic-API endpoints. Omit a section entirely to
 #     remove that tool from the UI and from any `defaults.*.builtin` list
 #     (referencing it in builtin then becomes a hard error).
-#   * claude: is NOT a gate — the built-in claude reviewer is your own Claude Code
-#     and has no external dependency, so `builtin: [claude]` works with no section
-#     here at all. The section only WIDENS it to several Claude models.
+#   * claude: is NOT a gate — on Claude Code the built-in claude reviewer is your
+#     own session and has no external dependency, so `builtin: [claude]` works with
+#     no section here at all. The section only WIDENS it to several Claude models.
+#     On Grok, `claude` is the Claude Code CLI (`claude -p`), not the host model.
+#   * native has no YAML section. `builtin: [native]` is valid with nothing here.
 claude:
   # Catalog of Claude models offered when you pick the built-in `claude` reviewer.
   # Each entry becomes ONE independent reviewer: same diff, same prompt, different
@@ -265,14 +268,28 @@ grok:
 # is [optional] too.
 defaults:
   code_review:                                 # used by: /mesh-review default
-    builtin: [claude, codex, gemini, grok]     # [optional] list; subset of { claude, codex, gemini, grok }.
-                                               #   claude  — your own Claude Code via superpowers:requesting-code-review
-                                               #             (needs NO config section; see claude: above to fan it
-                                               #             out over several models).
+    builtin: [native, claude, codex, gemini, grok]
+                                               # [optional] list; subset of { native, claude, codex, gemini, grok }.
+                                               #   native  — host models. On Claude Code this collapses into
+                                               #             claude (not a second set). On Grok: spawn_subagent
+                                               #             with slugs from live `grok models` / native_models.
+                                               #             Needs NO config section.
+                                               #   claude  — on Claude Code: your own session via
+                                               #             superpowers:requesting-code-review (needs NO
+                                               #             config section; see claude: above to fan it
+                                               #             out over several models). On Grok: the Claude
+                                               #             Code CLI (`claude -p`, runs/claude/<alias>/).
                                                #   codex   — requires the codex: section above.
                                                #   gemini  — requires the gemini: section above.
                                                #   grok    — requires the grok: section above AND a non-empty
                                                #             grok_models below; see that key for why.
+    native_models: [grok-4.6, glm-5-3, kimi-k3]
+                                               # [optional] ignored on Claude Code; Grok default native set.
+                                               #   slugs must exist in live `grok models` or that reviewer
+                                               #   is skipped (not a loader error). "native" must be in
+                                               #   builtin — native_models without it is invalid. Empty or
+                                               #   absent with native in builtin is valid (one reviewer on
+                                               #   the Grok session model).
     claude_models: [opus, fable]               # [optional] list; each entry must be in the claude.models
                                                #   catalog above, and "claude" must be present in builtin.
                                                #   In `default` mode: one reviewer per entry, each overriding
@@ -292,9 +309,10 @@ defaults:
                                                #   There is no single-reviewer fallback the way claude has one:
                                                #   the grok reviewer agent cannot start without a model, so
                                                #   there is nothing to fall back TO.
-                                               #   COST, as under claude:. This preset as shipped is NINE
-                                               #   reviewers of one diff: 2 claude + codex + gemini + 1 grok
-                                               #   + 4 external. Trim the lists before using it as-is.
+                                               #   COST, as under claude:. On Grok this preset as shipped is
+                                               #   TWELVE reviewers of one diff: 3 native + 2 claude + codex
+                                               #   + gemini + 1 grok + 4 external. On Claude Code native is
+                                               #   ignored, so NINE. Trim the lists before using it as-is.
     models: [zai/glm, ollama/kimi, deepseek/v4-pro, ollama/minimax]
                                                # [optional] list; each entry must be a model id from section 2.
     run_mode: background                       # [optional] valid: background | team
@@ -306,7 +324,12 @@ defaults:
                                                #         works poorly — prefer 'background' (the default).
 
   design_review:                               # used by: /mesh-design-review default
-    builtin: [claude, codex, gemini, grok]     # [optional] same valid set { claude, codex, gemini, grok }.
+    builtin: [native, claude, codex, gemini, grok]
+                                               # [optional] same valid set { native, claude, codex, gemini, grok }.
+    native_models: [grok-4.6, glm-5-3, kimi-k3]
+                                               # [optional] ignored on Claude Code; Grok default native set.
+                                               #   slugs must exist in live `grok models` or that reviewer
+                                               #   is skipped. Same pairing as code_review.
     claude_models: [opus]                      # [optional] deliberately narrower than code_review's —
                                                #   the two presets are independent.
     grok_models: [grok-4.6]                    # [optional] narrower than code_review's for the same reason.

@@ -2,6 +2,14 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Added
+- **Host-aware mesh on Grok Build.** `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `explore` reviewers with `model:` slugs from `grok models` (`defaults.*.native` / `native_models`). Wrappers still run when selected. On Grok, `claude` is the Claude Code CLI (`claude -p`, `runs/claude/<alias>/`).
+
+### Changed
+- **Grok-only break:** a 0.12.0 preset with `builtin: [claude, …]` and no `native` no longer means "review on the host model". It means `claude -p`. Claude Code behaviour for that preset is unchanged.
+
 ## [0.12.0] - 2026-08-30
 
 ### Added

@@ -37,6 +37,7 @@ daemon), and session helpers.
   size budgets, the three-tier `CLAUDE.md` → `.claude/rules/` → co-located layout, `paths:`
   frontmatter for conditional loading, quality checklist. Vendored from an external project —
   see [Credits](#credits)
+- **Grok Build** — `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `explore` reviewers (`builtin: native`, slugs from `grok models`) alongside the CLI wrappers. `grok plugin list` empty is not "missing" — see [Grok Build](#grok-build)
 - **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else)
 
 ## Install
@@ -70,6 +71,19 @@ cp ~/.claude/plugins/cache/*/claude-mesh/*/config.example.yaml \
 ```
 
 Any errors → fix as instructed in the message.
+
+### Grok Build
+
+This is a Claude Code plugin that Grok already loads from the Claude-compat cache.
+The same `config.yaml` serves both hosts.
+
+- Grok loads this plugin from `~/.claude/plugins/cache` (Claude compat). `grok plugin list`
+  may say none installed; that is not "missing". `grok inspect` is the inventory.
+- On Grok, `builtin: native` runs `spawn_subagent` with slugs from `grok models`.
+  `builtin: claude` runs `claude -p` (Claude Code CLI).
+- A 0.12.0 preset without `native` does not start host slugs on Grok. Add `native`
+  (and `native_models`) yourself. Claude Code is unchanged.
+- Data dir is still `~/.claude/plugins/data/claude-mesh-zinin/`.
 
 ## Claude Code settings (not plugin config)
 
@@ -166,6 +180,8 @@ See `config.example.yaml` for the canonical example. Sections:
 | `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
 | `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer, **required and non-empty** while the section exists. `reasoning_effort:` — optional section-wide default; `model_efforts:` — optional per-model overrides of it, because the CLI validates the level per model. One reviewer per selected entry, so cost scales as for `claude.models`. All three keys have rules worth reading before you edit them — see below |
 | `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |
+| `defaults.*.native` | no | host-reviewer type in a preset's `builtin`. On Grok: `spawn_subagent` with slugs from `grok models`. On Claude Code: synonym of `claude` (not a second set). No `native:` YAML section |
+| `defaults.*.native_models` | no | Grok default native slugs for that preset. Ignored on Claude Code. A slug missing from live `grok models` is skipped, not a loader error. Requires `native` in the same preset's `builtin` |
 | `runtime:` | no | UI defaults + timeouts |
 
 
