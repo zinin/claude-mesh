@@ -371,6 +371,36 @@ assert_eq "the base-branch prefix rule names both exceptions, not grok alone" "0
 assert_eq "no one-line 'MODEL=<id> Review …' form left to be prefixed" "0" \
     "$(grep -c 'MODEL=<id> Review the changes' "$MESH_REVIEW")"
 
+# Task 9: dispatch-type facts. Presence floors, never exact counts — the same reason
+# the rest of Test 6 uses assert_ge: a phrase may appear in the table, the wait
+# paragraph, and a worked example. Absence of explore / INLINE / the never-invoked
+# sentence is the defect this branch's review would otherwise miss identically in
+# both files.
+assert_ge "mesh-review Grok native uses explore" "1" \
+    "$(grep -c 'subagent_type: "explore"' "$MESH_REVIEW" || grep -c 'subagent_type: explore' "$MESH_REVIEW")"
+assert_ge "design review Grok native uses explore" "1" \
+    "$(grep -c 'subagent_type: "explore"' "$DESIGN_SKILL" || grep -c 'subagent_type: explore' "$DESIGN_SKILL")"
+assert_ge "mesh-review native is INLINE in 6.0" "1" \
+    "$(grep -c 'native:<slug> INLINE' "$MESH_REVIEW")"
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_ge "${f#"$REPO"/}: native skipped by verify-delegation" "1" \
+        "$(grep -c 'verify-delegation.sh is never invoked for native' "$f")"
+done
+# Roster spelling for host claude CLI:
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_ge "${f#"$REPO"/}: claude/opus roster spelling" "1" \
+        "$(grep -c 'claude/opus' "$f")"
+    assert_ge "${f#"$REPO"/}: claude:opus reviewer spelling" "1" \
+        "$(grep -c 'claude:opus' "$f")"
+done
+
+# Do not add a brittle STOP-count. Instead pin the exact STOP sentence:
+# На Grok team mode не поддерживается — остановите запуск и используйте background.
+assert_ge "mesh-review Grok team STOP sentence" "1" \
+    "$(grep -c 'На Grok team mode не поддерживается' "$MESH_REVIEW")"
+assert_ge "design review Grok team STOP sentence" "1" \
+    "$(grep -c 'На Grok team mode не поддерживается' "$DESIGN_SKILL")"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="
 [ "$FAIL" = "0" ]

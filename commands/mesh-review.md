@@ -583,13 +583,23 @@ Since AskUserQuestion lacks preSelected, the recommended choice gets a "(Recomme
 
 ## Step 5a: Background tasks mode
 
-**Before dispatch — stamp the delegation window (Step 6.0 guard needs it).** Via a Bash tool call, record `DISPATCH_EPOCH=$(date +%s)` and keep the number. Also remember the list of *wrapper* reviewers being dispatched as `engine:model` pairs: `codex`→`codex:-`, `gemini`→`gemini:-`, each entry of `SELECTED_GROK_MODELS`→`grok:<model>` (`grok:grok-4.6` — a colon, and the bare catalog id), each selected model id→`ext-claude:<id>`. `grok` with an empty `SELECTED_GROK_MODELS` contributes no pair at all: nothing was dispatched, so there is nothing to verify. The builtin `claude` / `general-purpose` reviewers — there may now be several, one per Claude model — are NOT wrappers (they review inline by design). Exclude all of them from this list.
+**Before dispatch — stamp the delegation window (Step 6.0 guard needs it).** Via a Bash tool call, record `DISPATCH_EPOCH=$(date +%s)` and keep the number. Also remember the list of *wrapper* reviewers being dispatched as `engine:model` pairs: `codex`→`codex:-`, `gemini`→`gemini:-`, each entry of `SELECTED_GROK_MODELS`→`grok:<model>` (`grok:grok-4.6` — a colon, and the bare catalog id), each selected model id→`ext-claude:<id>`. `grok` with an empty `SELECTED_GROK_MODELS` contributes no pair at all: nothing was dispatched, so there is nothing to verify.
 
-Launch all selected reviewers via Task tool, each `run_in_background: true`, in ONE message:
+**HOST=claude-code:** the builtin `claude` / `general-purpose` reviewers — there may now be several, one per Claude model — are NOT wrappers (they review inline by design). Exclude all of them from this list. Native is not a separate spawn (`≡ claude`).
 
-**Dispatch model:** if `DISPATCH_MODEL` (resolved in Step 0 for `default` mode, or Step 1 for interactive) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch below. If it is empty, omit `model:` so each reviewer inherits this session's model.
+**HOST=grok:** native is NOT a wrapper (no `runs/native/…`, Step 6.0 INLINE). Exclude every `native:<slug>` from this list. `claude` IS a wrapper here: each entry of `SELECTED_CLAUDE_MODELS`→`claude:<alias>` (`claude:opus` — a colon); empty list with `claude` still selected → one pair `claude:_default` (roster `claude/_default`). Name them `claude:<alias>` everywhere downstream. The watcher roster spells the same reviewer `claude/opus` (a SLASH), matching `runs/claude/<alias>/` — the two spellings are never interchangeable.
 
-**Exception — claude reviewers with an explicit model.** When Step 2.4 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL`. Running the review on a chosen model is the whole point; letting `DISPATCH_MODEL` win here would collapse every claude reviewer onto one model and fake the independence. `DISPATCH_MODEL` still governs the codex / gemini / grok / ext-claude wrappers, and the single fallback `claude` reviewer. **A grok reviewer's `MODEL=` is not an exception to that** — the two name different things and both apply at once: `DISPATCH_MODEL` sets the Claude model the `grok-code-reviewer` WRAPPER itself runs on, while `MODEL=<entry>` names the xAI model its CLI reviews with. Exactly as for ext-claude, neither overrides the other.
+Launch all selected reviewers **in ONE message**:
+
+**HOST=claude-code:** Task tool, each `run_in_background: true`.
+
+**HOST=grok:** `spawn_subagent`, each `background: true`. Do not set `isolation: worktree`; reviewers read the orchestrator's tree. There is no Task, no SendMessage, no TeamCreate.
+
+**Dispatch model (HOST=claude-code):** if `DISPATCH_MODEL` (resolved in Step 0 for `default` mode, or Step 1 for interactive) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch below. If it is empty, omit `model:` so each reviewer inherits this session's model.
+
+**Exception — claude reviewers with an explicit model (HOST=claude-code).** When Step 2.4 (interactive) or the preset (`default` mode) resolved a non-empty set of Claude models, each of those reviewers is dispatched with `model: "<its own Claude model>"`, NOT with `DISPATCH_MODEL`. Running the review on a chosen model is the whole point; letting `DISPATCH_MODEL` win here would collapse every claude reviewer onto one model and fake the independence. `DISPATCH_MODEL` still governs the codex / gemini / grok / ext-claude wrappers, and the single fallback `claude` reviewer. **A grok reviewer's `MODEL=` is not an exception to that** — the two name different things and both apply at once: `DISPATCH_MODEL` sets the Claude model the `grok-code-reviewer` WRAPPER itself runs on, while `MODEL=<entry>` names the xAI model its CLI reviews with. Exactly as for ext-claude, neither overrides the other.
+
+**Dispatch model (HOST=grok):** do **not** pass `runtime.dispatch_model` / `DISPATCH_MODEL` to `spawn_subagent` unless that value is in `HOST_MODELS` (`grep -Fxq`). `opus` is not a host slug — **never pass `opus` as spawn `model:`**. Native slugs use their own `model: "<slug>"` (omit `model:` when the list is empty). Wrapper spawn `model:` is only a live host slug; it is never the CLI's `MODEL=` line. A native spawn whose `model:` the host rejects is a failed reviewer: record it, do not substitute another slug.
 
 **Base branch:** when the `BASE_BRANCH=<branch>` argument was given, prefix every WRAPPER prompt
 below with `BASE_BRANCH=<branch> `. Each wrapper's skill reads that name and otherwise
@@ -605,7 +615,7 @@ name — a fifth wrapper takes the prefix if its agent claims no first line, and
 if it does. The builtin `claude` reviewers resolve the range themselves, so they get the base
 named in their prompt sentence instead. Argument absent → change nothing; every skill keeps its own auto-detection.
 
-For each builtin reviewer:
+**HOST=claude-code — Task dispatch.** For each builtin reviewer:
 - claude: `subagent_type: "general-purpose"` (built-in — NOT namespaced), prompt invokes `superpowers:requesting-code-review` skill. **One Task per entry of `SELECTED_CLAUDE_MODELS`**, each carrying `model: "<entry>"`; in the fallback case exactly one Task per the Dispatch-model rule above. All of them get the same prompt — only the model differs. With `BASE_BRANCH` given, the prompt names it: `… review the changes on this branch against base <branch> …`.
 - codex: `subagent_type: "claude-mesh:codex-code-reviewer"`, prompt: `Review the changes for production readiness` (with the `BASE_BRANCH=<branch> ` prefix when the argument was given)
 - gemini: `subagent_type: "claude-mesh:gemini-code-reviewer"`, prompt: `Review the changes for production readiness` (same prefix rule)
@@ -622,7 +632,48 @@ For each builtin reviewer:
 For each selected model id:
 - `subagent_type: "claude-mesh:ext-claude-code-reviewer"`, prompt: `MODEL=<id>` on its own FIRST line, then `BASE_BRANCH=<branch>` directly under it when there is a base branch to name, then `Review the changes for production readiness`. Without a base branch, drop the middle line. The one-line `BASE_BRANCH=<branch> MODEL=<id> …` form this bullet used to prescribe put `BASE_BRANCH=` at the head of the first line, against `agents/ext-claude-code-reviewer.md`'s own requirement that MODEL be there — it worked in practice, but only because every agent so far read past it
 
-**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / grok / ext-claude reviewers are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude; headed by `MODEL=<entry>` on its own first line for grok). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own Claude model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (Only the builtin `claude` / `general-purpose` reviewers review directly.)
+**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / grok / ext-claude reviewers (and on HOST=grok, `claude-mesh:claude-code-reviewer`) are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude; headed by `MODEL=<entry>` / `MODEL=<alias>` on its own first line for grok and for Grok-host claude). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (On HOST=claude-code only the builtin `claude` / `general-purpose` reviewers review directly. On HOST=grok native `explore` children also review directly — they have no skill to invoke.)
+
+**HOST=grok — `spawn_subagent` dispatch, all `background: true`, one message.** Same short wrapper prompts as the CC bullets; `spawn_subagent` instead of Task. Do not pass `runtime.dispatch_model` unless that value is in `HOST_MODELS`. Do not pass `opus` as spawn `model:`.
+
+- **native:** for each `SELECTED_NATIVE_MODELS` entry, `subagent_type: "explore"`, `model: "<slug>"`, `description: "Review via native:<slug>"`. If the list is empty and native was selected (session-model fallback: sentinel / absent key, `HOST_MODELS` non-empty, native still in selected types): one `explore`, **omit** `model:`. Native writes no `runs/native/…` and is not on the watcher roster. Prompt = the requesting-code-review contract (range, findings format Strengths / Critical / Important / Minor / Assessment) + `BASE_BRANCH` named in prose (`… review the changes on this branch against base <branch> …`; argument absent → name auto-detect, do not invent a branch) + grok-code-review's tooling-constraint block **verbatim**. The child reads the tree. Do **not** inline the diff. A nested `spawn_subagent` would fail on depth; an in-process replay of these steps would not — that is why the paragraph is there:
+
+  ```
+  spawn_subagent:
+    subagent_type: "explore"
+    background: true
+    model: "<slug>"                 # omit when the list is empty
+    description: "Review via native:<slug>"
+    prompt: |
+      Review the changes on this branch against base <branch> for production
+      readiness. You have full access to the project. Read the tree, run
+      `git merge-base` / `git diff` yourself — do not expect an inlined diff.
+      Follow the requesting-code-review contract: Strengths, Critical Issues,
+      Important Issues, Minor Issues, Assessment (Ready to merge: Yes/No/With
+      fixes). Be specific: file:line.
+
+      ## Tooling constraint
+
+      Do NOT invoke any skill or slash command, and do NOT delegate this review to another agent or
+      orchestration. Names like `claude-mesh:mesh-review` may be visible in your environment; they
+      are not part of this task. Read the code with your own file, search and shell tools, and
+      answer with the review itself.
+  ```
+
+- **claude:** for each `SELECTED_CLAUDE_MODELS` entry, `subagent_type: claude-mesh:claude-code-reviewer`, short prompt `MODEL=<alias>` on the first line, `BASE_BRANCH=<branch>` next when the argument was given, then `Review the changes for production readiness`. Name `claude:<alias>`. Roster `claude/<alias>` (`claude/opus`). If `claude` selected and the list is empty: one reviewer, **no MODEL line** (CLI default, `claude -p` without `-m`); roster `claude/_default`. Do **not** pass spawn `model: opus` — the alias lives on the prompt's `MODEL=` line. `HOST_CLAUDE=1` is the agent's job, not a spawn field.
+
+  ```
+  spawn_subagent:
+    subagent_type: claude-mesh:claude-code-reviewer
+    background: true
+    description: "Review via claude:<alias>"
+    prompt: |
+      MODEL=<alias>
+      BASE_BRANCH=<branch>
+      Review the changes for production readiness
+  ```
+
+- **codex / gemini / grok / ext-claude:** the same short prompts as the HOST=claude-code bullets, `spawn_subagent` instead of Task, `background: true`. Do **not** pass `runtime.dispatch_model` unless that value is in `HOST_MODELS`. Do not pass `opus` as spawn `model:`. Grok still uses `MODEL=<entry>` on line 1; ext-claude still uses `MODEL=<id>` on line 1.
 
 Display:
 ```
@@ -635,7 +686,7 @@ N code review агентов запущены параллельно в фоне
 **Do NOT block.** Continue accepting user instructions while agents work.
 When each agent completes, read its output. After all agents finish (or the user cancels some), proceed to **Step 6: Process Results**.
 
-**CRITICAL — a wrapper's report does NOT arrive on its own: disk-watch the runs and ping idle wrappers.** A wrapper launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…`), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits (verified 2026-07-10: 0 notifications in 5/5 smoke transcripts; wrappers sat 8–12 min over a finished `output.txt` until explicitly pinged). Treat the interim status as the last thing a wrapper says unprompted. After dispatch:
+**Wait — HOST=claude-code.** **CRITICAL — a wrapper's report does NOT arrive on its own: disk-watch the runs and ping idle wrappers.** A wrapper launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…`), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits (verified 2026-07-10: 0 notifications in 5/5 smoke transcripts; wrappers sat 8–12 min over a finished `output.txt` until explicitly pinged). Treat the interim status as the last thing a wrapper says unprompted. After dispatch:
 
 1. **Capture each wrapper's run dir** from its interim status. Fallback when a status names none: the newest dir under `$DATA_DIR/runs/<engine>/[<provider>/<model>/]` created after `DISPATCH_EPOCH` — the same discovery `verify-delegation.sh` uses (locate `DATA_DIR` as in Step 6.0 point 1).
 2. **Watch the disk with `shared/watch-runs.sh`, launched as a background Bash task**, so "Do NOT block" above stays true — a foreground poll loop would hold the session hostage, and a background watcher that returns on each event re-invokes you per event. **Do NOT hand-roll a poller.** The improvised one exited only when the count of finished runs grew, and death never grows a count; that is the blind spot this script exists to close.
@@ -683,9 +734,19 @@ When each agent completes, read its output. After all agents finish (or the user
 >
 > Do not restore parity by copying the gate or the routing across, and do not delete either: each file checks a finished run's content exactly once and routes a dead run exactly once, and a copy of either in the other file would be the weaker of the two.
 
-The builtin `claude` reviewers are exempt: they review inline, create no `runs/<engine>/…` dir and complete on their own. Never wait for a run dir for them and never ping them.
+**HOST=claude-code:** the builtin `claude` reviewers are exempt: they review inline, create no `runs/<engine>/…` dir and complete on their own. Never wait for a run dir for them and never ping them. Native is not a separate spawn.
+
+**Wait — HOST=grok.** No sleep poller. Completions arrive as harness notifications on the `spawn_subagent` ids; fetch each with `get_command_or_subagent_output`. A wait-all on several ids is allowed; each call's `timeout_ms` ≤ 600000. Loop until every child has finished or `runtime.timeouts.global_sec` elapses. There is no SendMessage.
+
+- **Native** is not on the watcher roster. The result is the child's text. Step 6.0 marks each `native:<slug> INLINE`. `verify-delegation.sh is never invoked for native`.
+- **Wrappers** (codex / gemini / grok / ext-claude / Grok-host `claude`) still go through `watch-runs.sh` + `verify-delegation.sh`. Include `claude/opus` (or `claude/_default`) on the roster when a Grok-host claude wrapper was dispatched — depth 1, like grok: `claude/opus` matching `runs/claude/opus/`. Example: `"$WATCH" --since <DISPATCH_EPOCH> claude/opus grok/grok-4.6 ext-claude/zai/glm`. Then `bash "$VERIFY" claude opus <DISPATCH_EPOCH> "$DATA_DIR"`.
+- **Silent wrapper + `REAL`:** read `<run dir>/output.txt` yourself (or `final/output.txt` when the root file is empty). That is the **primary** collection path on Grok, not the "after two pings" fallback. No SendMessage.
+
+After dispatch, print the same "N agents running, do not block" line as HOST=claude-code.
 
 ## Step 5b: Team of reviewers mode
+
+**HOST=grok never runs team.** Step 0 / Step 4 already STOP with `На Grok team mode не поддерживается — остановите запуск и используйте background.` If you reach this step on Grok, that is a bug — stop and use Step 5a (background). Grok has no TeamCreate.
 
 1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewers — all of them) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
 2. Create one task per selected reviewer — with several Claude models selected that means one task per Claude model (`claude:opus`, `claude:fable`), not one shared `claude` task; and **one task per entry of `SELECTED_GROK_MODELS`**, named `grok:<model>`, exactly as Step 5a dispatches them — never one shared `grok` task, and none at all when that list is empty
@@ -712,9 +773,11 @@ Issues are processed in a **fixed four-phase order**. Do NOT interleave phases. 
 
 ### Step 6.0: Verify delegation (mechanical guard)
 
-**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / grok / ext-claude) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned. The inverse failure also exists: a wrapper whose run is `REAL` on disk but which never sent a report is not a flip — it is idle (wrappers do not wake when their background run finishes); ping it per the Step 5a watch loop to collect the report before classifying.
+**Run this BEFORE Step 6.1.** Wrapper reviewers (codex / gemini / grok / ext-claude, and on HOST=grok also `claude`) non-deterministically *flip*: they skip their `*-code-review` skill and self-review inline on this session's own model — a polished review that is **NOT** external cross-validation and leaves **no** `runs/<engine>/…` artifacts. The Step 5 prose forcing reduces this but does not eliminate it (the agent defs are already maxed and still flip). This step catches it **mechanically by inspecting on-disk artifacts** — do NOT trust the text a wrapper returned. The inverse failure also exists: a wrapper whose run is `REAL` on disk but which never sent a report is not a flip — it is idle (wrappers do not wake when their background run finishes); collect it per the Step 5a wait (HOST=claude-code: ping; HOST=grok: read `output.txt` yourself) before classifying.
 
-The builtin `claude` / `general-purpose` reviewers (one per selected Claude model, or a single fallback one) are **skipped by the guard** — they review inline by design, so every one of them whose Task actually completed is accepted into Step 6.1. `verify-delegation.sh` is never invoked for them. (A claude reviewer whose Task errored is the exception — see the `FAILED` rule below.)
+**HOST=claude-code:** the builtin `claude` / `general-purpose` reviewers (one per selected Claude model, or a single fallback one) are **skipped by the guard** — they review inline by design, so every one of them whose Task actually completed is accepted into Step 6.1. `verify-delegation.sh` is never invoked for them. (A claude reviewer whose Task errored is the exception — see the `FAILED` rule below.) Native is not a separate spawn.
+
+**HOST=grok:** native reviewers are **skipped by the guard**. `verify-delegation.sh is never invoked for native`. Each completed native child is `native:<slug> INLINE` (session-model fallback: a single `native` row). A native spawn the host rejected is `FAILED` — record it, do not substitute another slug, `max_redispatch` does not apply. `claude:*` is a wrapper: `verify-delegation.sh claude <alias>` (`claude opus` for `claude:opus`; `claude _default` for the empty-catalog fallback). Other wrappers unchanged.
 
 Run points 1 and 2 in the SAME Bash call: `$VERIFY` and `$DATA_DIR` are stamped in point 1's fence and do not survive into a second call, and `bash "" …` is not a verdict but a "No such file or directory".
 
@@ -730,14 +793,18 @@ DATA_DIR="$("$LOADER" data-dir)"
 N="$("$LOADER" get-runtime | jq -r '.max_redispatch // 1')"; [[ "$N" =~ ^[0-9]+$ ]] || N=1
 ```
 
-**2. Classify each dispatched wrapper.** Iterate the `engine:model` list stamped in Step 5 (substitute the ACTUAL dispatched pairs):
+**2. Classify each dispatched wrapper.** Iterate the `engine:model` list stamped in Step 5 (substitute the ACTUAL dispatched pairs). On HOST=grok include `claude:<alias>` (`claude:opus`); do **not** include native — `verify-delegation.sh is never invoked for native`:
 ```bash
 # example — replace the list with what was actually dispatched:
+# HOST=claude-code (no claude: pairs — those are INLINE):
 for spec in "codex:-" "grok:grok-4.6" "ext-claude:zai/glm" "ext-claude:ollama/kimi"; do
   eng="${spec%%:*}"; mdl="${spec#*:}"
   printf '%-28s ' "$spec"
   bash "$VERIFY" "$eng" "$mdl" <DISPATCH_EPOCH> "$DATA_DIR"   # prints REAL|FLIP|STALLED|BROKEN|DEGRADED|KILLED; reason on stderr
 done
+# HOST=grok (claude is a wrapper; native is not in this loop):
+# for spec in "claude:opus" "codex:-" "grok:grok-4.6" "ext-claude:zai/glm"; do
+#   … bash "$VERIFY" claude opus <DISPATCH_EPOCH> "$DATA_DIR"
 ```
 
 
@@ -750,14 +817,15 @@ Verdicts:
 - `STALLED` (exit 2) — run dir but died mid-flight / delivered nothing usable → **re-dispatch** (retry helps). For ext-claude **and grok** — they share one branch of the guard because they share the stream format — that is a missing result event; for codex and gemini, a stream with no `turn.completed` / `result` event, or a non-zero watchdog exit that is not a signal (see `KILLED`). It also covers a run that finished healthily and delivered a **notice instead of a review** — `output.txt` under 400 non-space bytes. That is not hypothetical: on 2026-08-05 `deepseek/v4-pro` twice returned "Ревью запущено … уведомлю вас по завершении" after 24 and 17 tool calls, and the older gate scored both `REAL`, so `/mesh-review` counted a model that said nothing among its cross-validating reviewers. Measured across 624 archived runs the floor moves exactly those two out of `REAL`, plus five that were `DEGRADED` on the same kind of text (an "approve this command" note, leaked tool grammar, a summary of a review that is not in the file).
 - `KILLED` (exit 6) — a review **lost** to a signal from OUTSIDE the run: the watchdog's last `cleanup` carries 143 (SIGTERM) or 130 (SIGINT), no `watchdog.exit` sits beside it, so nothing inside the run chose to stop — and what the run left behind is not a usable review → **EXCLUDE, do NOT re-dispatch.** The verdict weighs the cost, not the signal: a run that had already delivered a real review before something killed its tail scores `REAL` and keeps its findings, on every engine. So `KILLED` never means "there may be findings on disk you are discarding" — there are none worth having, which is why there is nothing to ping for. The review itself was healthy right up to the signal; what failed is the launch, and an identical launch is killed identically. The usual sender is the harness capping a *foreground* Bash call at `BASH_MAX_TIMEOUT_MS` (ten minutes by default) and SIGTERMing it there — which is why the exec skills launch the engine as a background task. On 2026-08-05 this verdict did not exist, the five affected runs scored `STALLED`, and three re-dispatches died exactly as the runs they replaced. If the run dirs show this repeatedly, the wrapper is launching in the foreground and the fix is in the skill, not in another round.
 - `BROKEN` (exit 4) — run dir but the engine finished without doing any work → **DROP, do NOT retry** (the engine itself is broken). For ext-claude **and grok** that is thinking-only / DSML grammar / `num_turns≤1` (the maximum across the stream's successful result events); for codex and gemini, a completed turn that ran no tool at all — narration rather than a review.
-- `DEGRADED` (exit 5, ext-claude and grok) — a real, agentic review, but the CLI refused `N` of its tool calls: the reviewer never got outside the directory it was launched in, so it reviewed without the sibling sources it tried to open → **KEEP for Step 6.1, do NOT re-dispatch.** The findings are genuine; what is missing is everything the reviewer could not read, so treat any claim about code outside the project dir as a guess rather than a finding. A retry re-runs the same invocation and is denied identically, and the remedy is not an agent's to apply: the ext-claude run needs `--permission-mode bypassPermissions`, and an *installed* plugin only picks that up through a release — so on any copy predating that release this verdict is the expected outcome, not an anomaly. The reason line names the denial count and which tools were refused (`Read×2, Bash×1`), which says whether the reviewer lost source files, searches, or both. Before this verdict existed such a run scored `REAL`: every liveness signal (finalized, `is_error:false`, `num_turns` well above 1, non-empty output) is healthy on a reviewer that read nothing, which is why it needed a check of its own. **On grok the remedy differs and the reason line says so:** `grok-exec` already passes `--permission-mode bypassPermissions`, so a denial there is not the missing-flag case at all — it points at the CLI's own permission configuration (`~/.grok`, or a sandbox profile), not at a plugin release. The verdict is the same: keep the findings, do not re-dispatch.
+- `DEGRADED` (exit 5, ext-claude, grok, and HOST=grok `claude`) — a real, agentic review, but the CLI refused `N` of its tool calls: the reviewer never got outside the directory it was launched in, so it reviewed without the sibling sources it tried to open → **KEEP for Step 6.1, do NOT re-dispatch.** The findings are genuine; what is missing is everything the reviewer could not read, so treat any claim about code outside the project dir as a guess rather than a finding. A retry re-runs the same invocation and is denied identically, and the remedy is not an agent's to apply: the ext-claude run needs `--permission-mode bypassPermissions`, and an *installed* plugin only picks that up through a release — so on any copy predating that release this verdict is the expected outcome, not an anomaly. The reason line names the denial count and which tools were refused (`Read×2, Bash×1`), which says whether the reviewer lost source files, searches, or both. Before this verdict existed such a run scored `REAL`: every liveness signal (finalized, `is_error:false`, `num_turns` well above 1, non-empty output) is healthy on a reviewer that read nothing, which is why it needed a check of its own. **On grok the remedy differs and the reason line says so:** `grok-exec` already passes `--permission-mode bypassPermissions`, so a denial there is not the missing-flag case at all — it points at the CLI's own permission configuration (`~/.grok`, or a sandbox profile), not at a plugin release. **On HOST=grok `claude` the reason names `HOST_CLAUDE`:** that path already passes `--permission-mode bypassPermissions`, so a denial is the CLI's own config, not a missing plugin flag. The verdict is the same: keep the findings, do not re-dispatch.
 
 **3. Show the delegation status table** so the user sees who really cross-validated:
 ```
 | Reviewer            | Verdict | Action          |
 |---------------------|---------|-----------------|
-| claude:opus         | INLINE  | ✅ по построению |
-| claude:fable        | INLINE  | ✅ по построению |
+| native:<slug> INLINE | INLINE  | ✅ по построению |
+| claude:opus         | INLINE  | ✅ по построению (HOST=claude-code) |
+| claude:opus         | REAL    | ✅ kept (HOST=grok, verify-delegation.sh claude opus) |
 | ext-claude:zai/glm  | REAL    | ✅ kept          |
 | grok:grok-4.6       | REAL    | ✅ kept          |
 | codex               | FLIP    | ↻ re-dispatch   |
@@ -768,9 +836,9 @@ Verdicts:
 
 A `DEGRADED` row must say **how many** tool calls were denied — the count is the whole content of the verdict, and a row that hides it reads like a `REAL` with decoration.
 
-`INLINE` is a label **you** write, not a `verify-delegation.sh` verdict. Include one row per claude reviewer (a single row named `claude` in the fallback case) so the table is the complete roster of who actually reviewed — with several Claude models in play, a table that silently omits them understates the cross-validation.
+`INLINE` is a label **you** write, not a `verify-delegation.sh` verdict. On HOST=claude-code: include one row per claude reviewer (a single row named `claude` in the fallback case). On HOST=grok: include one `native:<slug> INLINE` row per native child (a single `native` row in the session-model fallback); `claude:*` is **not** INLINE — it is `verify-delegation.sh claude <alias>`. The table is the complete roster of who actually reviewed — a table that silently omits them understates the cross-validation.
 
-**`INLINE` is for a claude reviewer that actually returned a review.** If its Task errored — the overwhelmingly likely cause being a `claude_models` entry this Claude Code build does not accept — give it a `FAILED` row instead and contribute nothing from it to Step 6.1:
+**`INLINE` is for a reviewer that actually returned a review** (HOST=claude-code `claude:*`; HOST=grok `native:<slug>`). If its spawn/Task errored — HOST=claude-code: a `claude_models` entry this Claude Code build does not accept; HOST=grok native: a slug the host rejected — give it a `FAILED` row instead and contribute nothing from it to Step 6.1. Do **not** substitute another slug:
 
 | Reviewer     | Verdict | Action                          |
 |--------------|---------|---------------------------------|
@@ -779,7 +847,7 @@ A `DEGRADED` row must say **how many** tool calls were denied — the count is t
 
 Then continue with the remaining reviewers, per the existing rule "One agent fails, others succeed". Do **NOT** stop the whole review, and do **NOT** silently re-dispatch that reviewer on a different model: a failed dispatch is the *only* signal that a model name is wrong (design §13 — there is no way to verify after the fact which model a subagent really ran on), and quietly substituting another model destroys it. The user asked for N independent models and must be able to see they got N-1.
 
-**4. Auto-redispatch loop (max `N` rounds; `N` = `runtime.max_redispatch`, default 1):**
+**4. Auto-redispatch loop (max `N` rounds; `N` = `runtime.max_redispatch`, default 1). `max_redispatch` is wrappers only** — never native, never a HOST=claude-code INLINE claude reviewer. A native spawn the host rejected is `FAILED` and is not a `PROBLEM`.
 
 `PROBLEMS` = reviewers whose verdict is `FLIP` or `STALLED` — **not** `BROKEN`, **not** `DEGRADED`, **not** `KILLED`. All three are already final: a broken engine repeats itself, a denied reviewer is denied identically on the next run because nothing about the invocation changed, and a killed run is killed again by whatever sent the signal. While `PROBLEMS` is non-empty AND rounds-done < `N`:
   - **a. Stamp a fresh window** via Bash: `DISPATCH_EPOCH=$(date +%s)` — so the guard inspects the NEW run, not the old failed one.
@@ -795,7 +863,7 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 - A reviewer whose final `FLIP` names a **session mismatch** is excluded on the same terms — a run this session cannot verify never counts as external cross-validation — but it is recorded for what was actually observed, not as a flip: `⚠ <reviewer>: N run dir(s) in the window carry another session's id — NOT counted as external review (this session's id does not match the one that dispatched them)`. "Did not delegate" would be a false statement about that reviewer: the run dirs exist, and if the id moved under the orchestration they hold its finished work.
 - `BROKEN` reviewers → record: `⚠ <reviewer>: external engine produced no usable review (broken — ask the user to swap the model in config.yaml; agents never edit it)`.
 - `KILLED` reviewers → record what actually happened, never "did not delegate": `⚠ <reviewer>: run terminated from outside after Ns (SIGTERM, no watchdog.exit) — NOT counted as external review; the review was alive when it was killed, so this is a launch problem, not a model problem`. Name the lifetime — a cluster of deaths at the same round number is the signature of a foreground Bash call hitting `BASH_MAX_TIMEOUT_MS`, and it tells the user the one thing that would fix it. The guard computes it from `watchdog.log` and puts it in the reason line as `after 601s`: copy that number, never estimate one. If the reason carries no lifetime clause the stamps were unparsable — say so instead of inventing a figure.
-- The builtin `claude` reviewers' findings always enter Step 6.1 — every one of them whose Task completed, one entry per selected Claude model (or the single fallback reviewer). The ones marked `FAILED` above contribute nothing; they are never re-dispatched on a substitute model.
+- The builtin `claude` reviewers' findings always enter Step 6.1 on HOST=claude-code — every one of them whose Task completed, one entry per selected Claude model (or the single fallback reviewer). On HOST=grok, native `INLINE` findings enter the same way; `claude:*` is a wrapper and follows the `REAL`/`FLIP`/… rules (`verify-delegation.sh claude <alias>`). The ones marked `FAILED` above contribute nothing; they are never re-dispatched on a substitute model.
 
 **Do NOT silently accept a FLIP as an external review.** A flipped wrapper is the session's model reviewing its own work; counting it as independent cross-validation is the exact failure this guard exists to prevent.
 
