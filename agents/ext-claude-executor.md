@@ -23,17 +23,27 @@ Example: MODEL=zai/glm <rest of the prompt>
 
 Parse MODEL with regex `^MODEL=(\S+)` from the first non-blank line.
 
-## CRITICAL: You MUST Use the Skill Tool
+## Invoke the skill
 
-Once MODEL is parsed, invoke `ext-claude-exec` via the Skill tool. The rest of the
+**If this host has a Skill tool** (Claude Code): your FIRST ACTION is to invoke the skill with the Skill tool, then follow it.
+
+```
+Skill tool -> skill: "claude-mesh:ext-claude-exec"
+```
+
+**If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/ext-claude-exec/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
+`find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/ext-claude-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
+Following the skill **is** CLI delegation. It is not a review you perform yourself.
+
+Once MODEL is parsed, invoke `ext-claude-exec` (Skill tool, or Read SKILL.md). The rest of the
 prompt — everything after the `MODEL=` line and after any of the named parameters
 listed below — goes to `PROMPT`.
 
-```
-Skill tool → skill: "claude-mesh:ext-claude-exec"
-```
+## After the engine starts
 
-Follow ALL steps in the skill exactly.
+**Claude Code:** name the run dir in an interim status, end the turn, wait to be pinged (SendMessage).
+
+**Grok Build:** do not end the turn while the CLI is alive. The exec skill launches the engine as a background bash command. Wait on that command id with `get_command_or_subagent_output` (loop; each call's ceiling is 600s) until it exits, then read `output.txt` and return the findings. This host has no SendMessage; an idle wrapper cannot be pinged.
 
 ## Optional Parameters
 
@@ -42,14 +52,14 @@ They are NOT part of `PROMPT`.
 
 - **TASK_NAME** — short identifier for log files (default: "task")
 - **SUPERVISED_MODE** — `none` (default) or `shell`. `shell` wraps the `claude -p` run in `shared/watchdog.sh`, which restarts the CLI on a stall or a torn stream and writes a `watchdog.log` the caller can watch for liveness. Orchestrated runs (`/mesh-design-review`) pass `shell`; a one-off interactive run leaves it unset, which keeps the live `progress-monitor.sh` output.
-  - **Under `shell`, launch the skill's supervised block as a BACKGROUND Bash task (`run_in_background: true`) and never wait for that call in the foreground.** The harness caps a foreground call at `BASH_MAX_TIMEOUT_MS` — ten minutes out of the box — and SIGTERMs it at the cap, taking the whole process group with it; the watchdog records `exit_code: 143` and the run dies mid-flight. Every budget it supervises (1800s per attempt, 3600s overall) sits above that cap, so on a foreground launch none of them is reachable. Launch, report the work dir, end your turn, and read `$WORK_DIR/output.txt` / `report.md` when the orchestrator pings you — extraction, report generation and bail diagnostics all run inside the launched block.
+  - **Under `shell`, launch the skill's supervised block as a BACKGROUND Bash task (`run_in_background: true`) and never wait for that call in the foreground.** The harness caps a foreground call at `BASH_MAX_TIMEOUT_MS` — ten minutes out of the box — and SIGTERMs it at the cap, taking the whole process group with it; the watchdog records `exit_code: 143` and the run dies mid-flight. Every budget it supervises (1800s per attempt, 3600s overall) sits above that cap, so on a foreground launch none of them is reachable. Launch, then follow **After the engine starts** above.
   - If the run dies, report the death — do **not** relaunch it yourself. A second run dir nobody is tracking breaks attribution: `watch-runs.sh` follows the newest dir, so the orchestrator starts watching a run it never asked for.
 
 ## PROHIBITIONS
 
-- Do NOT read SKILL.md and follow steps manually — use the Skill tool.
-- Do NOT execute the prompt yourself — you are a WRAPPER.
-- Do NOT fall back to manual execution if Skill tool fails.
+- Do NOT write findings without running the exec skill
+- Do NOT fall back to reviewing the diff on your own model
+- Do NOT run the engine CLI directly — the skill chain handles execution
 
 ## Output
 

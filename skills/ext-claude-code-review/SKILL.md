@@ -78,9 +78,19 @@ python3 "$SHARED_DIR/render-template.py" "$SHARED_DIR/code-review-prompt.md" \
 [ -s "$PROMPT_FILE" ] || { echo "STOP: rendered prompt is empty"; exit 1; }
 ```
 
-### Step 2: Delegate to ext-claude-exec via Skill tool
+### Step 2: Delegate to ext-claude-exec
 
-Call Skill tool with `claude-mesh:ext-claude-exec`, passing:
+**If this host has a Skill tool** (Claude Code): invoke `ext-claude-exec` with the Skill tool, then follow it.
+
+```
+Skill tool -> skill: "claude-mesh:ext-claude-exec"
+```
+
+**If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/ext-claude-exec/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
+`find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/ext-claude-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
+Following the skill **is** CLI delegation. It is not a review you perform yourself.
+
+Pass these parameters:
 - `MODEL={MODEL}`
 - `PROMPT={contents of PROMPT_FILE}`
 - `TASK_NAME=code-review-{branch-name}`

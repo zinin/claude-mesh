@@ -48,5 +48,22 @@ assert_eq "review skill has no tooling-constraint section" "0" \
     "$(grep -c '## Tooling constraint' "$REPO/skills/claude-code-review/SKILL.md")"
 
 echo ""
+echo "=== Test: wrapper dual-path invoke + Grok wait ==="
+AGENTS="$REPO/agents"
+# 8 pre-existing wrappers; claude-* already have the paragraph from Task 5.
+WRAPPERS="codex-code-reviewer.md codex-executor.md gemini-code-reviewer.md gemini-executor.md grok-code-reviewer.md grok-executor.md ext-claude-code-reviewer.md ext-claude-executor.md claude-code-reviewer.md claude-executor.md"
+forbid=0
+for f in $WRAPPERS; do
+    grep -q 'Do NOT read SKILL.md' "$AGENTS/$f" && forbid=$((forbid+1))
+done
+assert_eq "no wrapper still forbids reading SKILL.md" "0" "$forbid"
+missing=0
+for f in $WRAPPERS; do
+    grep -q 'If this host has no Skill tool' "$AGENTS/$f" || missing=$((missing+1))
+    grep -q 'do not end the turn while the CLI is alive' "$AGENTS/$f" || missing=$((missing+1))
+done
+assert_eq "every wrapper has dual invoke + Grok wait" "0" "$missing"
+
+echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
