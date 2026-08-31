@@ -685,5 +685,15 @@ assert_match "4.5 row names its own dir" "$(basename "$b")" "$(row grok/grok-4.5
 rm -rf "$TDIR"
 
 echo ""
+echo "Test 42: a claude roster entry follows runs/claude/<alias>/"
+TDIR="$(mktemp -d)"
+a="$(mk_run "$TDIR" claude/opus)"
+wd_log "$a" 0; printf 'findings\n' > "$a/output.txt"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" claude/opus
+assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_match "claude row is DONE" "DONE" "$(row claude/opus)"
+rm -rf "$TDIR"
+
+echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

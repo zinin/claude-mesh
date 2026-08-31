@@ -11,7 +11,7 @@
 #
 # Usage:
 #   verify-delegation.sh <engine> <model|-> <since-epoch> [data-dir]
-#     engine      ext-claude | codex | gemini | grok
+#     engine      ext-claude | codex | gemini | grok | claude
 #     model       for ext-claude: "<provider>/<short>" (e.g. zai/glm); for grok: the model id
 #                 (e.g. grok-4.6); "-" for codex/gemini
 #     since-epoch only run dirs NAMED at/after this unix time are considered — the same
@@ -143,6 +143,21 @@ case "$ENGINE" in
             *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "verify-delegation: engine grok model '$MODEL' is not a catalog id (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. grok-4.6; <provider>/<short> is ext-claude's spelling)" >&2; exit 1 ;;
         esac
         BASE="$DATA_DIR/runs/grok/$MODEL" ;;
+    # Same mandatory-model / charset guards as grok: dirs live under runs/claude/<alias>/,
+    # so empty/`-`/slash/leading-dot would resolve a path nothing writes and report FLIP.
+    claude)
+        case "$MODEL" in
+            ''|'-') echo "verify-delegation: engine claude requires a model argument (e.g. opus), got '${MODEL:-}'" >&2; exit 1 ;;
+            # Same charset as GROK_IDENT_RE in config-loader.sh, and for the same reason: this
+            # value becomes a path component. A config-sourced model cannot fail it — the loader
+            # already rejected anything else — but this script is also a CLI entry point and BOTH
+            # orchestrators TEMPLATE the call, so the spelling that actually arrives wrong is
+            # ext-claude's <provider>/<short>. That resolved runs/claude/<provider>/<short>, a path
+            # nothing ever writes, and was then reported as FLIP — "this reviewer never
+            # delegated" — about a reviewer that ran and delivered its review.
+            *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "verify-delegation: engine claude model '$MODEL' is not a catalog id (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. opus; <provider>/<short> is ext-claude's spelling)" >&2; exit 1 ;;
+        esac
+        BASE="$DATA_DIR/runs/claude/$MODEL" ;;
     codex)      BASE="$DATA_DIR/runs/codex" ;;
     gemini)     BASE="$DATA_DIR/runs/gemini" ;;
     *) echo "verify-delegation: unknown engine '$ENGINE'" >&2; exit 1 ;;
@@ -396,7 +411,7 @@ case "$ENGINE" in
             fail STALLED "the run used tools but output.txt holds only $OUT_BYTES non-space bytes — a notice or a fragment, not a review (the shortest genuine codex review in the archive is 1746)" 2
         emit REAL "delegated, non-empty review" 0
         ;;
-    ext-claude|grok)
+    ext-claude|grok|claude)
         # grok joins this branch rather than getting one of its own because it shares the
         # STREAM FORMAT, not merely the spirit: grok-exec runs the CLI with
         # --output-format streaming-messages-json, which is the Claude Code wire format byte
@@ -578,6 +593,7 @@ case "$ENGINE" in
             # remedy — a flag its own exec skill may already pass, or may not accept at all.
             case "$ENGINE" in
                 grok)       DENIAL_REMEDY="grok-exec already passes --permission-mode bypassPermissions, so this is not the missing-flag case: the CLI refused for a reason of its own (a sandbox profile, or a deny rule in ~/.grok). Keep the findings; do NOT re-dispatch, and check the CLI's own permission configuration" ;;
+                claude)     DENIAL_REMEDY="HOST_CLAUDE already passes --permission-mode bypassPermissions, so this is not the missing-flag case: the CLI refused for a reason of its own (a sandbox profile, or a deny rule in the claude CLI config). Keep the findings; do NOT re-dispatch" ;;
                 ext-claude) DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The remedy is the user's, not an agent's: the ext-claude run needs --permission-mode bypassPermissions, and an installed plugin only picks that up through a release" ;;
                 *)          DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The cause sits outside the run: read how this engine's exec skill invokes the CLI, and the CLI's own permission configuration" ;;
             esac

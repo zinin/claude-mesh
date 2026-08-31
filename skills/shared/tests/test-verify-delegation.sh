@@ -1477,6 +1477,55 @@ assert_eq "a genuine final zero still scores BROKEN" "BROKEN" "$VERDICT"
 assert_eq "exit 4" "4" "$RC"
 rm -rf "$TDIR"
 
+echo "=== Test: claude FLIP (no run dir) ==="
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/runs/claude/opus"
+run claude opus 1 "$TDIR"
+assert_eq "verdict FLIP" "FLIP" "$VERDICT"
+assert_eq "exit 3" "3" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: claude REAL (num_turns 12) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/claude/opus" 2026-08-31-11-00-00-1000-review)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":12}' > "$rd/raw.jsonl"
+run claude opus 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: claude requires a model argument ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/claude"
+run claude - 1 "$TDIR"
+assert_eq "exit 1 (usage error, no verdict)" "1" "$RC"
+assert_eq "no verdict printed" "" "$VERDICT"
+rm -rf "$TDIR"
+
+echo "=== Test: claude rejects a slashed model ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/claude"
+run claude zai/glm 1 "$TDIR"
+assert_eq "slashed model: exit 1" "1" "$RC"
+assert_eq "slashed model: no verdict" "" "$VERDICT"
+run claude opus 1 "$TDIR"
+assert_eq "alias still reaches a verdict" "3" "$RC"
+assert_eq "…FLIP" "FLIP" "$VERDICT"
+rm -rf "$TDIR"
+
+echo "=== Test: claude DEGRADED remedy is not ext-claude's missing-flag line ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/claude/opus" 2026-08-31-11-00-00-1000-denied)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":9,"permission_denials":[{"tool_name":"Read"}]}' > "$rd/raw.jsonl"
+run_full claude opus 1 "$TDIR"
+assert_eq "verdict DEGRADED" "DEGRADED" "$VERDICT"
+assert_eq "exit 5" "5" "$RC"
+assert_no_match "does not prescribe the ext-claude missing-flag remedy" "the ext-claude run needs" "$REASON"
+assert_match "names HOST_CLAUDE already passes the flag" "HOST_CLAUDE" "$REASON"
+rm -rf "$TDIR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
