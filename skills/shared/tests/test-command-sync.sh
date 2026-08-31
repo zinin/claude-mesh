@@ -423,7 +423,17 @@ assert_eq "design review never passes claude _default to the guard" "0" \
 for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
     assert_ge "${f#"$REPO"/}: omit-MODEL skips verify-delegation" "1" \
         "$(grep -c 'If MODEL was omitted, skip verify-delegation' "$f")"
+    assert_ge "${f#"$REPO"/}: HOST=grok uses ask_user_question" "1" \
+        "$(grep -c 'ask_user_question' "$f")"
+    assert_ge "${f#"$REPO"/}: Other is not an id" "1" \
+        "$(grep -c 'Other is not an id' "$f")"
 done
+assert_ge "design review Grok review-discussion is spawn_subagent" "1" \
+    "$(grep -c 'spawn_subagent claude-mesh:review-discussion background true' "$DESIGN_SKILL")"
+assert_ge "mesh-review Step 0 Grok claude is claude-code-reviewer" "1" \
+    "$(grep -c 'HOST=grok: one `claude-mesh:claude-code-reviewer` per entry' "$MESH_REVIEW")"
+assert_ge "design review Step 5.1 Grok claude is claude-executor" "1" \
+    "$(grep -c 'HOST=grok: one `claude-mesh:claude-executor` per entry' "$DESIGN_SKILL")"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="

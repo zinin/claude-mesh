@@ -51,9 +51,10 @@ substitute the literal `grok` or `claude-code` you echoed.
   `defaults.code_review not configured in config.yaml. Use /claude-mesh:mesh-review without argument or add the preset.`
 - Spawn all reviewers per preset:
   - `claude` in `defaults.code_review.builtin` → expand over `defaults.code_review.claude_models`:
-    - list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`. This model **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
+    - HOST=claude-code, list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`. This model **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
     <!-- SYNC: the fallback rule in the next bullet is ONE rule living in four places — this file's Step 2.4 ("Empty selection is not an error"), and `skills/mesh-design-review/SKILL.md` Step 5.1 / Step 5.2.5. Change all four or none. -->
-    - list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the behaviour from before this feature and stays the default.
+    - HOST=claude-code, list absent/empty → exactly **one** reviewer named `claude`, dispatched with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise with no `model:` at all (inherits the session model). This is the behaviour from before this feature and stays the default.
+    - HOST=grok: one `claude-mesh:claude-code-reviewer` per entry of `claude_models` with `MODEL=` per alias (never `general-purpose` with `model: opus`). Empty/absent list → one reviewer, **no MODEL line** (CLI default, `claude -p` without `-m`). Do not pass spawn `model: opus`. Name them `claude:<model>` (or `claude` in the empty-list fallback).
   - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (it is `defaults.code_review.claude_models`, or empty in the fallback case). Step 5a and Step 5b both dispatch "one Task per entry of `SELECTED_CLAUDE_MODELS`" **unconditionally** — the interactive path fills it in Step 2.4, and without this line the variable would simply be undefined in `default` mode. An undefined name in a shell script raises an error under `set -u`; in a prompt it raises nothing at all — the reader improvises, and `default` mode quietly dispatches one reviewer instead of N.
   - **On HOST=claude-code, `native` in builtin collapses to this same host set.** Treat `native` as `claude` for host reviewers — `native ∪ claude` is one set sourced from `claude_models` (and the empty-list fallback above). Ignore `.native_models`. **Bind `SELECTED_NATIVE_MODELS` to the empty list** — on Claude Code the host set is `SELECTED_CLAUDE_MODELS`; native bullets must not appear on confirm.
   - **On HOST=grok, `native` is a separate type.** `claude` in builtin is the Claude Code CLI (`claude-mesh:claude-code-reviewer`), not host slugs. If `native` is not in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to the empty list**. If `.native_models` is non-empty and `native` is not in builtin, the loader already rejected the file.
@@ -184,7 +185,9 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
 
 ## Step 2 (Q1): Ask which reviewer TYPES
 
-Use AskUserQuestion (multiSelect, max 4):
+**Question tool.** HOST=claude-code: `AskUserQuestion`. HOST=grok: `ask_user_question` (same options, same pagination of 4). Applies to every selection and confirm page in this command (Q1, CLI, native, Claude, grok, models, confirm, run-mode). Grok's tool may append **Other**. Other is not an id — re-ask the page, or drop it; never put the raw string in `MODEL=` or in `SELECTED_TYPES` / `SELECTED_*_MODELS` / `SELECTED_IDS`. Pagination stays 4 so Claude Code does not break.
+
+Use AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 
 **iter-2 CONCERN-4:** AskUserQuestion has no `preSelected` API (iter-1 CONCERN-11). The "all checked by default" comment in the legacy `/external-code-review` was aspirational, not enforced. Apply the same `★ recommended` annotation pattern that Step 3 uses for models — types in `defaults.code_review.builtin` get the ★ marker in their label so users see the recommendation. Then add Step 2.5 confirmation (mirrors Step 3.5 for models).
 
@@ -264,7 +267,7 @@ Otherwise ask ONE page — **not** a pagination loop. `AskUserQuestion` caps opt
 has three CLI engines; HOST=grok order is `claude, codex, gemini, grok` — that is exactly four.
 A FIFTH CLI engine is what would need the Step 2.4 / Step 3 pagination mechanic; add it then, not now.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "CLI"
 question: "Какие внешние CLI-движки запустить? (★ = recommended, в defaults.code_review.builtin)"
@@ -332,7 +335,7 @@ mechanics as Step 2.4 / Step 3, and the same reason for the ★ marker (AskUserQ
      pages, and the design §6 paragraph. Change all or none. -->
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — native на модели сессии`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_NATIVE_MODELS` can never contain it.** Nothing downstream recognises the sentinel — a list holding that string is NON-EMPTY, so the session-model fallback below does not fire and one reviewer is dispatched with `model: "ни одной — native на модели сессии"`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "Native"
 question: "На каких native-моделях хоста запустить ревью? (страница N/M, ★ = recommended)"
@@ -393,7 +396,7 @@ For each chunk of 4 entries from `CLAUDE_MODELS` (in config order) — same pagi
 
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — claude на модели по умолчанию`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_CLAUDE_MODELS` can never contain it.** Nothing downstream recognises the sentinel — a list holding that string is NON-EMPTY, so the fallback below does not fire and one reviewer is dispatched with `model: "ни одной — claude на модели по умолчанию"`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide which model the single claude reviewer runs on — this catalog's only entry, or `DISPATCH_MODEL` through the fallback below on the user's behalf, silently, in the one configuration where the question matters most.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "Claude"
 question: "На каких Claude-моделях запустить ревью? (страница N/M, ★ = recommended)"
@@ -444,7 +447,7 @@ Step 2.1, whose option list is at most three, this catalog is the user's and can
 
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — grok не запускать`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_GROK_MODELS` can never contain it.** Nothing downstream recognises the sentinel — `grok-code-review` checks MODEL against the catalog with `grep -Fxq` and STOPs, so the reviewer the user asked NOT to run is the one that reports an error. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide whether a grok reviewer runs at all — the one thing this page exists to ask on the user's behalf, silently, in the one configuration where the question matters most.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "Grok"
 question: "На каких grok-моделях запустить ревью? (страница N/M, ★ = recommended)"
@@ -535,7 +538,7 @@ Read the default set from `defaults.code_review.models` (if exists). Build a set
 For each chunk of 4 models from `models[]` (in config order):
 
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — внешние модели не запускать`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_IDS` can never contain it.** Nothing downstream recognises the sentinel — the id reaches `ext-claude-code-review` as a model name and the run dies on the catalog lookup. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide that the user wants this model, when the alternative is the STOP in Step 3.5 on the user's behalf, silently, in the one configuration where the question matters most.
-- AskUserQuestion (multiSelect, max 4):
+- AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
   ```
   header: "Models"
   question: "Какие модели использовать? (страница N/M)"
@@ -570,7 +573,7 @@ Skip Step 3.5 if `len(SELECTED_IDS) == 0` (user deselected everything — surfac
 **If HOST=grok: skip this question — always background.** Grok has no TeamCreate. If a `default`
 preset already STOPped on `run_mode: team` in Step 0, this step is never reached.
 
-AskUserQuestion (single, 2 options):
+AskUserQuestion (single, 2 options). HOST=grok skips this question (always background). HOST=claude-code keeps AskUserQuestion:
 ```
 header: "Run mode"
 question: "Как запускать ревьюеров?"

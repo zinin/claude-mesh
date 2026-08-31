@@ -16,11 +16,15 @@ Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Cod
 
 At the top of EACH bash fence:
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
+fi
 
-When `SKILL_BASE` is empty, that second line cannot expand `$SKILL_BASE/../shared/…`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1:
-LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-then `PLUGIN_ROOT` is two directories up from that loader (`$(cd "$(dirname "$LOADER")/../.." && pwd)`), and `SKILL_BASE` is `$PLUGIN_ROOT/skills/mesh-design-review`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after a non-empty `SKILL_BASE`.
 
 From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
@@ -44,7 +48,7 @@ Optional (caller can specify):
 - **CODEX_MODEL** — Codex model. Default: resolved from `config.yaml` (`codex.model`) by the codex executor itself; final fallback "gpt-5.5". Set only when the user explicitly overrides.
 - **CODEX_REASONING_LEVEL** — reasoning level (`none|minimal|low|medium|high|xhigh|ultra`, known set as of 2026-07; unknown values pass through to codex). Default: resolved from `config.yaml` (`codex.reasoning_level`) by the executor; final fallback "xhigh". Set only when the user explicitly overrides.
 - **GROK_REASONING_EFFORT** — reasoning effort for grok (`low|medium|high|xhigh|max`, known set as of 2026-08; unknown values pass through to the grok CLI). Default: resolved from `config.yaml` by the executor for the model it runs — `grok.model_efforts[<model>]`, then the section-wide `grok.reasoning_effort`; when both are unset, the CLI's own default applies — there is no hardcoded final fallback here, unlike codex. Set only when the user explicitly overrides.
-- **DEFAULT** — if `default` argument is passed, skip the Step 5 selection UI and use the `defaults.design_review` preset from `config.yaml` (`codex` / `gemini` in `builtin` → their executor; `grok` in `builtin` → one `claude-mesh:grok-executor` per entry of `grok_models`; `claude` in `builtin` → one built-in `general-purpose` reviewer per entry of `claude_models`, no executor agent involved, or a single one in the fallback case; each `models` id → `claude-mesh:ext-claude-executor MODEL=<id>`). See Step 5.
+- **DEFAULT** — if `default` argument is passed, skip the Step 5 selection UI and use the `defaults.design_review` preset from `config.yaml` (`codex` / `gemini` in `builtin` → their executor; `grok` in `builtin` → one `claude-mesh:grok-executor` per entry of `grok_models`; `claude` in `builtin` → HOST=claude-code: one built-in `general-purpose` reviewer per entry of `claude_models` (or a single one in the fallback case); HOST=grok: one `claude-mesh:claude-executor` per entry of `claude_models` with `MODEL=` per alias, not `general-purpose` with `model: opus`; each `models` id → `claude-mesh:ext-claude-executor MODEL=<id>`). See Step 5.
 - **AUTODECIDE** — **bind this at the top of Step 5**, before that step's `default` branch, and
   echo `AUTODECIDE=true|false`. Not inside Step 5.1: that sub-step executes only when `default`
   was passed, so a binding placed there never runs on an interactive `autodecide` review.
@@ -257,7 +261,13 @@ Run ONE Bash call. Use `config-loader.sh` (NOT raw `yq`) so validation runs the 
 # prints at skill load ("Base directory for this skill: <ABS>"). See "## Locating
 # plugin files (Task 2.5)" near the top.
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
+fi
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 [ -x "$LOADER" ] || { echo "config-loader.sh not found at $LOADER" >&2; exit 1; }
 
@@ -346,9 +356,10 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
   `defaults.design_review not configured in config.yaml. Run /claude-mesh:mesh-design-review without "default" or add the preset.`
 - For each entry in `.builtin`:
   - `claude` → expand over `.claude_models` (this branch was MISSING before this feature, which is why `claude` in `defaults.design_review.builtin` used to be silently dropped):
-    - list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`, which **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
+    - HOST=claude-code, list non-empty → **one `general-purpose` reviewer per entry**, each dispatched with `model: "<entry>"`, which **overrides** `DISPATCH_MODEL` for these reviewers. Name them `claude:<model>` everywhere downstream.
     <!-- SYNC: the fallback rule in the next bullet is ONE rule living in four places — this file's Step 5.2.5 ("Empty selection is not an error"), and `commands/mesh-review.md` Step 0 / Step 2.4. Change all four or none. -->
-    - list absent/empty → exactly **one** reviewer named `claude`, with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise no `model:` at all (inherits the session model).
+    - HOST=claude-code, list absent/empty → exactly **one** reviewer named `claude`, with `model: "<DISPATCH_MODEL>"` when that is non-empty, otherwise no `model:` at all (inherits the session model).
+    - HOST=grok: one `claude-mesh:claude-executor` per entry of `claude_models` with `MODEL=` per alias (never `general-purpose` with `model: opus`). Empty/absent list → one executor, **no MODEL line** (CLI default). Do not pass spawn `model: opus`. Name them `claude:<model>` (or `claude` in the empty-list fallback).
   - **Bind `SELECTED_CLAUDE_MODELS` to that resolved list here** (`.claude_models`, or empty in the fallback case), exactly as `/mesh-review` Step 0 does. Step 5.4 remembers `SELECTED_CLAUDE_MODELS` for iterations 2..N, so in `default` mode it must actually hold something by then.
   - **On HOST=claude-code, `native` in builtin collapses to this same host set.** Treat `native` as `claude` for host reviewers — `native ∪ claude` is one set sourced from `claude_models` (and the empty-list fallback above). Ignore `.native_models`. **Bind `SELECTED_NATIVE_MODELS` to the empty list** — on Claude Code the host set is `SELECTED_CLAUDE_MODELS`; native bullets must not appear on confirm.
   - **On HOST=grok, `native` is a separate type.** `claude` in builtin is the Claude Code CLI (`claude-mesh:claude-executor`), not host slugs. If `native` is not in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to the empty list**. If `.native_models` is non-empty and `native` is not in builtin, the loader already rejected the file.
@@ -394,7 +405,9 @@ Remember this agent set for all subsequent iterations. Go directly to Step 6.
 
 AskUserQuestion has no `preSelected` API — recommendations are communicated visually with a `★` marker in the label (an entry is recommended when it is in the `defaults.design_review` preset).
 
-Use AskUserQuestion (multiSelect: true, max 4, header: "Reviewers"):
+**Question tool.** HOST=claude-code: `AskUserQuestion`. HOST=grok: `ask_user_question` (same options, same pagination of 4). Applies to every selection and confirm page in this skill (Q1, CLI, native, Claude, grok, models, confirm, Step 15). Grok's tool may append **Other**. Other is not an id — re-ask the page, or drop it; never put the raw string in `MODEL=` or in `SELECTED_TYPES` / `SELECTED_*_MODELS` / `SELECTED_IDS`. Pagination stays 4 so Claude Code does not break.
+
+Use AskUserQuestion (multiSelect: true, max 4, header: "Reviewers"). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 question: "Какие типы reviewers запустить? (★ = recommended, в defaults.design_review)"
 options:
@@ -437,7 +450,7 @@ Runs ONLY when Q1 selected «внешние CLI». The engines on offer are exac
 
 Otherwise ask ONE page — **not** a pagination loop. AskUserQuestion caps options at 4. HOST=claude-code has three CLI engines; HOST=grok order is `claude, codex, gemini, grok` — that is exactly four. A FIFTH CLI engine is what would need this file's Step 5.3 pagination mechanic; add it then, not now.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "CLI"
 question: "Какие внешние CLI-движки запустить? (★ = recommended, в defaults.design_review.builtin)"
@@ -484,7 +497,7 @@ For each chunk of 4 entries from `HOST_MODELS` (in `grok models` order) — the 
      pages, and the design §6 paragraph. Change all or none. -->
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — native на модели сессии`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_NATIVE_MODELS` can never contain it.** Nothing downstream recognises the sentinel — a list holding that string is NON-EMPTY, so the session-model fallback below does not fire and one reviewer is dispatched with `model: "ни одной — native на модели сессии"`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "Native"
 question: "На каких native-моделях хоста запустить design review? (страница N/M, ★ = recommended)"
@@ -514,7 +527,7 @@ For each chunk of 4 entries from `CLAUDE_MODELS` (config order) — same paginat
 
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — claude на модели по умолчанию`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_CLAUDE_MODELS` can never contain it.** Nothing downstream recognises the sentinel — a list holding that string is NON-EMPTY, so the fallback below does not fire and one reviewer is dispatched with `model: "ни одной — claude на модели по умолчанию"`. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide which model the single claude reviewer runs on — this catalog's only entry, or `DISPATCH_MODEL` through the fallback below on the user's behalf, silently, in the one configuration where the question matters most.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "Claude"
 question: "На каких Claude-моделях запустить design review? (страница N/M, ★ = recommended)"
@@ -544,7 +557,7 @@ For each chunk of 4 entries from `GROK_MODELS` (config order) — the same pagin
 
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — grok не запускать`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_GROK_MODELS` can never contain it.** Nothing downstream recognises the sentinel — `grok-code-review` checks MODEL against the catalog with `grep -Fxq` and STOPs, so the reviewer the user asked NOT to run is the one that reports an error. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide whether a grok reviewer runs at all — the one thing this page exists to ask on the user's behalf, silently, in the one configuration where the question matters most.
 
-AskUserQuestion (multiSelect, max 4):
+AskUserQuestion (multiSelect, max 4). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 header: "Grok"
 question: "На каких grok-моделях запустить design review? (страница N/M, ★ = recommended)"
@@ -578,7 +591,7 @@ Build `DEFAULT_IDS` from `defaults.design_review.models`. For each chunk of 4 mo
 
 **A page that would carry exactly ONE option still gets asked — with TWO.** `AskUserQuestion` refuses fewer than two (schema `minItems: 2`), so the second option is this page's own documented empty outcome, spelled out as an option: `ни одной — внешние модели не запускать`. **Selecting it IS the empty selection, never a model id: drop it before collecting, so `SELECTED_IDS` can never contain it.** Nothing downstream recognises the sentinel — the id reaches `ext-claude-code-review` as a model name and the run dies on the catalog lookup. **The rule is about the PAGE, not the catalog:** a catalog of one entry produces such a page, and so does the LAST chunk of any catalog whose size leaves a remainder of one — 5, 9, 13 entries, where the earlier pages carry four and the last carries one. Counting the catalog instead of the chunk is how the refusal this paragraph exists to prevent comes back on a catalog of five. Do NOT resolve a single entry the way Step 5.2.1 resolves a single ENGINE. Skipping the page there loses nothing — an engine still has to pass its own model page — while skipping this one would decide that the user wants this model, when the alternative is this step's own empty-selection outcome on the user's behalf, silently, in the one configuration where the question matters most.
 
-- AskUserQuestion (multiSelect: true, max 4, header: "Models"):
+- AskUserQuestion (multiSelect: true, max 4, header: "Models"). HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
   ```
   question: "Какие модели использовать? (страница N/M)"
   options:
@@ -750,7 +763,13 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
 
    ```bash
    SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+   if [ -n "$SKILL_BASE" ]; then
+     PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+   else
+     _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+     PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+     SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
+   fi
    WATCH="$SKILL_BASE/../shared/watch-runs.sh"
    [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
    "$WATCH" --since <DISPATCH_EPOCH> codex gemini grok/grok-4.6 ext-claude/zai/glm
@@ -777,7 +796,13 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
 
    ```bash
    SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+   if [ -n "$SKILL_BASE" ]; then
+     PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+   else
+     _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+     PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+     SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
+   fi
    VERIFY="$SKILL_BASE/../shared/verify-delegation.sh"
    DATA_DIR="$("$SKILL_BASE/../shared/config-loader.sh" data-dir)"
    bash "$VERIFY" ext-claude zai/glm <DISPATCH_EPOCH> "$DATA_DIR"
@@ -853,11 +878,13 @@ Only include sections for agents that were actually selected and completed succe
 
 ### Step 8: Parse Issues via Discussion Agent
 
-Use Task tool to launch the `claude-mesh:review-discussion` agent (plugin agent — namespaced; ported in Task 17):
+**HOST=claude-code:** Use Task tool to launch the `claude-mesh:review-discussion` agent (plugin agent — namespaced; ported in Task 17). Apply the same **Dispatch model** rule as Step 6: add `model: "<DISPATCH_MODEL>"` when `DISPATCH_MODEL` is non-empty, otherwise omit `model:`.
 
-Apply the same **Dispatch model** rule as Step 6: add `model: "<DISPATCH_MODEL>"` when `DISPATCH_MODEL` is non-empty, otherwise omit `model:`.
+**HOST=grok:** spawn_subagent claude-mesh:review-discussion background true. Pass DISPATCH_MODEL only if that slug is in HOST_MODELS. Never pass `opus` as spawn `model:`.
+
 ```
-Task tool:
+Task tool:                         # HOST=claude-code
+spawn_subagent, background: true:  # HOST=grok
   subagent_type: claude-mesh:review-discussion
   description: "Parse review issues (iter N)"
   prompt: "Parse and analyze design review issues:
@@ -868,7 +895,7 @@ Task tool:
     ITERATION: N"
 ```
 
-Wait for completion. Parse PARSED_ISSUES result to get list of issues with their status (NEW/REPEAT) and options.
+Wait for completion. HOST=grok: `get_command_or_subagent_output` on that spawn id. Parse PARSED_ISSUES result to get list of issues with their status (NEW/REPEAT) and options.
 
 ### Step 9: Classify All Issues (No Fixes Yet)
 
@@ -1195,7 +1222,7 @@ Count from answers:
 
 **ALWAYS ask user what to do next** (iterations are always done in fresh sessions):
 
-Use **AskUserQuestion tool**:
+HOST=claude-code: Use **AskUserQuestion tool**. HOST=grok: `ask_user_question` (same options). Other is not an id — re-ask or drop, never put in MODEL= or SELECTED_*:
 ```
 Question: "Итерация N завершена. Автоисправлено: {auto_fixed}, авто-после-анализа: {auto_after_analysis}, обсуждено: {discussed}, решено автоматически: {autodecided} (под вопросом: {autodecided_unsure}), отклонено: {dismissed}, повторов: {repeated}, отложено: {deferred}. Что дальше?"
 Header: "Iteration"

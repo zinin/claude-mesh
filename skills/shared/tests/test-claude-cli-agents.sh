@@ -40,8 +40,14 @@ echo "=== Test: claude CLI reviewer, executor, review skill ==="
 assert_eq "reviewer agent exists" "1" "$([ -f "$REPO/agents/claude-code-reviewer.md" ] && echo 1 || echo 0)"
 assert_eq "executor agent exists" "1" "$([ -f "$REPO/agents/claude-executor.md" ] && echo 1 || echo 0)"
 assert_eq "review skill exists" "1" "$([ -f "$REPO/skills/claude-code-review/SKILL.md" ] && echo 1 || echo 0)"
-assert_ge "reviewer requires MODEL on first line" "1" \
-    "$(grep -c 'MODEL is REQUIRED on the first line' "$REPO/agents/claude-code-reviewer.md")"
+assert_eq "reviewer does not STOP when MODEL is omitted" "0" \
+    "$(grep -c 'ERROR: MODEL parameter is required on first line' "$REPO/agents/claude-code-reviewer.md")"
+assert_eq "executor does not STOP when MODEL is omitted" "0" \
+    "$(grep -c 'ERROR: MODEL parameter is required on first line' "$REPO/agents/claude-executor.md")"
+assert_ge "reviewer still invokes skill when MODEL omitted" "1" \
+    "$(grep -c 'If the first line is not `MODEL=`, still invoke the skill' "$REPO/agents/claude-code-reviewer.md")"
+assert_ge "executor still invokes skill when MODEL omitted" "1" \
+    "$(grep -c 'If the first line is not `MODEL=`, still invoke the skill' "$REPO/agents/claude-executor.md")"
 assert_ge "reviewer names HOST_CLAUDE" "1" \
     "$(grep -c 'HOST_CLAUDE=1' "$REPO/skills/claude-code-review/SKILL.md")"
 assert_eq "review skill has no tooling-constraint section" "0" \
@@ -63,6 +69,25 @@ for f in $WRAPPERS; do
     grep -q 'do not end the turn while the CLI is alive' "$AGENTS/$f" || missing=$((missing+1))
 done
 assert_eq "every wrapper has dual invoke + Grok wait" "0" "$missing"
+
+echo ""
+echo "=== Test: empty-SKILL_BASE else-branch is in the fence ==="
+# Prose telling the LLM to rewrite is not enough: the executable fence must
+# contain the find fallback. Every resolve-plugin-root.sh call via $SKILL_BASE
+# must sit in `if [ -n "$SKILL_BASE" ]`.
+SKILLS_WITH_RESOLVER="claude-code-review ext-claude-exec ext-claude-code-review codex-exec codex-code-review gemini-exec gemini-code-review grok-exec grok-code-review mesh-design-review"
+mismatch=0
+for s in $SKILLS_WITH_RESOLVER; do
+    f="$REPO/skills/$s/SKILL.md"
+    n_resolve="$(grep -c 'bash "$SKILL_BASE/../shared/resolve-plugin-root.sh"' "$f" || true)"
+    n_if="$(grep -c 'if \[ -n "\$SKILL_BASE" \]; then' "$f" || true)"
+    n_find="$(grep -c 'claude-mesh\*/skills/shared/config-loader.sh' "$f" || true)"
+    if [ "$n_resolve" != "$n_if" ] || [ "$n_find" -lt "$n_if" ]; then
+        mismatch=$((mismatch+1))
+        echo "    mismatch $s: resolve=$n_resolve if=$n_if find=$n_find"
+    fi
+done
+assert_eq "every resolver fence has empty-SKILL_BASE else-branch" "0" "$mismatch"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="

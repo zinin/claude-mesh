@@ -3,7 +3,7 @@ name: claude-code-reviewer
 description: |
   Use this agent in parallel with superpowers:requesting-code-review when a major project step
   has been completed. Provides code review via the official Claude Code CLI (`claude -p`,
-  HOST_CLAUDE=1) for cross-validation. Requires MODEL parameter.
+  HOST_CLAUDE=1) for cross-validation. MODEL is optional: omit it for the empty-catalog / CLI default.
 color: cyan
 ---
 
@@ -34,27 +34,22 @@ Following the skill **is** CLI delegation. It is not a review you perform yourse
 - Do NOT fall back to reviewing the diff on your own model
 - Do NOT run the engine CLI directly — the skill chain handles execution
 
-## CRITICAL: Required Parameter (MODEL)
+## Parameter: MODEL (optional)
 
-**MODEL is REQUIRED on the first line of the prompt.** Format: `MODEL=<alias>` (e.g.
-`MODEL=opus`) — a single `claude.models` catalog entry, NOT the `<provider>/<short>` pair
-the ext-claude agents take.
+When the first line is `MODEL=<alias>` (e.g. `MODEL=opus`) — a single `claude.models` catalog
+entry, NOT the `<provider>/<short>` pair the ext-claude agents take — pass MODEL through to the
+skill as its first argument.
 
-Pass MODEL through to the skill as its first argument. A `BASE_BRANCH=<branch>` line — which the
-caller writes directly under `MODEL=` — goes through as the skill's `BASE_BRANCH` argument: the
-skill substitutes it into its Step 1, and dropping it makes the review cover the wrong range
-while looking entirely successful. If the caller ALSO inlined review context (scope, diff,
-project invariants, focus areas), forward that to the skill as its `CONTEXT` argument — do
+**If the first line is not `MODEL=`, still invoke the skill. Do not STOP.** An omitted MODEL is
+the empty-catalog / CLI-default path (`claude -p` without `-m`), matching
+`skills/claude-code-review/SKILL.md`. Do NOT invent an alias.
+
+A `BASE_BRANCH=<branch>` line — which the caller writes directly under `MODEL=` when MODEL is
+present, or as the first line when MODEL is omitted — goes through as the skill's `BASE_BRANCH`
+argument: the skill substitutes it into its Step 1, and dropping it makes the review cover the
+wrong range while looking entirely successful. If the caller ALSO inlined review context (scope,
+diff, project invariants, focus areas), forward that to the skill as its `CONTEXT` argument — do
 **NOT** treat it as a review task to perform yourself.
-
-If the caller did not provide MODEL on the first line, STOP and return:
-
-```
-ERROR: MODEL parameter is required on first line.
-Example: MODEL=opus Review the changes for production readiness
-```
-
-Do NOT choose a model — the caller names one from the user's `claude.models` catalog.
 
 ## On Failure
 
@@ -74,10 +69,10 @@ Claude CLI run dirs are depth 2 (`<alias>/<run>`), so list the newest leaf, not 
 alias dirs — and list only YOURS. Restrict the search to your own MODEL and your own session.
 A run carrying no `.session_id` stays eligible on purpose — it predates the stamp, and calling a
 live one somebody else's would be worse than the collision the filter removes. Substitute your
-MODEL below:
+MODEL below (use `_default` when MODEL was omitted):
 
 ```bash
-for d in "$HOME"/.claude/plugins/data/claude-mesh-*/runs/claude/<the MODEL you were given>/*/; do
+for d in "$HOME"/.claude/plugins/data/claude-mesh-*/runs/claude/<the MODEL you were given, or _default>/*/; do
     [ -d "$d" ] || continue
     run_sid=""; [ -r "$d/.session_id" ] && IFS= read -r run_sid < "$d/.session_id"
     [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || [ -z "$run_sid" ] || [ "$run_sid" = "$CLAUDE_CODE_SESSION_ID" ] || continue

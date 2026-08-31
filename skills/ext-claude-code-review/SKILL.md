@@ -16,9 +16,15 @@ Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Cod
 
 At the top of EACH bash fence:
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-code-review"
+fi
 
-When `SKILL_BASE` is empty, do not expand `$SKILL_BASE/../shared/resolve-plugin-root.sh`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1 (`LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"`); then `PLUGIN_ROOT` is two directories up from that loader, and `SKILL_BASE` is `$PLUGIN_ROOT/skills/ext-claude-code-review`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after a non-empty `SKILL_BASE`.
 
 Shared scripts live at `$SKILL_BASE/../shared/<x>`; get the data dir via `"$LOADER" data-dir` where `LOADER="$SKILL_BASE/../shared/config-loader.sh"`.
 
@@ -39,7 +45,13 @@ Shared scripts live at `$SKILL_BASE/../shared/<x>`; get the data dir via `"$LOAD
 ```bash
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-code-review"
+fi
 SHARED_DIR="$SKILL_BASE/../shared"
 # Resolve the base branch ONCE. Auto-detect origin/HEAD, else fall back to master.
 # NB: do NOT write the fallback as `symbolic-ref | sed || echo master` — `||` binds to

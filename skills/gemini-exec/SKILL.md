@@ -22,9 +22,15 @@ Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Cod
 
 At the top of EACH bash fence:
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/gemini-exec"
+fi
 
-When `SKILL_BASE` is empty, do not expand `$SKILL_BASE/../shared/resolve-plugin-root.sh`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1 (`LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"`); then `PLUGIN_ROOT` is two directories up from that loader, and `SKILL_BASE` is `$PLUGIN_ROOT/skills/gemini-exec`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after a non-empty `SKILL_BASE`.
 
 From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
@@ -104,7 +110,13 @@ optional `gemini:` block is absent from `config.yaml`.
 # prints at skill load ("Base directory for this skill: <ABS>"). See "## Locating
 # plugin files (Task 2.5)" above.
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/gemini-exec"
+fi
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 
 command -v gemini >/dev/null 2>&1 || { echo "STOP: gemini CLI not found - npm install -g @google/gemini-cli"; exit 1; }
@@ -148,7 +160,13 @@ TASK_NAME=$(printf '%s' "$RAW_TASK_NAME" | tr -cd '[:alnum:]._-' | head -c 64)
 # Task 2.5: data dir self-discovered by the loader ($CLAUDE_PLUGIN_DATA empty in skill
 # Bash). SKILL_BASE = absolute base dir Claude Code prints at skill load.
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/gemini-exec"
+fi
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 PLUGIN_DATA="$("$LOADER" data-dir)"
 WORK_DIR="$PLUGIN_DATA/runs/gemini/${TIMESTAMP}-${TASK_NAME}"
@@ -207,7 +225,13 @@ OUTPUT_FILE="$WORK_DIR/output.txt"
 MD_FILE="$WORK_DIR/report.md"
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/gemini-exec"
+fi
 SKILL_DIR="$SKILL_BASE"
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 # Model resolution: caller-supplied wins; else config (get-gemini); else documented
@@ -323,8 +347,14 @@ Key points:
 set -euo pipefail && \
 command -v jq >/dev/null 2>&1 || { echo "supervised mode requires jq" >&2; exit 64; } && \
 WORK_DIR="{WORK_DIR}" && \
-SKILL_BASE="<absolute base dir Claude Code printed, or empty>" && \
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh") && \
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/gemini-exec"
+fi && \
 SKILL_DIR="$SKILL_BASE" && \
 LOADER="$SKILL_BASE/../shared/config-loader.sh" && \
 WATCHDOG="$SKILL_BASE/../shared/watchdog.sh" && \
@@ -420,8 +450,14 @@ fi
 
 If Gemini times out or fails, check partial results:
 ```bash
-SKILL_BASE="<absolute base dir Claude Code printed, or empty>" && \
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh") && \
+SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/gemini-exec"
+fi && \
 LOADER="$SKILL_BASE/../shared/config-loader.sh" && \
 LOG_DIR="$("$LOADER" data-dir)/runs/gemini" && \
 LATEST_DIR=$(ls -td "$LOG_DIR"/*/ 2>/dev/null | head -1) && \

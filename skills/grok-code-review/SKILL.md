@@ -38,9 +38,15 @@ Set `SKILL_BASE` from the `Base directory for this skill: <ABS>` line Claude Cod
 
 At the top of EACH bash fence:
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/grok-code-review"
+fi
 
-When `SKILL_BASE` is empty, do not expand `$SKILL_BASE/../shared/resolve-plugin-root.sh`. Call the resolver by the version-sorted find already used in `commands/mesh-review.md` Step 1 (`LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"`); then `PLUGIN_ROOT` is two directories up from that loader, and `SKILL_BASE` is `$PLUGIN_ROOT/skills/grok-code-review`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after an empty `SKILL_BASE`.
+Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after a non-empty `SKILL_BASE`.
 
 Shared scripts live at `$SKILL_BASE/../shared/<x>` (e.g. `code-review-prompt.md`); the loader is `$SKILL_BASE/../shared/config-loader.sh`. Grok manages its own auth — this skill does NOT source provider tokens; it delegates execution to the `grok-exec` skill.
 
@@ -89,7 +95,13 @@ EOF
 Run in ONE Bash call:
 ```bash
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/grok-code-review"
+fi
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 command -v grok >/dev/null 2>&1 || { echo "STOP: grok CLI not found — install Grok Build with 'curl -fsSL https://x.ai/cli/install.sh | bash', then run 'grok login'"; exit 1; }
 echo "OK: grok found"
@@ -198,7 +210,13 @@ Render the template `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` 
 
 ```bash
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
-PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+if [ -n "$SKILL_BASE" ]; then
+  PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
+else
+  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
+  SKILL_BASE="$PLUGIN_ROOT/skills/grok-code-review"
+fi
 DESC=$(cat <<'MESH_DESC_EOF'
 <what was implemented — plain prose; apostrophes, quotes, &&, $(), backticks are all safe inside this quoted heredoc>
 MESH_DESC_EOF

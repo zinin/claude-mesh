@@ -4,7 +4,7 @@ description: |
   Execute any prompt via the official Claude Code CLI (`claude -p`, HOST_CLAUDE=1). Use when
   you need to delegate tasks to Claude Code from a host that is not Claude Code itself, get a
   "second opinion" from a catalog alias (opus, fable), or run analysis through that CLI.
-  Requires MODEL parameter.
+  MODEL is optional: omit it for the empty-catalog / CLI default.
 color: cyan
 ---
 
@@ -38,29 +38,22 @@ provider export: skip `config-loader.sh export`, unset leftover `ANTHROPIC_*`, w
 - Do NOT fall back to reviewing the diff on your own model
 - Do NOT run the engine CLI directly — the skill chain handles execution
 
-## CRITICAL: Required Parameter (MODEL)
+## Parameter: MODEL (optional)
 
-**MODEL is REQUIRED on the first line of the prompt.** Format: `MODEL=<alias>` — a single id
-from the `claude.models` catalog (e.g. `MODEL=opus`), NOT the `<provider>/<short>` pair the
-ext-claude agents take.
+When the first line is `MODEL=<alias>` — a single id from the `claude.models` catalog (e.g.
+`MODEL=opus`), NOT the `<provider>/<short>` pair the ext-claude agents take — pass MODEL
+through to the skill as its `MODEL` parameter, together with `HOST_CLAUDE=1`.
 
-Pass MODEL through to the skill as its `MODEL` parameter, together with `HOST_CLAUDE=1`. If
-the caller did not provide MODEL on the first line, STOP and return:
-
-```
-ERROR: MODEL parameter is required on first line.
-Example: MODEL=opus Analyse the failing test and report the cause
-```
-
-Do NOT substitute a model of your own. The catalog is in the user's config; a model this
-session invents is a model nobody chose. Pass the caller's alias through UNCHANGED — do not
-strip, lowercase or "tidy" it. If the skill STOPs on it, report the STOP; do not retry with
-an edited id.
+**If the first line is not `MODEL=`, still invoke the skill. Do not STOP.** An omitted MODEL is
+the empty-catalog / CLI-default path (`claude -p` without `-m`), matching
+`skills/claude-code-review/SKILL.md`. Do NOT invent an alias. Pass a caller-supplied alias
+through UNCHANGED — do not strip, lowercase or "tidy" it. If the skill STOPs on it, report the
+STOP; do not retry with an edited id.
 
 ## Input Parameters
 
 - **PROMPT** (required) — the full prompt text to execute
-- **MODEL** (required) — see above
+- **MODEL** (optional) — see above; omit for CLI default / empty catalog
 - **HOST_CLAUDE** — always `1`. Not optional on this agent. Forward it as a named parameter;
   it is NOT part of `PROMPT`.
 - **TASK_NAME** — short identifier for log files (default: "task")
