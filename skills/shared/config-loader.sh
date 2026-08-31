@@ -767,6 +767,7 @@ validate_defaults() {
             v=$(jq -r ".defaults.$preset.builtin[$b]" "$CONFIG_JSON")
             case "$v" in
                 claude) ;;
+                native) ;;
                 codex)
                     [ "$has_codex" = "1" ] || die "defaults.$preset.builtin lists \"codex\" but no codex: section"
                     ;;
@@ -785,7 +786,7 @@ validate_defaults() {
                     [ "$has_grok" = "1" ] || [ "$grok_type_broken" -eq 1 ] \
                         || die "defaults.$preset.builtin lists \"grok\" but no grok: section"
                     ;;
-                *) die "defaults.$preset.builtin: unknown value \"$v\" (valid: claude, codex, gemini, grok)" ;;
+                *) die "defaults.$preset.builtin: unknown value \"$v\" (valid: claude, native, codex, gemini, grok)" ;;
             esac
             b=$((b+1))
         done
@@ -882,6 +883,44 @@ validate_defaults() {
             esac
             seen_cm="$seen_cm $cmv"
             c=$((c+1))
+        done
+
+        # native_models — host-agnostic reviewer slugs. One-way pairing like claude_models:
+        # a non-empty list requires "native" in builtin; native without the list is valid
+        # (the host CLI lists what is available). Charset is GROK_IDENT_RE: slugs become
+        # path components. No catalog membership — these names live on the host, not here.
+        local nmtype
+        nmtype=$(jq -r ".defaults.$preset.native_models | type" "$CONFIG_JSON")
+        case "$nmtype" in
+            array|null) ;;
+            *) die "defaults.$preset.native_models: must be a list, got $nmtype" ;;
+        esac
+
+        local nm_count
+        nm_count=$(jq ".defaults.$preset.native_models | length" "$CONFIG_JSON")
+        if [ "$nm_count" -gt 0 ]; then
+            local native_in_builtin
+            native_in_builtin=$(jq "[(.defaults.$preset.builtin // [])[] | select(. == \"native\")] | length" "$CONFIG_JSON")
+            [ "$native_in_builtin" -gt 0 ] \
+                || die "defaults.$preset.native_models is set but \"native\" is missing from defaults.$preset.builtin (add \"native\" to builtin, or drop native_models)"
+        fi
+
+        local n=0
+        local seen_nm=""
+        while [ "$n" -lt "$nm_count" ]; do
+            local nmetype nmv
+            nmetype=$(jq -r ".defaults.$preset.native_models[$n] | type" "$CONFIG_JSON")
+            [ "$nmetype" = "string" ] \
+                || die "defaults.$preset.native_models[$n]: must be a string (got $nmetype) — quote it, e.g. - \"grok-4.6\""
+            nmv=$(jq -r ".defaults.$preset.native_models[$n]" "$CONFIG_JSON")
+            [ -n "$nmv" ] || die "defaults.$preset.native_models[$n]: empty value"
+            [[ "$nmv" =~ $GROK_IDENT_RE ]] \
+                || die "defaults.$preset.native_models[$n]: must start with a letter/digit and match [A-Za-z0-9._-] (a host model slug), got \"$nmv\""
+            case " $seen_nm " in
+                *" $nmv "*) die "defaults.$preset.native_models[$n]: duplicate model \"$nmv\"" ;;
+            esac
+            seen_nm="$seen_nm $nmv"
+            n=$((n+1))
         done
 
         # grok_models — the same shape as claude_models, with the requirement running BOTH ways.
@@ -1473,9 +1512,10 @@ cmd_get_defaults() {
     load_or_die
     validate_defaults
     # iter-3 CONCERN-1: emit a JSON object so orchestrators get builtin + claude_models +
-    # grok_models + models + run_mode (run_mode meaningful only for code_review) through the
-    # loader instead of raw yq. -c = one line. claude_models and grok_models default to []
-    # and never null — both orchestrators iterate them directly.
+    # grok_models + native_models + models + run_mode (run_mode meaningful only for
+    # code_review) through the loader instead of raw yq. -c = one line. claude_models,
+    # grok_models and native_models default to [] and never null — both orchestrators
+    # iterate them directly. native is not stripped when grok degrades.
     # grok_degraded: true means the preset named grok but its catalog would not validate, so
     # grok has been REMOVED from builtin and grok_models emptied — the caller must not dispatch
     # a grok reviewer, and in `default` mode must say out loud that it is not running one.
@@ -1495,7 +1535,7 @@ cmd_get_defaults() {
     if [ "$GROK_CATALOG_BROKEN" -eq 1 ] && [ "${grok_refs:-0}" -gt 0 ]; then
         gd=true
     fi
-    jq -c --argjson gd "$gd" "{builtin: ((.defaults.${category}.builtin // []) | if \$gd then map(select(. != \"grok\")) else . end), claude_models: (.defaults.${category}.claude_models // []), grok_models: (if \$gd then [] else (.defaults.${category}.grok_models // []) end), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null), grok_degraded: \$gd}" "$CONFIG_JSON"
+    jq -c --argjson gd "$gd" "{builtin: ((.defaults.${category}.builtin // []) | if \$gd then map(select(. != \"grok\")) else . end), claude_models: (.defaults.${category}.claude_models // []), grok_models: (if \$gd then [] else (.defaults.${category}.grok_models // []) end), native_models: (.defaults.${category}.native_models // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null), grok_degraded: \$gd}" "$CONFIG_JSON"
 }
 
 # iter-3 CONCERN-1: typed getter for runtime UI defaults (default_run_mode) + the do-plan
