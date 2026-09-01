@@ -147,8 +147,19 @@ CLAUDE_MODELS=$("$LOADER" list-claude-models 2>"$CM_ERR") \
 rm -f "$CM_ERR"
 echo "HAS_CLAUDE_MODELS=$HAS_CLAUDE_MODELS"
 echo "CLAUDE_MODELS=[$(echo "$CLAUDE_MODELS" | tr '\n' ' ')]"
-# HOST=grok extra probes. `$HOST` is prompt state from Step 0 — substitute the literal
-# `grok` or `claude-code` you echoed; it is not a shell variable across Bash calls.
+# HOST=grok extra probes. `$HOST` is prompt state from Step 0 and does NOT survive from
+# one Bash call to the next — so it is substituted into the assignment below exactly as
+# `SKILL_BASE="<absolute base dir …>"` is substituted in every skill fence, and checked against
+# a closed set. Left unsubstituted it used to expand to the empty string: the test below was
+# simply false, `HOST_MODELS` stayed empty, and native — the whole point of the host-aware work
+# — silently never ran, while `echo "HOST_MODELS=[…]"` still printed as though the probe had
+# answered. Every other cross-fence value in this file is protected against precisely that
+# (DISPATCH_EPOCH, and the mandatory SELECTED_* bindings); this one was not.
+HOST="<grok | claude-code — the literal you echoed in Step 0>"
+case "$HOST" in
+  grok|claude-code) ;;
+  *) echo "STOP: HOST is '$HOST' — substitute the literal 'grok' or 'claude-code' you echoed in Step 0 into this fence" >&2; exit 1 ;;
+esac
 HAS_CLAUDE_CLI=0
 command -v claude >/dev/null 2>&1 && HAS_CLAUDE_CLI=1
 echo "HAS_CLAUDE_CLI=$HAS_CLAUDE_CLI"
