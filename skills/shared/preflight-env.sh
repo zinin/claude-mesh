@@ -914,10 +914,19 @@ fi
 
 # Host slugs from a successful `grok models` listing. Not added when the listing
 # was SKIP/empty: SUMMARY names what can be selected, and a SKIP row is not that.
-if [ "$NM_STATUS" = "OK" ] && [ -n "$NM_LIST" ]; then
-    for NM_SLUG in $NM_LIST; do
-        [ -n "$NM_SLUG" ] && add_avail "native:$NM_SLUG"
-    done
+#
+# The bare `native` below is the same fallback claude and grok already carry above, and it
+# closes the same hole for the same reason: a preset with `native` in builtin and an EMPTY
+# native_models is valid — that is the documented session-model fallback — and the defaults
+# line then prints a bare `native`. Without this, available holds only `native:<slug>` and
+# never the bare name, so a perfectly working Grok host reads as "default mode unsafe".
+if [ "$NM_STATUS" = "OK" ]; then
+    if [ -n "$NM_LIST" ]; then
+        for NM_SLUG in $NM_LIST; do
+            [ -n "$NM_SLUG" ] && add_avail "native:$NM_SLUG"
+        done
+    fi
+    add_avail native
 fi
 
 if [ -n "$MODELS" ]; then
@@ -983,7 +992,18 @@ for PRESET in design_review code_review; do
         [ -n "$DLIST" ] || DLIST="— (preset empty)"
     fi
     printf 'SUMMARY defaults %s: %s\n' "$PRESET" "$DLIST"
+    case "$DLIST" in *native*) SAW_NATIVE_DEFAULT=1 ;; esac
 done
+# `native` is the one reviewer type whose meaning depends on a host this script cannot see.
+# Host detection is "does the orchestrator have spawn_subagent" — invisible from a shell, and
+# `grok` on PATH is NOT a proxy for it (a Claude Code session can have the grok CLI installed
+# and answering, which is exactly the machine this fires on). So the expansion above stays
+# unconditional — on Grok it is what catches a native_models slug missing from the live
+# listing — and the gap is explained instead of guessed at, the same way the
+# PREFLIGHT_SKIP_NETWORK note above says that those rows do not mean what they look like.
+if [ "${SAW_NATIVE_DEFAULT:-0}" = 1 ] && [ "$NM_STATUS" != "OK" ]; then
+    printf 'SUMMARY note: a preset names `native` but `grok models` did not answer, so no native:* entry is in SUMMARY available. On Grok Build that IS a real gap. On Claude Code it is not: there `native` collapses into `claude` and native_models is ignored, so exclude every native:* name from the defaults-vs-available membership check on that host\n'
+fi
 # One `hint:` line, whose text was chosen with the blocker above. The literal `hint: ` prefix is
 # load-bearing: the suite's closed-set gate skips this line on `$1 != "hint:"`, and $1 alone —
 # the second word differs per state.

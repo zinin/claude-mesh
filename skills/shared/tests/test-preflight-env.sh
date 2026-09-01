@@ -1036,6 +1036,32 @@ assert_no_match "…which is not grok:<slug>" \
 assert_eq "…so default mode stays a plain membership check with native too" "" \
     "$(defaults_not_available "$OUT")"
 
+# The SAME fixture on a Claude-Code-shaped host: no grok CLI, so no listing and no native:*
+# in available, while the defaults line still expands native over native_models. That gap is
+# real on Grok and a false alarm on Claude Code — where `native` collapses into `claude` and
+# native_models is ignored — and the script cannot tell the two hosts apart (host detection is
+# `spawn_subagent` presence, invisible from a shell; grok-on-PATH is not a proxy, since a
+# Claude Code session can have the CLI installed and answering). So it must SAY so rather than
+# guess. Until this case was tested, the fixture only ever ran with a grok shim on PATH.
+run_probe valid-native-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$SHIM:$PATH" PREFLIGHT_SKIP_NETWORK=1
+assert_match "no grok CLI → native-models does not run"  "native-models"  "$OUT"
+assert_no_match "…so no native:<slug> reaches available" ", native:"      "$(avail_wrap "$OUT")"
+assert_match "…while the defaults line still names one"  "native:grok-4.6" "$OUT"
+assert_match "…and a note explains the gap is host-conditional" \
+    "SUMMARY note: a preset names \`native\`" "$OUT"
+
+# The mirror case on a WORKING host: `native` in builtin with an EMPTY native_models is the
+# documented session-model fallback, so the defaults line prints a bare `native`. available
+# has to carry the bare name too — claude and grok both do — or a healthy Grok host reads as
+# "default mode unsafe".
+run_probe valid-native-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "a live listing also offers the bare native fallback" \
+    ", native, " "$(avail_wrap "$OUT")"
+assert_no_match "…and needs no host-conditional note" \
+    "SUMMARY note: a preset names" "$OUT"
+
 # A fast re-run probes nothing, so every network verdict is UNKNOWN. UNKNOWN is not a degraded
 # OK — treating it as unavailable reports a fully working machine as "claude only", and the
 # reading session cannot see the flag it did not set. The summary has to say so itself.
