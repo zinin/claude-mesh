@@ -377,9 +377,9 @@ assert_eq "no one-line 'MODEL=<id> Review …' form left to be prefixed" "0" \
 # sentence is the defect this branch's review would otherwise miss identically in
 # both files.
 assert_ge "mesh-review Grok native uses explore" "1" \
-    "$(grep -c 'subagent_type: "explore"' "$MESH_REVIEW" || grep -c 'subagent_type: explore' "$MESH_REVIEW")"
+    "$(grep -cE 'subagent_type: "?explore"?' "$MESH_REVIEW")"
 assert_ge "design review Grok native uses explore" "1" \
-    "$(grep -c 'subagent_type: "explore"' "$DESIGN_SKILL" || grep -c 'subagent_type: explore' "$DESIGN_SKILL")"
+    "$(grep -cE 'subagent_type: "?explore"?' "$DESIGN_SKILL")"
 assert_ge "mesh-review native is INLINE in 6.0" "1" \
     "$(grep -c 'native:<slug> INLINE' "$MESH_REVIEW")"
 for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do

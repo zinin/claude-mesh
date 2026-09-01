@@ -18,6 +18,11 @@ daemon), and session helpers.
 - **`codex-*`, `gemini-*`, `grok-*` agents** — wrappers for the OpenAI Codex, Gemini and xAI
   Grok CLIs. The grok wrappers take a `MODEL` from the `grok.models` catalog, so one
   `/mesh-review` can run several grok models as independent reviewers
+- **`claude-code-reviewer` / `claude-executor` agents and the `/claude-mesh:claude-code-review`
+  skill** — the Claude Code CLI itself as a wrapper engine (`claude -p` under your `claude
+  login`, one reviewer per `claude.models` alias). On Claude Code the built-in `claude`
+  reviewer still runs in-process and these are not used; they are how `builtin: claude`
+  resolves on Grok Build, where there is no in-process Claude. See "Grok Build" below
 - **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
   `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
   `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`

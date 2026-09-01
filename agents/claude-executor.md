@@ -35,7 +35,7 @@ provider export: skip `config-loader.sh export`, unset leftover `ANTHROPIC_*`, w
 ## PROHIBITIONS
 
 - Do NOT write findings without running the exec skill
-- Do NOT fall back to reviewing the diff on your own model
+- Do NOT fall back to answering the prompt on your own model
 - Do NOT run the engine CLI directly — the skill chain handles execution
 
 ## Parameter: MODEL (optional)

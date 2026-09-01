@@ -10,15 +10,20 @@ Dispatch code review to the official Claude Code CLI (`claude -p` after `claude 
 
 **Announce at start:** "Using claude-code-review skill to get review from the Claude Code CLI."
 
-## Required argument: MODEL
+## Optional argument: MODEL
 
 `MODEL=<alias>` — one entry of the `claude.models` catalog, e.g. `MODEL=opus`.
-Without it, STOP and report — **except** when the catalog is empty, in which case one run
-uses the CLI default (no `-m`):
 
-```
-ERROR: MODEL is required. Example: MODEL=opus Review the changes for production readiness
-```
+**An omitted MODEL is a first-class path, not an error.** It means "run the CLI default"
+(`claude -p` without `-m`), and the run lands in `runs/claude/_default/`. Both orchestrators
+dispatch it deliberately: `commands/mesh-review.md` Step 0 and Step 2.4 ("Empty selection is
+not an error"), and the sentinel option every one-option model page carries. That path is
+reachable with a NON-empty `claude.models` catalog — the preset's `claude_models` list and the
+`claude.models` catalog are different things — so the catalog being non-empty must never turn
+an omitted MODEL into a STOP. `agents/claude-code-reviewer.md` says the same thing from the
+other side: "If the first line is not `MODEL=`, still invoke the skill. Do not STOP."
+
+A MODEL that IS supplied is still checked against the catalog when the catalog is non-empty.
 
 Never pick a model yourself: the catalog belongs to the user's config, and an invented alias
 fails at the CLI after a run directory has already been created.
@@ -44,11 +49,12 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/claude-code-review"
 fi
 
-Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after a non-empty `SKILL_BASE`.
+Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `resolve-plugin-root.sh` consults `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` — but only the if-branch calls it. The else-branch here does **not** read them: it relies on `find` alone, and STOPs when that comes back empty rather than resolving a `PLUGIN_ROOT` from the current directory.
 
 Shared scripts live at `$SKILL_BASE/../shared/<x>` (e.g. `code-review-prompt.md`); the loader is `$SKILL_BASE/../shared/config-loader.sh`. Auth is `claude login` — this skill does NOT source provider tokens; it delegates execution to `ext-claude-exec` with `HOST_CLAUDE=1`.
 
@@ -103,6 +109,7 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/claude-code-review"
 fi
@@ -140,10 +147,15 @@ MODEL=$(cat <<'__MODEL_BOUNDARY_4b7e2c19_MODEL_END__'
 <the MODEL argument this skill was called with>
 __MODEL_BOUNDARY_4b7e2c19_MODEL_END__
 )
-if [ -n "$CLAUDE_CAT" ]; then
-    [ -n "$MODEL" ] || { echo "STOP: MODEL is required when claude.models is non-empty and was not substituted into this fence. Example: MODEL=opus"; exit 1; }
+# An omitted MODEL is the CLI-default path and is valid whatever the catalog holds — see
+# "Optional argument: MODEL" above. Membership is checked only for a MODEL that was supplied;
+# gating a STOP on a non-empty catalog would break the documented empty-`claude_models`
+# reviewer that `runs/claude/_default/` and the orchestrators' Step 5a already implement.
+if [ -n "$CLAUDE_CAT" ] && [ -n "$MODEL" ]; then
     printf '%s\n' "$CLAUDE_CAT" | grep -Fxq -- "$MODEL" || { echo "STOP: MODEL '$MODEL' is not in the claude.models catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' ')) — pick one of those, or add it to config.yaml yourself. claude-mesh never substitutes a model of its own."; exit 1; }
     echo "OK: claude.models catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' '))"
+elif [ -n "$CLAUDE_CAT" ]; then
+    echo "OK: MODEL omitted — CLI default (claude -p without -m), runs/claude/_default/; catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' ')) not consulted"
 else
     echo "OK: claude.models catalog empty (has_claude_models=${HAS_CLAUDE_MODELS:-0}) — CLI default if MODEL is omitted"
 fi
@@ -209,6 +221,7 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/claude-code-review"
 fi
@@ -344,7 +357,7 @@ Apply `superpowers:receiving-code-review` skill principles:
 ## Checklist
 
 - [ ] MODEL argument received when the catalog is non-empty (never invented)
-- [ ] Pre-flight checks passed (`command -v claude`; catalog membership only if non-empty)
+- [ ] Pre-flight checks passed (`command -v claude`; catalog membership only when a MODEL was supplied)
 - [ ] Git SHA range collected
 - [ ] Description/plan identified
 - [ ] Prompt formatted from template (no tooling-constraint append)

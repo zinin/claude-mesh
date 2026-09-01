@@ -118,7 +118,7 @@ exists, print generated prompts into the chat instead of trying to copy them.
 
 ```bash
 PF="./skills/shared/preflight-env.sh"
-[ -f "$PF" ] || PF="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$PF" ] || PF="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/preflight-env.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$PF" ] || { echo "preflight-env.sh not found — older claude-mesh here; expected degradation, NOT a broken environment"; exit 0; }
 bash "$PF"
 ```

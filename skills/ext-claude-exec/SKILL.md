@@ -77,11 +77,12 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
 
-Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after a non-empty `SKILL_BASE`.
+Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `resolve-plugin-root.sh` consults `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` — but only the if-branch calls it. The else-branch here does **not** read them: it relies on `find` alone, and STOPs when that comes back empty rather than resolving a `PLUGIN_ROOT` from the current directory.
 
 From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
@@ -108,6 +109,7 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -198,12 +200,26 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
 PLUGIN_DATA="$("$LOADER" data-dir)"
 if [ "${HOST_CLAUDE:-}" = "1" ]; then
+    # MODEL is unvalidated on this path — the provider branch below gets its check from
+    # `"$LOADER" export`, which HOST_CLAUDE skips. It becomes a path component two lines
+    # down and a `claude -p -m` argument, so reject the two spellings that are wrong by
+    # construction rather than by catalog: a slash (that is ext-claude's <provider>/<short>,
+    # which would silently create a depth-3 run dir) and any `..`, `-` or `.` lead (path
+    # traversal out of the data dir, or a value the CLI reads as a flag). grok-exec runs the
+    # same guard at skills/grok-exec/SKILL.md. The remaining charset question — claude.models
+    # is validated with IDENT_RE, which admits `:`/`@` that watch-runs.sh and
+    # verify-delegation.sh both reject — is deliberately NOT decided here.
+    case "${MODEL:-}" in
+        */*)      echo "STOP: MODEL '$MODEL' contains a slash — that is ext-claude's <provider>/<short> spelling; HOST_CLAUDE takes a bare claude.models alias (e.g. opus)" >&2; exit 1 ;;
+        .*|-*)    echo "STOP: MODEL '$MODEL' must start with a letter or digit" >&2; exit 1 ;;
+    esac
     # Do not split PROVIDER/SHORT. MODEL is a claude.models alias (no slash).
     # Empty MODEL (CLI default / empty catalog): `runs/claude/default/` is forbidden —
     # "default" looks like a catalog alias. Use `_default` so the watcher roster for a
@@ -249,6 +265,7 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -366,6 +383,7 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -521,6 +539,7 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi

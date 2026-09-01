@@ -20,11 +20,12 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
 fi
 
-Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` also work when set to an existing plugin root — `resolve-plugin-root.sh` tries them after a non-empty `SKILL_BASE`.
+Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `resolve-plugin-root.sh` consults `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` — but only the if-branch calls it. The else-branch here does **not** read them: it relies on `find` alone, and STOPs when that comes back empty rather than resolving a `PLUGIN_ROOT` from the current directory.
 
 From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
@@ -265,6 +266,7 @@ if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
   _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
 fi
@@ -336,12 +338,23 @@ HAS_CLAUDE_CLI=0
 command -v claude >/dev/null 2>&1 && HAS_CLAUDE_CLI=1
 echo "HAS_CLAUDE_CLI=$HAS_CLAUDE_CLI"
 HOST_MODELS=""
+# `grok models` is a network+login round-trip sitting in the same fence as the loader reads
+# above. preflight-env.sh wraps the identical call in `timeout "$CLI_TIMEOUT"` behind a
+# `command -v timeout` guard, and for the reason spelled out there: no probe failure may take
+# the surrounding fence down. Without it a hung listing burns the whole harness budget and the
+# fence loses its preflight, not just native. The mktemp carries the same STOP as its four
+# siblings in this fence — unguarded, an empty $GM sends native down the "grok models failed"
+# branch for a reason that has nothing to do with grok.
 if [ "$HOST" = grok ]; then
-  GM=$(mktemp)
-  if grok models >"$GM" 2>/dev/null; then
-    HOST_MODELS=$(bash "$(dirname "$LOADER")/list-host-models.sh" --from-file "$GM")
+  if ! command -v timeout >/dev/null 2>&1; then
+    echo "ВНИМАНИЕ: timeout(1) отсутствует — grok models не запускался; native деградирует" >&2
+  else
+    GM=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
+    if timeout "${GROK_MODELS_TIMEOUT:-30}" grok models >"$GM" 2>/dev/null; then
+      HOST_MODELS=$(bash "$(dirname "$LOADER")/list-host-models.sh" --from-file "$GM")
+    fi
+    rm -f "$GM"
   fi
-  rm -f "$GM"
 fi
 echo "HOST_MODELS=[$(printf '%s' "$HOST_MODELS" | tr '\n' ' ')]"
 ```
@@ -364,6 +377,7 @@ rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the
   - **On HOST=claude-code, `native` in builtin collapses to this same host set.** Treat `native` as `claude` for host reviewers — `native ∪ claude` is one set sourced from `claude_models` (and the empty-list fallback above). Ignore `.native_models`. **Bind `SELECTED_NATIVE_MODELS` to the empty list** — on Claude Code the host set is `SELECTED_CLAUDE_MODELS`; native bullets must not appear on confirm.
   - **On HOST=grok, `native` is a separate type.** `claude` in builtin is the Claude Code CLI (`claude-mesh:claude-executor`), not host slugs. If `native` is not in `.builtin`: **bind `SELECTED_NATIVE_MODELS` to the empty list**. If `.native_models` is non-empty and `native` is not in builtin, the loader already rejected the file.
   - On HOST=grok, use `HOST_MODELS` from Step 5.0:
+    - **If `claude` was requested and `HAS_CLAUDE_CLI=0`: print `claude: CLI не найден — claude-ревьюер не запущен; остальные движки работают.`, bind `SELECTED_CLAUDE_MODELS` empty and remove `claude` from selected types.** Design §7 requires a spoken degrade here, exactly like `native_degraded` just below and `grok_degraded` above. Without it the executor is dispatched, dies inside `skills/claude-code-review/SKILL.md` on its own `command -v claude` STOP, leaves no run dir, and is scored `FLIP` — a verdict that prescribes a re-dispatch which fails identically. `HAS_CLAUDE_CLI` is probed in the Step 5.0 fence and until now was read only by the interactive pages.
     - If `native` was requested and `HOST_MODELS` is empty: print `native не запущен; остальные работают.` **bind `SELECTED_NATIVE_MODELS` empty**, and **remove native from selected types** (`native_degraded` spoken, not a loader flag). Empty `SELECTED_NATIVE_MODELS` is then "no native reviewers", not omit-`model:`.
     - If `native` was requested and `HOST_MODELS` is non-empty: intersect `.native_models` with `HOST_MODELS` (`grep -Fxq`); skip missing slugs with **one WARN**, not one per slug. **Bind `SELECTED_NATIVE_MODELS` to the intersection.** An originally empty/absent `.native_models` stays empty — that is the signal for one session-model reviewer (omit `model:` at dispatch), and `native` stays selected. If `.native_models` was **non-empty** and the intersection is empty: do not run native, **remove native from selected types**, bind `SELECTED_NATIVE_MODELS` empty, and **do not substitute the session model**.
   - `codex` → spawn `claude-mesh:codex-executor`
@@ -767,6 +781,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
      PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
    else
      _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+     [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
      PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
      SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
    fi
@@ -800,6 +815,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
      PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
    else
      _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+     [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
      PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
      SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
    fi
