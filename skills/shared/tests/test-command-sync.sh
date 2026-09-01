@@ -162,8 +162,11 @@ assert_nonempty "design PREFLIGHT extracted"  "$DESIGN_PREFLIGHT"
 assert_nonempty "code PREFLIGHT extracted"    "$CODE_PREFLIGHT"
 assert_eq "design DO NOT is 7 lines"      "7"  "$(printf '%s\n' "$DESIGN_DONOT" | grep -c '')"
 assert_eq "code DO NOT is 7 lines"        "7"  "$(printf '%s\n' "$CODE_DONOT" | grep -c '')"
-assert_eq "design PREFLIGHT is 17 lines"  "17" "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c '')"
-assert_eq "code PREFLIGHT is 17 lines"    "17" "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c '')"
+# 18, not 17: the preflight resolver searches ~/.claude/plugins and ~/.grok/plugins in
+# priority order — two find lines, never one find over both roots (`sort -V` compares whole
+# paths and .claude < .grok, so a single find picked the .grok copy whatever its version).
+assert_eq "design PREFLIGHT is 18 lines"  "18" "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c '')"
+assert_eq "code PREFLIGHT is 18 lines"    "18" "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c '')"
 assert_eq "design DO NOT starts at its heading" "## DO NOT" "$(printf '%s\n' "$DESIGN_DONOT" | head -1)"
 assert_eq "code DO NOT starts at its heading"   "## DO NOT" "$(printf '%s\n' "$CODE_DONOT" | head -1)"
 # The two blocks of the SAME file must come out different, or the extractor is returning

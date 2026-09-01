@@ -13,7 +13,12 @@ fi
 if [ -n "${GROK_PLUGIN_ROOT:-}" ] && loader_at "$GROK_PLUGIN_ROOT"; then
     printf '%s\n' "$GROK_PLUGIN_ROOT"; exit 0
 fi
-found="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+found="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+# Priority, not a cross-root sort: `sort -V` compares whole paths, and `.claude` <
+# `.grok`, so a single find over both roots picked the .grok copy whatever its
+# version. .claude first is where the active copy lives on BOTH hosts (Grok loads
+# claude-mesh from the Claude cache); .grok is the fallback, version-sorted on its own.
+[ -n "$found" ] || found="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 if [ -n "$found" ]; then
     printf '%s\n' "$(cd "$(dirname "$found")/../.." && pwd)"
     exit 0

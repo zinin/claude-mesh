@@ -34,13 +34,14 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/grok-exec"
 fi
 
-Do not rewrite the fence. The else-branch already finds the loader via `find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' | sort -V | tail -1`, sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `resolve-plugin-root.sh` consults `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` — but only the if-branch calls it. The else-branch here does **not** read them: it relies on `find` alone, and STOPs when that comes back empty rather than resolving a `PLUGIN_ROOT` from the current directory.
+Do not rewrite the fence. The else-branch searches `$HOME/.claude/plugins` first — version-sorted, `| sort -V | tail -1` — and only falls back to `$HOME/.grok/plugins` when that finds nothing. The roots are tried in PRIORITY order, never in one find over both: `sort -V` compares whole paths, and `.claude` < `.grok`, so a single find picked the `.grok` copy whatever its version. `.claude` is where the active copy lives on both hosts — Grok loads claude-mesh from the Claude cache. It then sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. `resolve-plugin-root.sh` consults `$CLAUDE_PLUGIN_ROOT` / `$GROK_PLUGIN_ROOT` — but only the if-branch calls it. The else-branch here does **not** read them: it relies on `find` alone, and STOPs when that comes back empty rather than resolving a `PLUGIN_ROOT` from the current directory.
 
 From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
@@ -147,7 +148,8 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/grok-exec"
@@ -239,7 +241,8 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/grok-exec"
@@ -316,7 +319,8 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/grok-exec"
@@ -549,7 +553,8 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/grok-exec"
@@ -731,7 +736,8 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  _LOADER="$(find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found under $HOME/.claude/plugins or $HOME/.grok/plugins" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/grok-exec"

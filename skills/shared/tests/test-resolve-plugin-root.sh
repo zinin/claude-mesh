@@ -60,6 +60,24 @@ touch "$FAKE_ROOT/skills/shared/config-loader.sh"
 GOT=$(HOME="$FAKE_HOME" GROK_PLUGIN_ROOT= CLAUDE_PLUGIN_ROOT= SKILL_BASE= "$SCRIPT")
 assert_eq "find fallback resolves a plugin tree under HOME" "$FAKE_ROOT" "$GOT"
 
+# 5c. Root PRIORITY, not a cross-root version sort. With a copy in both trees, `.claude` wins
+#     even when the `.grok` one has a higher version — a single `find` over both roots would
+#     pick .grok whatever the versions, because sort -V compares whole paths and .claude <
+#     .grok. That is the same silent mis-resolution the loader's original `head -1` caused.
+BOTH_HOME="$(mktemp -d)"
+mkdir -p "$BOTH_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0/skills/shared" \
+         "$BOTH_HOME/.grok/plugins/cache/z/claude-mesh/9.9.9/skills/shared"
+touch "$BOTH_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0/skills/shared/config-loader.sh" \
+      "$BOTH_HOME/.grok/plugins/cache/z/claude-mesh/9.9.9/skills/shared/config-loader.sh"
+GOT=$(HOME="$BOTH_HOME" GROK_PLUGIN_ROOT= CLAUDE_PLUGIN_ROOT= SKILL_BASE= "$SCRIPT")
+assert_eq ".claude wins over a HIGHER-versioned .grok copy" \
+    "$BOTH_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0" "$GOT"
+rm -rf "$BOTH_HOME/.claude"
+GOT=$(HOME="$BOTH_HOME" GROK_PLUGIN_ROOT= CLAUDE_PLUGIN_ROOT= SKILL_BASE= "$SCRIPT")
+assert_eq "…and .grok is used once .claude has nothing" \
+    "$BOTH_HOME/.grok/plugins/cache/z/claude-mesh/9.9.9" "$GOT"
+rm -rf "$BOTH_HOME"
+
 rm -rf "$EMPTY_DIR" "$FAKE_HOME"
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

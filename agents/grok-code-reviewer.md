@@ -19,7 +19,7 @@ Skill tool -> skill: "claude-mesh:grok-code-review"
 ```
 
 **If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/grok-code-review/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
-`find "$HOME"/.claude/plugins "$HOME"/.grok/plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1`.
+`find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1`.
 Following the skill **is** CLI delegation. It is not a review you perform yourself.
 
 ## After the engine starts
