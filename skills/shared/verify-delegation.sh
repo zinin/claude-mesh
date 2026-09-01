@@ -148,6 +148,16 @@ case "$ENGINE" in
     claude)
         case "$MODEL" in
             ''|'-') echo "verify-delegation: engine claude requires a model argument (e.g. opus), got '${MODEL:-}'" >&2; exit 1 ;;
+            # The one documented name that is NOT a catalog alias: ext-claude-exec writes
+            # runs/claude/_default/ when MODEL is omitted (the CLI-default path), and the
+            # leading underscore is deliberate there — `default` would look like an alias a
+            # user could put in claude.models. watch-runs.sh already admits `claude/_default`
+            # (its roster class includes `_`), so without this the two consumers disagreed
+            # about one literal and both orchestrators worked around it by skipping the guard
+            # entirely for that reviewer — losing the dispatch-window check and the
+            # permission_denials -> DEGRADED check for the fallback reviewer alone. Exact
+            # literal, not a `_*` class: nothing else may start with an underscore.
+            '_default') ;;
             # Same charset as GROK_IDENT_RE in config-loader.sh, and for the same reason: this
             # value becomes a path component. Unlike grok, a config-sourced model CAN fail it:
             # claude.models is validated with the wider IDENT_RE ([A-Za-z0-9._:@-]), because its

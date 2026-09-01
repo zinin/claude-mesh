@@ -1513,6 +1513,30 @@ assert_eq "alias still reaches a verdict" "3" "$RC"
 assert_eq "…FLIP" "FLIP" "$VERDICT"
 rm -rf "$TDIR"
 
+echo "=== Test: claude accepts the _default fallback dir, and only that underscore name ==="
+# runs/claude/_default/ is what ext-claude-exec writes when MODEL is omitted (the CLI-default
+# path). The leading underscore is deliberate — `default` would look like a catalog alias — and
+# watch-runs.sh already admits `claude/_default`. The guard has to take the same literal, or the
+# fallback reviewer is the one wrapper whose verdict is read by hand, losing the dispatch-window
+# and permission_denials checks. Exact literal only: no other `_*` name is accepted.
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/claude"
+run claude _default 1 "$TDIR"
+assert_eq "_default reaches a verdict, not a usage error" "3" "$RC"
+assert_eq "…FLIP with no run dir" "FLIP" "$VERDICT"
+for bad in _other _ _default2 __default; do
+    run claude "$bad" 1 "$TDIR"
+    assert_eq "'$bad' is still a usage error" "1" "$RC"
+    assert_eq "'$bad' prints no verdict" "" "$VERDICT"
+done
+rd=$(mk_run "$TDIR/runs/claude/_default" 2026-08-31-11-00-00-1000-fallback)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":9}' > "$rd/raw.jsonl"
+run claude _default 1 "$TDIR"
+assert_eq "a real _default run verifies REAL" "0" "$RC"
+assert_eq "…verdict REAL" "REAL" "$VERDICT"
+rm -rf "$TDIR"
+
 echo "=== Test: claude DEGRADED remedy is not ext-claude's missing-flag line ==="
 TDIR=$(mktemp -d)
 rd=$(mk_run "$TDIR/runs/claude/opus" 2026-08-31-11-00-00-1000-denied)

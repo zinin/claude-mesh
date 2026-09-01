@@ -415,13 +415,17 @@ assert_ge "redispatch Grok wait reads output.txt" "1" \
 # 2. Design-review CC watcher example must name depth-0 engines; claude/opus is Grok-only.
 assert_ge "design review CC watcher example names depth-0 engines" "1" \
     "$(grep -c 'codex gemini grok/grok-4.6 ext-claude/zai/glm' "$DESIGN_SKILL")"
-# 3. Leading `_` fails the claude charset; never pass `_default` to the guard.
-assert_eq "mesh-review never passes claude _default to the guard" "0" \
+# 3. `_default` IS passed to the guard — it is the one accepted leading-underscore name.
+#    ext-claude-exec writes runs/claude/_default/ when MODEL is omitted, watch-runs.sh already
+#    admits `claude/_default`, and the guard now takes the same literal. Skipping the guard for
+#    that reviewer (the earlier rule) made the fallback the only wrapper whose verdict came from
+#    reading a directory by hand — without the dispatch-window check or permission_denials.
+assert_ge "mesh-review passes claude _default to the guard" "1" \
     "$(grep -c 'claude _default' "$MESH_REVIEW")"
-assert_eq "design review never passes claude _default to the guard" "0" \
+assert_ge "design review passes claude _default to the guard" "1" \
     "$(grep -c 'claude _default' "$DESIGN_SKILL")"
 for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
-    assert_ge "${f#"$REPO"/}: omit-MODEL skips verify-delegation" "1" \
+    assert_eq "${f#"$REPO"/}: omit-MODEL no longer skips verify-delegation" "0" \
         "$(grep -c 'If MODEL was omitted, skip verify-delegation' "$f")"
     assert_ge "${f#"$REPO"/}: HOST=grok uses ask_user_question" "1" \
         "$(grep -c 'ask_user_question' "$f")"
