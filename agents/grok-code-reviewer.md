@@ -19,7 +19,7 @@ Skill tool -> skill: "claude-mesh:grok-code-review"
 ```
 
 **If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/grok-code-review/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
-`find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1`.
+`find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/grok-code-review/SKILL.md' 2>/dev/null | sort -V | tail -1`.
 Following the skill **is** CLI delegation. It is not a review you perform yourself.
 
 ## After the engine starts
@@ -82,7 +82,7 @@ else's would be worse than the collision the filter removes. Substitute your MOD
 for d in "$HOME"/.claude/plugins/data/claude-mesh-*/runs/grok/<the MODEL you were given>/*/; do
     [ -d "$d" ] || continue
     run_sid=""; [ -r "$d/.session_id" ] && IFS= read -r run_sid < "$d/.session_id"
-    [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || [ -z "$run_sid" ] || [ "$run_sid" = "$CLAUDE_CODE_SESSION_ID" ] || continue
+    [ -z "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" ] || [ -z "$run_sid" ] || [ "$run_sid" = "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" ] || continue
     printf '%s %s\n' "$(stat -c %Y "$d")" "$d"
 done | sort -rn | head -5 | cut -d' ' -f2-
 ```

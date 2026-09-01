@@ -98,7 +98,7 @@ resolve_plugin_data() {
 # on which run is "the run", or the watcher reports DONE on one dir while this gate inspects
 # another. FAIL-OPEN: an unstamped dir is a legacy run, a direct *-exec invocation, or a
 # harness without the variable, and calling those foreign would drop a finished review.
-SELF_SID="${CLAUDE_CODE_SESSION_ID:-}"
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}"
 run_is_mine() {
     [ -n "$SELF_SID" ] || return 0
     local v=""

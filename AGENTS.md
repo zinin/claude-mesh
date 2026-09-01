@@ -46,8 +46,9 @@ grok plugin enable claude-mesh
 ```
 
 Then start a **new** session (or reload plugins). This is a **copy**, not a
-symlink, at `~/.grok/installed-plugins/claude-mesh-<hash>`. Edits in the working
-tree do not apply until:
+symlink, at `~/.grok/installed-plugins/claude-mesh-<hash>`. After you change
+the working tree (native `general-purpose`, `--model`, plugin-root fallback),
+edits do not apply until:
 
 ```bash
 grok plugin update claude-mesh

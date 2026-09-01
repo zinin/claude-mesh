@@ -13,11 +13,14 @@ fi
 if [ -n "${GROK_PLUGIN_ROOT:-}" ] && loader_at "$GROK_PLUGIN_ROOT"; then
     printf '%s\n' "$GROK_PLUGIN_ROOT"; exit 0
 fi
-found="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-# Priority, not a cross-root sort: `sort -V` compares whole paths, and `.claude` <
-# `.grok`, so a single find over both roots picked the .grok copy whatever its
-# version. .claude first is where the active copy lives on BOTH hosts (Grok loads
-# claude-mesh from the Claude cache); .grok is the fallback, version-sorted on its own.
+# Unpublished Grok install (`grok plugin install <tree>`) copies the plugin to
+# ~/.grok/installed-plugins/claude-mesh-<hash>. That path is what `grok inspect`
+# loads. A stale Claude-compat cache under ~/.claude/plugins must not win: measured
+# 2026-09-01, sort -V | tail -1 on the cache picked 0.12.0 and HOST_CLAUDE wrappers
+# ran the old loader. Search installed-plugins first, then the two cache trees.
+# Priority, not a cross-root sort: `sort -V` compares whole paths.
+found="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -n "$found" ] || found="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -n "$found" ] || found="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 if [ -n "$found" ]; then
     printf '%s\n' "$(cd "$(dirname "$found")/../.." && pwd)"

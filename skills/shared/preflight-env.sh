@@ -513,7 +513,7 @@ cli_row gemini "gemini" "https://generativelanguage.googleapis.com/" "$HAS_GEMIN
 # The URL argument is unused when a command probe is given; pass the CLI's own docs host so the
 # row's shape stays uniform and a future reader can see what an HTTP fallback would target.
 GROK_LISTING=""
-mktemp_or_fail >/dev/null 2>&1 && GROK_LISTING="$(mktemp_or_fail 2>/dev/null || true)"
+GROK_LISTING="$(mktemp_or_fail 2>/dev/null || true)"
 cli_row grok   "grok"   "https://api.x.ai/v1/models"                 "$HAS_GROK" "grok models" "$GROK_LISTING"; GROK_STATUS="$CLI_STATUS"
 
 # native-models: listing only. Never infer we are inside Grok Build.
@@ -531,8 +531,17 @@ NM_STATUS=SKIP
 NM_LIST=""
 _nm_from_listing() {        # $1 = file holding `grok models` output
     NM_LIST=$(bash "$SCRIPT_DIR/list-host-models.sh" --from-file "$1" | tr '\n' ' ')
-    NM_STATUS=OK
-    NM_DETAIL="${NM_LIST:-empty listing}"
+    NM_LIST=${NM_LIST%% }
+    if [ -n "${NM_LIST// }" ]; then
+        NM_STATUS=OK
+        NM_DETAIL="$NM_LIST"
+    else
+        # Parsed zero slugs: not selectable. OK + empty used to advertise a bare
+        # `native` in SUMMARY while runtime degraded HOST_MODELS="".
+        NM_STATUS=SKIP
+        NM_DETAIL="empty listing"
+        NM_LIST=""
+    fi
 }
 case "$GROK_STATUS" in
     OK)

@@ -563,6 +563,13 @@ case "${1:-}" in
           # List rows (`* slug` / `- slug`) are what list-host-models.sh reads.
           # `Default model: grok-4.6` alone is dropped, and native:<slug> never
           # reaches SUMMARY available.
+          if [ "${GROK_SHIM_EMPTY:-0}" = 1 ]; then
+            printf '%s\n' \
+              'You are logged in with grok.com.' \
+              '' \
+              'Available models:'
+            exit 0
+          fi
           printf '%s\n' \
             'You are logged in with grok.com.' \
             '' \
@@ -604,6 +611,16 @@ assert_match "native listing reaches available as native:<slug>" \
     ", native:grok-4.6, " "$(avail_wrap "$OUT")"
 assert_match "…and grok:<slug> is a different reviewer" \
     ", grok:grok-4.6, " "$(avail_wrap "$OUT")"
+
+# grok models answers but parses to zero slugs → native-models is not OK, and
+# SUMMARY must not advertise a selectable native reviewer.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
+          GROK_SHIM_EMPTY=1
+assert_eq   "empty grok models listing -> native-models SKIP" SKIP "$(field native-models "$OUT")"
+assert_no_match "empty listing does not advertise native in available" \
+    ", native," "$(avail_wrap "$OUT")"
+assert_no_match "…nor a native:<slug>" \
+    ", native:" "$(avail_wrap "$OUT")"
 
 # The CLI is there but not logged in -> NO-NETWORK, and the hint names the fix.
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1

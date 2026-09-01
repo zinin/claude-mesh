@@ -47,6 +47,7 @@ PRIMARY='LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"'
 # whatever its version — the same class of silent mis-resolution as the original `head -1`.
 FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
 FALLBACK2='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
+FALLBACK_INST='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
 
 # === Test 1: every command site uses the same resolver ===
 # The counts are a deliberate canary, not incidental. A new command that resolves the loader
@@ -70,9 +71,11 @@ echo "=== Test 1: resolver present and in sync across command files ==="
 n_primary=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$PRIMARY")
 n_fallback=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$FALLBACK")
 n_fallback2=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$FALLBACK2")
+n_fallback_inst=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$FALLBACK_INST")
 assert_eq "7 primary lines across commands/" "7" "$n_primary"
 assert_eq "7 .claude fallback lines across commands/" "7" "$n_fallback"
 assert_eq "7 .grok fallback lines across commands/" "7" "$n_fallback2"
+assert_eq "7 installed-plugins fallback lines across commands/" "7" "$n_fallback_inst"
 # Neither root may be searched together with the other in one find.
 assert_eq "0 cross-root finds remain" "0" \
     "$(grep -c '.claude/plugins "$HOME"/.grok/plugins' "$CMD_DIR"/*.md | awk -F: '{s+=$2} END {print s+0}')"
@@ -90,12 +93,12 @@ assert_eq "0 occurrences of 'head -1' on the loader glob" "0" "$stale"
 # Three lines, not two: the third is the `|| { echo …; exit 1; }` guard, and Test 5 below
 # only means anything if it actually runs. `run_snippet` assumes the extracted block is a
 # self-contained, well-formed bash fragment — it is concatenated into `bash -c`.
-# Four lines now: the substituted primary, one find per root in priority order, then the
-# guard. The window must cover the guard — extracting three lines silently dropped it and
-# Test 5 then passed a snippet that could not fail.
-SNIPPET="$(grep -Fx -A3 -h "$PRIMARY" "$CMD_DIR/mesh-review.md" | grep -v '^--$' | head -4)"
+# Five lines: the substituted primary, installed-plugins find, .claude find, .grok find,
+# then the guard. The window must cover the guard — extracting too few lines silently
+# dropped it and Test 5 then passed a snippet that could not fail.
+SNIPPET="$(grep -Fx -A4 -h "$PRIMARY" "$CMD_DIR/mesh-review.md" | grep -v '^--$' | head -5)"
 echo "=== extraction ==="
-assert_eq "snippet extracted (4 lines)" "4" "$(printf '%s' "$SNIPPET" | grep -c '')"
+assert_eq "snippet extracted (5 lines)" "5" "$(printf '%s' "$SNIPPET" | grep -c '')"
 assert_match_snippet "…and the last line is the not-found guard" '\[ -f "$LOADER" \] || {' "$SNIPPET"
 
 # Run the extracted snippet under a controlled HOME / plugin root. rc is asserted too:

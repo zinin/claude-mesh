@@ -73,9 +73,9 @@ reason_count() { printf '%s' "$REASON" | grep -o '[0-9]\+ tool call(s)' | grep -
 run_as() {
     local sid="$1"; shift
     if [ "$sid" = "-" ]; then
-        VERDICT=$(env -u CLAUDE_CODE_SESSION_ID bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
+        VERDICT=$(env -u CLAUDE_CODE_SESSION_ID -u GROK_SESSION_ID bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
     else
-        VERDICT=$(env "CLAUDE_CODE_SESSION_ID=$sid" bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
+        VERDICT=$(env -u GROK_SESSION_ID "CLAUDE_CODE_SESSION_ID=$sid" bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
     fi
 }
 # stamp a run dir with a session id
@@ -578,7 +578,26 @@ run_as sid-A ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict FLIP" "FLIP" "$VERDICT"
 assert_eq "exit 3" "3" "$RC"
 assert_match "reason names the session mismatch" "belong to another session" \
-    "$(env CLAUDE_CODE_SESSION_ID=sid-A bash "$SCRIPT" ext-claude zai/glm 1 "$TDIR" 2>&1 >/dev/null)"
+    "$(env -u GROK_SESSION_ID CLAUDE_CODE_SESSION_ID=sid-A bash "$SCRIPT" ext-claude zai/glm 1 "$TDIR" 2>&1 >/dev/null)"
+rm -rf "$TDIR"
+
+# Grok Build exports GROK_SESSION_ID, not CLAUDE_CODE_SESSION_ID. Measured 2026-09-01:
+# wrappers wrote a blank .session_id and the guard could not tell runs apart.
+# Fail-open (empty SELF_SID) would pick the newest dir — here a BROKEN stranger.
+# With the fallback the older REAL run stamped grok-sid-1 is the one that counts.
+echo "=== Test: run identity — GROK_SESSION_ID matches a stamped run when CLAUDE_CODE_SESSION_ID is unset ==="
+TDIR=$(mktemp -d)
+mine=$(mk_run "$TDIR/runs/claude/opus" 2026-09-01-22-00-00-1000-review)
+mk_output "$mine/output.txt" 'real review'; ln -s attempt-1 "$mine/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$mine/raw.jsonl"
+sid_stamp "$mine" grok-sid-1
+theirs=$(mk_run "$TDIR/runs/claude/opus" 2026-09-01-22-05-00-1000-other)
+mk_output "$theirs/output.txt" 'broken'; ln -s attempt-1 "$theirs/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$theirs/raw.jsonl"
+sid_stamp "$theirs" grok-sid-2
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-sid-1 bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict REAL (not the newer foreign BROKEN run)" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
 rm -rf "$TDIR"
 
 # --- the dispatch window is the NAME window, the same one watch-runs.sh uses ---------------

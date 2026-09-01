@@ -92,6 +92,7 @@ Use `config-loader.sh` instead of raw `yq` so validation runs the same way every
 # not substitute: a VERSION-sorted glob — plain `find | head -1` is directory order and was
 # observed picking a stale cached 0.4.0 over the installed 0.4.2.
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || { echo "config-loader.sh not found under ~/.claude/plugins or ~/.grok/plugins (is claude-mesh installed?)" >&2; exit 1; }
@@ -399,6 +400,7 @@ Build `CLAUDE_DEFAULT_IDS` from the preset — **rc-aware, and never through a p
 # this Bash call runs in a FRESH shell where $LOADER no longer exists. Without re-resolving
 # it, `$("" get-defaults …)` fails and the `||` below misreports a valid config as invalid.
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
@@ -456,6 +458,7 @@ re-resolved):
 
 ```bash
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
@@ -661,15 +664,15 @@ named in their prompt sentence instead. Argument absent → change nothing; ever
 For each selected model id:
 - `subagent_type: "claude-mesh:ext-claude-code-reviewer"`, prompt: `MODEL=<id>` on its own FIRST line, then `BASE_BRANCH=<branch>` directly under it when there is a base branch to name, then `Review the changes for production readiness`. Without a base branch, drop the middle line. The one-line `BASE_BRANCH=<branch> MODEL=<id> …` form this bullet used to prescribe put `BASE_BRANCH=` at the head of the first line, against `agents/ext-claude-code-reviewer.md`'s own requirement that MODEL be there — it worked in practice, but only because every agent so far read past it
 
-**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / grok / ext-claude reviewers (and on HOST=grok, `claude-mesh:claude-code-reviewer`) are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude; headed by `MODEL=<entry>` / `MODEL=<alias>` on its own first line for grok and for Grok-host claude). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (On HOST=claude-code only the builtin `claude` / `general-purpose` reviewers review directly. On HOST=grok native `explore` children also review directly — they have no skill to invoke.)
+**CRITICAL — wrapper reviewers get a SHORT delegation prompt, NOT an inlined review task.** The codex / gemini / grok / ext-claude reviewers (and on HOST=grok, `claude-mesh:claude-code-reviewer`) are thin wrappers; their agent def forces them to invoke the matching `*-code-review` skill, and the SKILL resolves the diff and builds the review prompt itself. Pass each wrapper ONLY the short prompt above (prefixed with `MODEL=<id>` for ext-claude; headed by `MODEL=<entry>` / `MODEL=<alias>` on its own first line for grok and for Grok-host claude). Do **NOT** inline scope / diff / project invariants / focus areas into a wrapper's prompt: a detailed "review this yourself" prompt makes the wrapper self-review on its own model instead of delegating to the external model — silently, with no `runs/<engine>/…` artifacts produced. Extra review context, if any, is forwarded by the agent to the skill's `CONTEXT` argument; it is never a license to review inline. (On HOST=claude-code only the builtin `claude` / `general-purpose` reviewers review directly. On HOST=grok native `general-purpose` children also review directly — they have no skill to invoke. `explore` on Grok 1.0.13 has no shell.)
 
 **HOST=grok — `spawn_subagent` dispatch, all `background: true`, one message.** Same short wrapper prompts as the CC bullets; `spawn_subagent` instead of Task. Do not pass `runtime.dispatch_model` unless that value is in `HOST_MODELS`. Do not pass `opus` as spawn `model:`.
 
-- **native:** for each `SELECTED_NATIVE_MODELS` entry, `subagent_type: "explore"`, `model: "<slug>"`, `description: "Review via native:<slug>"`. If the list is empty and native was selected (session-model fallback: sentinel / absent key, `HOST_MODELS` non-empty, native still in selected types): one `explore`, **omit** `model:`. Native writes no `runs/native/…` and is not on the watcher roster. Prompt = the requesting-code-review contract (range, findings format Strengths / Critical / Important / Minor / Assessment) + `BASE_BRANCH` named in prose (`… review the changes on this branch against base <branch> …`; argument absent → name auto-detect, do not invent a branch) + grok-code-review's tooling-constraint block **verbatim**. The child reads the tree. Do **not** inline the diff. A nested `spawn_subagent` would fail on depth; an in-process replay of these steps would not — that is why the paragraph is there:
+- **native:** for each `SELECTED_NATIVE_MODELS` entry, `subagent_type: "general-purpose"`, `model: "<slug>"`, `description: "Review via native:<slug>"`. If the list is empty and native was selected (session-model fallback: sentinel / absent key, `HOST_MODELS` non-empty, native still in selected types): one `general-purpose`, **omit** `model:`. Native writes no `runs/native/…` and is not on the watcher roster. Prompt = the requesting-code-review contract (range, findings format Strengths / Critical / Important / Minor / Assessment) + `BASE_BRANCH` named in prose (`… review the changes on this branch against base <branch> …`; argument absent → name auto-detect, do not invent a branch) + grok-code-review's tooling-constraint block **verbatim**. The child reads the tree. Do **not** inline the diff. A nested `spawn_subagent` would fail on depth; an in-process replay of these steps would not — that is why the paragraph is there. Grok 1.0.13 `explore` has no shell (`git diff` / tests); `general-purpose` does. Do not edit files.
 
   ```
   spawn_subagent:
-    subagent_type: "explore"
+    subagent_type: "general-purpose"
     background: true
     model: "<slug>"                 # omit when the list is empty
     description: "Review via native:<slug>"
@@ -677,6 +680,7 @@ For each selected model id:
       Review the changes on this branch against base <branch> for production
       readiness. You have full access to the project. Read the tree, run
       `git merge-base` / `git diff` yourself — do not expect an inlined diff.
+      Do not edit files.
       Follow the requesting-code-review contract: Strengths, Critical Issues,
       Important Issues, Minor Issues, Assessment (Ready to merge: Yes/No/With
       fixes). Be specific: file:line.
@@ -722,7 +726,8 @@ When each agent completes, read its output. After all agents finish (or the user
 
    ```bash
    LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
-   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
    [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
    [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
    WATCH="$(dirname "$LOADER")/watch-runs.sh"
@@ -816,6 +821,7 @@ Run points 1 and 2 in the SAME Bash call: `$VERIFY` and `$DATA_DIR` are stamped 
 # Same resolution as Step 1 — the guard MUST come from the plugin copy that is actually
 # running, otherwise a --plugin-dir dev load verifies with the installed cache's guard.
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }

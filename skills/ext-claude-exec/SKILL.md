@@ -46,7 +46,7 @@ The caller must provide:
   `zai/glm`, `ollama/kimi`, `alibaba/qwen`. When `HOST_CLAUDE=1`, this is a
   `claude.models` alias with no slash (`opus`, `fable`). Orchestrators that
   selected a catalog entry always pass MODEL. Omit it only for the CLI default
-  (empty catalog → one run without `-m`).
+  (empty catalog → one run without `--model`).
 
 Optional:
 - **TASK_NAME** — short name for log dirs (default: "task")
@@ -55,7 +55,7 @@ Optional:
 - **HOST_CLAUDE** — `1` = official `claude login`. MODEL is a `claude.models` alias
   with no slash. Skip `config-loader.sh export` and token/ollama prechecks; source
   `host-claude-env.sh`; run dir `runs/claude/<alias>/` (or `runs/claude/_default/`
-  when MODEL is omitted). Pass `-m "$MODEL"` only when MODEL is non-empty.
+  when MODEL is omitted). Pass `--model "$MODEL"` only when MODEL is non-empty.
 
 ## Template substitution convention
 
@@ -83,6 +83,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -123,6 +124,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -222,6 +224,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -233,21 +236,23 @@ PLUGIN_DATA="$("$LOADER" data-dir)"
 if [ "${HOST_CLAUDE:-}" = "1" ]; then
     # MODEL is unvalidated on this path — the provider branch below gets its check from
     # `"$LOADER" export`, which HOST_CLAUDE skips. It becomes a path component two lines
-    # down and a `claude -p -m` argument, so reject the two spellings that are wrong by
+    # down and a `claude -p --model` argument, so reject the two spellings that are wrong by
     # construction rather than by catalog: a slash (that is ext-claude's <provider>/<short>,
     # which would silently create a depth-3 run dir) and any `..`, `-` or `.` lead (path
     # traversal out of the data dir, or a value the CLI reads as a flag). grok-exec runs the
     # same guard at skills/grok-exec/SKILL.md. The remaining charset question — claude.models
     # is validated with IDENT_RE, which admits `:`/`@` that watch-runs.sh and
     # verify-delegation.sh both reject — is deliberately NOT decided here.
-    case "${MODEL:-}" in
-        */*)      echo "STOP: MODEL '$MODEL' contains a slash — that is ext-claude's <provider>/<short> spelling; HOST_CLAUDE takes a bare claude.models alias (e.g. opus)" >&2; exit 1 ;;
-        .*|-*)    echo "STOP: MODEL '$MODEL' must start with a letter or digit" >&2; exit 1 ;;
-    esac
+    # Watch-runs and verify-delegation accept [A-Za-z0-9][A-Za-z0-9._-]* only
+    # (`:`/`@` in claude.models IDENT_RE would mkdir a dir the guard then refuses).
+    if [ -n "${MODEL:-}" ] && ! printf '%s' "$MODEL" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+        echo "STOP: MODEL '$MODEL' must match [A-Za-z0-9][A-Za-z0-9._-]* (HOST_CLAUDE alias, e.g. opus)" >&2
+        exit 1
+    fi
     # Do not split PROVIDER/SHORT. MODEL is a claude.models alias (no slash).
     # Empty MODEL (CLI default / empty catalog): `runs/claude/default/` is forbidden —
     # "default" looks like a catalog alias. Use `_default` so the watcher roster for a
-    # fallback reviewer is `claude/_default`. Spec: empty catalog → one run without `-m`.
+    # fallback reviewer is `claude/_default`. Spec: empty catalog → one run without `--model`.
     # Orchestrators that selected a catalog entry always pass MODEL.
     WORK_DIR="$PLUGIN_DATA/runs/claude/${MODEL:-_default}/${TIMESTAMP}-${TASK_NAME}"
 else
@@ -261,7 +266,7 @@ echo "$TASK_NAME" > "$WORK_DIR/.task_name"
 # boundary, so shared/watch-runs.sh and shared/verify-delegation.sh can tell this run from one
 # a concurrent orchestration started under the same engine/model in the same data dir.
 # Unconditional: an empty value writes an empty line, which both readers treat as unstamped.
-printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-}" > "$WORK_DIR/.session_id"
+printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" > "$WORK_DIR/.session_id"
 
 cat > "$WORK_DIR/prompt.md" << '__PROMPT_BOUND_a8f7e2c4__'
 {PROMPT}
@@ -295,6 +300,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -353,9 +359,9 @@ PIPELINE_RC=0
 # This restores parity with the other two engines, which have carried an equivalent since
 # the first commit: codex `--dangerously-bypass-approvals-and-sandbox`, gemini
 # `--approval-mode yolo`. ext-claude was the only path that never had one.
-# HOST_CLAUDE=1: do not pass -m when MODEL is empty.
+# HOST_CLAUDE=1: do not pass --model when MODEL is empty.
 if [ "${HOST_CLAUDE:-}" = "1" ] && [ -n "$MODEL" ]; then
-  { timeout "$SINGLE_RUN" claude -p -m "$MODEL" --permission-mode bypassPermissions --output-format stream-json < "$WORK_DIR/prompt.md" 2>"$WORK_DIR/stderr.txt" | \
+  { timeout "$SINGLE_RUN" claude -p --model "$MODEL" --permission-mode bypassPermissions --output-format stream-json < "$WORK_DIR/prompt.md" 2>"$WORK_DIR/stderr.txt" | \
     "$SKILL_DIR/progress-monitor.sh" "$WORK_DIR" "$MODEL" ; } || PIPELINE_RC=$?
 else
   { timeout "$SINGLE_RUN" claude -p --permission-mode bypassPermissions --output-format stream-json < "$WORK_DIR/prompt.md" 2>"$WORK_DIR/stderr.txt" | \
@@ -421,6 +427,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -477,7 +484,7 @@ unset CLAUDECODE
 # this supervised branch, so a flag added only to the default pipeline above would fix the
 # one-off interactive run and leave every actual review confined. The flag cannot be moved
 # into a comment inside the `env` block below: the block is one continued line.
-# HOST_CLAUDE=1: do not pass -m when MODEL is empty. Same watchdog wrapper as the provider path.
+# HOST_CLAUDE=1: do not pass --model when MODEL is empty. Same watchdog wrapper as the provider path.
 WATCHDOG_RC=0
 if [ "${HOST_CLAUDE:-}" = "1" ] && [ -n "$MODEL" ]; then
 { env \
@@ -488,7 +495,7 @@ if [ "${HOST_CLAUDE:-}" = "1" ] && [ -n "$MODEL" ]; then
     GLOBAL_TIMEOUT="$GLOBAL" \
     STREAM_FILE_NAME=raw.jsonl \
     "$WATCHDOG" -- \
-      timeout "$SINGLE_RUN" stdbuf -oL -eL claude -p -m "$MODEL" --permission-mode bypassPermissions --output-format stream-json \
+      timeout "$SINGLE_RUN" stdbuf -oL -eL claude -p --model "$MODEL" --permission-mode bypassPermissions --output-format stream-json \
   || WATCHDOG_RC=$?; }
 else
 { env \
@@ -585,6 +592,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -611,7 +619,7 @@ fi
 | Flag | Purpose |
 |------|---------|
 | `-p` | Headless (print) mode — no interactive session, prompt arrives on stdin |
-| `-m <alias>` | HOST_CLAUDE=1 only, and only when MODEL is non-empty. Empty catalog → omit `-m` (CLI default). Provider path never passes `-m`; it sets `ANTHROPIC_MODEL` via export instead. |
+| `--model <alias>` | HOST_CLAUDE=1 only, and only when MODEL is non-empty. Empty catalog → omit `-m` (CLI default). Provider path never passes `-m`; it sets `ANTHROPIC_MODEL` via export instead. |
 | `--permission-mode bypassPermissions` | Skip every permission check, **including the confinement to the launch directory**. Not optional: under `-p` nobody can answer a permission prompt, so without it every access outside the cwd is auto-denied and the reviewer silently loses the sibling repositories it needs to check an API signature against real source — the review degrades to guesswork instead of failing. `--add-dir` is NOT needed alongside it (the bypass lifts the directory confinement too). Parity with codex `--dangerously-bypass-approvals-and-sandbox` and gemini `--approval-mode yolo`; `--dangerously-skip-permissions` was measured equivalent and is spelled this way to match the mode vocabulary the other engines use. |
 | `--output-format stream-json` | Emit JSONL events, consumed by `progress-monitor.sh` (default mode), `extract-result.py` (supervised) and `shared/stream-json-report.sh` (BOTH modes — default renders from `log.jsonl`, supervised from `raw.jsonl`) |
 | `timeout $SINGLE_RUN` | Per-run limit from the `runtime` timeouts in config.yaml (default 1800s). HOST_CLAUDE=1 reads them via `get-runtime` JSON, not from export. |
@@ -641,6 +649,6 @@ fi
 - [ ] Provider path: config-loader.sh exported env successfully; token/daemon precheck OK (by kind)
 - [ ] HOST_CLAUDE=1: skipped export, sourced `host-claude-env.sh`, timeouts from `get-runtime`
 - [ ] Prompt saved to `prompt.md`; HOST_CLAUDE=1 work dir is `runs/claude/<alias>/` (or `_default`)
-- [ ] `claude -p` executed (default or supervised); HOST_CLAUDE=1 passed `-m` only when MODEL is set
+- [ ] `claude -p` executed (default or supervised); HOST_CLAUDE=1 passed `--model` only when MODEL is set
 - [ ] `output.txt` extracted
 - [ ] `report.md` generated

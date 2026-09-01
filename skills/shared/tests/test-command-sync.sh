@@ -374,15 +374,22 @@ assert_eq "the base-branch prefix rule names both exceptions, not grok alone" "0
 assert_eq "no one-line 'MODEL=<id> Review …' form left to be prefixed" "0" \
     "$(grep -c 'MODEL=<id> Review the changes' "$MESH_REVIEW")"
 
-# Task 9: dispatch-type facts. Presence floors, never exact counts — the same reason
-# the rest of Test 6 uses assert_ge: a phrase may appear in the table, the wait
-# paragraph, and a worked example. Absence of explore / INLINE / the never-invoked
-# sentence is the defect this branch's review would otherwise miss identically in
-# both files.
-assert_ge "mesh-review Grok native uses explore" "1" \
+# Task 9 / Grok 1.0.13 smoke: native reviewers need shell (`git diff`, tests).
+# Built-in `explore` on this host only has read_file/list_dir/grep — no
+# run_terminal_command — so dispatch is general-purpose. The child must still
+# be told not to edit (that type can write). Presence floors, never exact counts.
+assert_eq "mesh-review Grok native does not use explore" "0" \
     "$(grep -cE 'subagent_type: "?explore"?' "$MESH_REVIEW")"
-assert_ge "design review Grok native uses explore" "1" \
+assert_eq "design review Grok native does not use explore" "0" \
     "$(grep -cE 'subagent_type: "?explore"?' "$DESIGN_SKILL")"
+assert_ge "mesh-review Grok native uses general-purpose" "1" \
+    "$(grep -cE 'subagent_type: "?general-purpose"?' "$MESH_REVIEW")"
+assert_ge "design review Grok native uses general-purpose" "1" \
+    "$(grep -cE 'subagent_type: "?general-purpose"?' "$DESIGN_SKILL")"
+assert_ge "mesh-review native prompt forbids edits" "1" \
+    "$(grep -c 'Do not edit files' "$MESH_REVIEW")"
+assert_ge "design review native prompt forbids edits" "1" \
+    "$(grep -c 'Do not edit files' "$DESIGN_SKILL")"
 assert_ge "mesh-review native is INLINE in 6.0" "1" \
     "$(grep -c 'native:<slug> INLINE' "$MESH_REVIEW")"
 for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do

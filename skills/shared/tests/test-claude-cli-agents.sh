@@ -82,12 +82,35 @@ for s in $SKILLS_WITH_RESOLVER; do
     n_resolve="$(grep -c 'bash "$SKILL_BASE/../shared/resolve-plugin-root.sh"' "$f" || true)"
     n_if="$(grep -c 'if \[ -n "\$SKILL_BASE" \]; then' "$f" || true)"
     n_find="$(grep -c 'claude-mesh\*/skills/shared/config-loader.sh' "$f" || true)"
+    n_installed="$(grep -c 'installed-plugins' "$f" || true)"
     if [ "$n_resolve" != "$n_if" ] || [ "$n_find" -lt "$n_if" ]; then
         mismatch=$((mismatch+1))
         echo "    mismatch $s: resolve=$n_resolve if=$n_if find=$n_find"
     fi
+    if [ "$n_installed" -lt "$n_if" ]; then
+        mismatch=$((mismatch+1))
+        echo "    mismatch $s: installed-plugins=$n_installed if=$n_if"
+    fi
 done
 assert_eq "every resolver fence has empty-SKILL_BASE else-branch" "0" "$mismatch"
+
+echo ""
+echo "=== Test: HOST_CLAUDE claude -p uses --model, not -m ==="
+# Measured 2026-09-01 on Claude Code 2.1.257: `claude -p -m fable` →
+# `error: unknown option '-m'`. The long option is `--model`.
+n_old="$(grep -c 'claude -p -m' "$REPO/skills/ext-claude-exec/SKILL.md" || true)"
+n_new="$(grep -c 'claude -p --model' "$REPO/skills/ext-claude-exec/SKILL.md" || true)"
+assert_eq "no HOST_CLAUDE invocation still passes -m" "0" "$n_old"
+assert_ge "HOST_CLAUDE invocations pass --model" "2" "$n_new"
+
+echo ""
+echo "=== Test: HOST_CLAUDE MODEL charset matches watch-runs / verify-delegation ==="
+# claude.models admits :/@ via IDENT_RE; the watcher and guard do not. A HOST_CLAUDE
+# alias with those characters created a run dir the guard then refused as usage error.
+assert_ge "HOST_CLAUDE path rejects :/@ before mkdir" "1" \
+    "$(grep -cE 'A-Za-z0-9\]\[A-Za-z0-9\._-\]\*' "$REPO/skills/ext-claude-exec/SKILL.md")"
+assert_ge "session stamp falls back to GROK_SESSION_ID" "1" \
+    "$(grep -c 'GROK_SESSION_ID' "$REPO/skills/ext-claude-exec/SKILL.md")"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="

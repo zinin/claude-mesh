@@ -90,9 +90,9 @@ wd_log() { printf '{"ts":"x","event":"cleanup","attempt":1,"details":{"exit_code
 run_as() {
     local sid="$1"; shift
     if [ "$sid" = "-" ]; then
-        OUT="$(env -u CLAUDE_CODE_SESSION_ID timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
+        OUT="$(env -u CLAUDE_CODE_SESSION_ID -u GROK_SESSION_ID timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
     else
-        OUT="$(env "CLAUDE_CODE_SESSION_ID=$sid" timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
+        OUT="$(env -u GROK_SESSION_ID "CLAUDE_CODE_SESSION_ID=$sid" timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
     fi
     REASON="$(printf '%s\n' "$OUT" | head -1)"; ERR="$(cat "$ERRF")"
 }

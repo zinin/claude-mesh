@@ -70,7 +70,7 @@ ROSTER=()
 # orchestrator's value), so a run dir stamped by the *-exec skill at creation carries the
 # session that dispatched it. Two orchestrations of one engine/model share the global data
 # dir, and without this the newest dir wins even when it belongs to someone else's dispatch.
-SELF_SID="${CLAUDE_CODE_SESSION_ID:-}"
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}"
 
 is_pos_int() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 die() { echo "watch-runs: $1" >&2; exit 64; }

@@ -78,6 +78,20 @@ assert_eq "…and .grok is used once .claude has nothing" \
     "$BOTH_HOME/.grok/plugins/cache/z/claude-mesh/9.9.9" "$GOT"
 rm -rf "$BOTH_HOME"
 
+# 5d. Unpublished Grok install (`~/.grok/installed-plugins/claude-mesh-<hash>`)
+# wins over a stale Claude-compat cache. Measured 2026-09-01: both trees exist,
+# find ~/.claude/plugins | sort -V | tail -1 picked 0.12.0, and HOST_CLAUDE
+# wrappers ran the old loader. The snapshot is the copy grok inspect loaded.
+INST_HOME="$(mktemp -d)"
+mkdir -p "$INST_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0/skills/shared" \
+         "$INST_HOME/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared"
+touch "$INST_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0/skills/shared/config-loader.sh" \
+      "$INST_HOME/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared/config-loader.sh"
+GOT=$(HOME="$INST_HOME" GROK_PLUGIN_ROOT= CLAUDE_PLUGIN_ROOT= SKILL_BASE= "$SCRIPT")
+assert_eq "installed-plugins wins over a stale .claude cache" \
+    "$INST_HOME/.grok/installed-plugins/claude-mesh-aabbccdd" "$GOT"
+rm -rf "$INST_HOME"
+
 rm -rf "$EMPTY_DIR" "$FAKE_HOME"
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

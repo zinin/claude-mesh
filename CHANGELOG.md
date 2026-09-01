@@ -5,7 +5,14 @@ All notable changes to claude-mesh will be documented here.
 ## [Unreleased]
 
 ### Added
-- **Host-aware mesh on Grok Build.** `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `explore` reviewers with `model:` slugs from `grok models` (`defaults.*.native` / `native_models`). Wrappers still run when selected. On Grok, `claude` is the Claude Code CLI (`claude -p`, `runs/claude/<alias>/`).
+- **Host-aware mesh on Grok Build.** `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `general-purpose` reviewers with `model:` slugs from `grok models` (`builtin: native` / `native_models`). Wrappers still run when selected. On Grok, `claude` is the Claude Code CLI (`claude -p --model`, `runs/claude/<alias>/`).
+
+### Fixed
+- **Grok native reviewers had no shell.** `explore` on Grok 1.0.13 is `read_file`/`list_dir`/`grep` only, so `git diff` never ran. Native dispatch is `general-purpose` (do not edit files).
+- **Unpublished Grok install lost to the Claude cache.** `resolve-plugin-root.sh` and every skill/command else-branch now search `~/.grok/installed-plugins` before `~/.claude/plugins`.
+- **HOST_CLAUDE `claude -p -m` is not a flag** on Claude Code 2.1.257. Pass `--model`.
+- **Empty `.session_id` on Grok.** Stamp and match `GROK_SESSION_ID` when `CLAUDE_CODE_SESSION_ID` is unset.
+- Preflight no longer marks a zero-slug `grok models` listing as `OK` (and no longer leaks a temp file).
 
 ### Changed
 - **Grok-only break:** a 0.12.0 preset with `builtin: [claude, …]` and no `native` no longer means "review on the host model". It means `claude -p`. Claude Code behaviour for that preset is unchanged.

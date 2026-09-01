@@ -26,6 +26,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -280,6 +281,7 @@ else
   for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
     [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
   done
+  [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -677,7 +679,7 @@ Launch **all selected** agents **in parallel** in a single message:
 
 **HOST=claude-code:** for each selected agent, use Task tool (plugin `subagent_type`s are `claude-mesh:`-namespaced — verified on CC 2.1.156; bare names do not resolve). **Exception: `general-purpose` is a BUILT-IN agent type and is correctly bare** — never prefix it with `claude-mesh:`. The rule above is about *plugin* agents.
 
-**HOST=grok:** `spawn_subagent`, each `background: true`. Do not set `isolation: worktree`. Plugin types stay `claude-mesh:`-namespaced. Native uses the builtin `explore` type (bare). Do **not** pass `runtime.dispatch_model` to `spawn_subagent` unless that value is in `HOST_MODELS`. Never pass `opus` as spawn `model:`.
+**HOST=grok:** `spawn_subagent`, each `background: true`. Do not set `isolation: worktree`. Plugin types stay `claude-mesh:`-namespaced. Native uses the builtin `general-purpose` type (bare) — Grok 1.0.13 `explore` has no shell. Do **not** pass `runtime.dispatch_model` to `spawn_subagent` unless that value is in `HOST_MODELS`. Never pass `opus` as spawn `model:`.
 
 **Dispatch model (HOST=claude-code):** if `DISPATCH_MODEL` (from Step 5.0) is non-empty, add `model: "<DISPATCH_MODEL>"` to every Task dispatch in this step. If it is empty, omit `model:` so each executor inherits this session's model.
 
@@ -702,15 +704,15 @@ Task tool:
 
 **If a HOST=claude-code claude reviewer's Task errors** — most likely a `claude_models` entry this Claude Code build does not accept — treat it exactly like a failed executor per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Never silently re-dispatch it on a different model: a failed dispatch is the only signal that a model name is wrong (design §13), and substituting another model hides it while pretending the cross-check happened.
 
-**HOST=grok — native:** the composed Step 4 prompt + tooling constraint. `subagent_type: "explore"`, `background: true`, `model: "<slug>"`, `description: "Design review via native:<slug> (iter N)"`. **One `explore` per entry of `SELECTED_NATIVE_MODELS`**. If the list is empty and native was selected (session-model fallback): one `explore`, **omit** `model:`. Native writes no `runs/native/…` and is not on the watcher roster. The result is the child's text — `verify-delegation.sh is never invoked for native`. Do not inline the documents (the prompt already names them). A native spawn the host rejects is a failed reviewer: record it, do not substitute another slug.
+**HOST=grok — native:** the composed Step 4 prompt + tooling constraint + **Do not edit files.** `subagent_type: "general-purpose"`, `background: true`, `model: "<slug>"`, `description: "Design review via native:<slug> (iter N)"`. **One `general-purpose` per entry of `SELECTED_NATIVE_MODELS`**. If the list is empty and native was selected (session-model fallback): one `general-purpose`, **omit** `model:`. Native writes no `runs/native/…` and is not on the watcher roster. The result is the child's text — `verify-delegation.sh is never invoked for native`. Do not inline the documents (the prompt already names them). A native spawn the host rejects is a failed reviewer: record it, do not substitute another slug.
 
 ```
 spawn_subagent:
-  subagent_type: "explore"
+  subagent_type: "general-purpose"
   background: true
   model: "<slug>"                      # omit when the list is empty
   description: "Design review via native:<slug> (iter N)"
-  prompt: "[composed prompt with PREVIOUS_DECISIONS, plus the tooling constraint]"
+  prompt: "[composed prompt with PREVIOUS_DECISIONS, plus Do not edit files and the tooling constraint]"
 ```
 
 **HOST=grok — `claude`:** `claude-mesh:claude-executor` (never `general-purpose`, never `claude-code-reviewer`). `MODEL=<alias>` on the first line, `HOST_CLAUDE=1` forwarded through the executor (the agent always sends that named param; it is not a spawn field), `SUPERVISED_MODE: shell`. Name them `claude:<alias>` (`claude:opus`). Roster `claude/<alias>` (`claude/opus`). If `claude` selected and the list is empty: one executor, **no MODEL line** (CLI default); roster `claude/_default`. Do not pass spawn `model: opus`.
@@ -771,7 +773,7 @@ spawn_subagent, background: true:  # HOST=grok
 
 `<model>` is the bare catalog id (`grok-4.6`), never a `<provider>/<short>` pair like ext-claude's. Three spellings are in play here and none of them is interchangeable: the reviewer name and this `description` use `grok:<model>` (a COLON), the watcher roster below uses `grok/<model>` (a SLASH), and the run dir on disk is `runs/grok/<model>/`.
 
-**Grok-CLI executor dispatches and HOST=grok native dispatches carry the tooling constraint in their PROMPT.** In `/mesh-review` the `grok-code-review` skill appends that paragraph itself; design review bypasses that skill entirely and hands the executor (or native `explore`) its own Step 4 prompt, so nothing adds the line unless you do. Grok reads `~/.claude/CLAUDE.md` and every installed claude-* plugin — `claude-mesh:mesh-design-review` is among the skills it can see — so without the paragraph it can answer a review request by launching an orchestration of its own, writing run dirs this session never dispatched. Append it verbatim as the LAST section of the composed prompt, for grok-executor **and** native:
+**Grok-CLI executor dispatches and HOST=grok native dispatches carry the tooling constraint in their PROMPT.** In `/mesh-review` the `grok-code-review` skill appends that paragraph itself; design review bypasses that skill entirely and hands the executor (or native `general-purpose`) its own Step 4 prompt, so nothing adds the line unless you do. Grok reads `~/.claude/CLAUDE.md` and every installed claude-* plugin — `claude-mesh:mesh-design-review` is among the skills it can see — so without the paragraph it can answer a review request by launching an orchestration of its own, writing run dirs this session never dispatched. Append it verbatim as the LAST section of the composed prompt, for grok-executor **and** native:
 
 ```markdown
 ## Tooling constraint
@@ -814,6 +816,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
      for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
        [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
      done
+     [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
@@ -856,6 +859,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
      for _R in "${CLAUDE_PLUGIN_ROOT:-}" "${GROK_PLUGIN_ROOT:-}"; do
        [ -n "$_R" ] && [ -f "$_R/skills/shared/config-loader.sh" ] && { _LOADER="$_R/skills/shared/config-loader.sh"; break; }
      done
+     [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
