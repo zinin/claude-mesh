@@ -410,6 +410,7 @@ probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
 # that same capture instead of reaching the report.
 CLI_STATUS=""
 cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_section flag, $5 = probe command (optional)
+                        # $6 = file to keep the probe's stdout in (optional, only with $5)
                         # $5 is deliberately UNQUOTED where it is EXPANDED — the `timeout` line
                         # inside the probe branch below, not the cli_row call site, which quotes
                         # it like any other argument. It must split into argv there
@@ -469,7 +470,12 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
             echo "probing $1 (\`$5\`)…" >&2
             set -f                                   # see the contract note on $5 above
             # shellcheck disable=SC2086
-            timeout "$CLI_TIMEOUT" $5 >/dev/null 2>&1; rc=$?
+            # $6 keeps the probe's stdout so a caller does not have to run the same command
+            # a second time for its output. Without it the grok CLI was invoked twice per
+            # preflight — health probe, then listing — costing two authenticated round-trips
+            # and up to 2x CLI_TIMEOUT, and leaving two rows that describe ONE fact from two
+            # separate observations, free to disagree if a login expires between them.
+            timeout "$CLI_TIMEOUT" $5 >"${6:-/dev/null}" 2>/dev/null; rc=$?
             set +f                                   # restored on BOTH paths, before any branch
             if [ "$rc" -eq 0 ]; then
                 CLI_STATUS="OK"
@@ -506,38 +512,61 @@ cli_row codex  "codex"  "https://api.openai.com/v1/models"           "$HAS_CODEX
 cli_row gemini "gemini" "https://generativelanguage.googleapis.com/" "$HAS_GEMINI"; GEMINI_STATUS="$CLI_STATUS"
 # The URL argument is unused when a command probe is given; pass the CLI's own docs host so the
 # row's shape stays uniform and a future reader can see what an HTTP fallback would target.
-cli_row grok   "grok"   "https://api.x.ai/v1/models"                 "$HAS_GROK" "grok models"; GROK_STATUS="$CLI_STATUS"
+GROK_LISTING=""
+mktemp_or_fail >/dev/null 2>&1 && GROK_LISTING="$(mktemp_or_fail 2>/dev/null || true)"
+cli_row grok   "grok"   "https://api.x.ai/v1/models"                 "$HAS_GROK" "grok models" "$GROK_LISTING"; GROK_STATUS="$CLI_STATUS"
 
 # native-models: listing only. Never infer we are inside Grok Build.
+# Reuses the grok row's probe output whenever that probe actually ran. `grok models` is a
+# network+login round-trip; calling it twice cost two authenticated calls and up to 2x
+# CLI_TIMEOUT, and — the part that misleads rather than merely costs — made these two rows two
+# independent observations of ONE fact, free to disagree when a login expires between them.
+#
+# It does NOT simply follow GROK_STATUS. `native` and the `grok:` config section are separate
+# things by design: native_models needs no grok: section at all (it is charset-validated on its
+# own). So when the grok row returned WITHOUT probing for a config reason — no section, or an
+# invalid one — this must still list the host's slugs itself. Only a probe that ran and failed
+# (NO-NETWORK) or was suppressed (UNKNOWN: SKIP_NET / no timeout) means "do not ask again".
 NM_STATUS=SKIP
-NM_DETAIL="grok models did not run"
 NM_LIST=""
-if command -v grok >/dev/null 2>&1; then
-    # Listing is a network+login round-trip, same as the grok CLI probe. Skip it
-    # when the flag says so, when timeout(1) is missing (otherwise bash prints
-    # "command not found" on the chatter stream), and when mktemp cannot give us
-    # a file — none of those may take the probe down.
-    if [ "$SKIP_NET" = 1 ]; then
-        NM_DETAIL="skipped by PREFLIGHT_SKIP_NETWORK"
-    elif ! command -v timeout >/dev/null 2>&1; then
-        NM_DETAIL="no timeout(1) — grok models not run (brew install coreutils)"
-    else
-        GM=""
-        if ! GM="$(mktemp_or_fail)"; then
-            NM_DETAIL="cannot create a temp file — grok models not run"
+_nm_from_listing() {        # $1 = file holding `grok models` output
+    NM_LIST=$(bash "$SCRIPT_DIR/list-host-models.sh" --from-file "$1" | tr '\n' ' ')
+    NM_STATUS=OK
+    NM_DETAIL="${NM_LIST:-empty listing}"
+}
+case "$GROK_STATUS" in
+    OK)
+        if [ -n "$GROK_LISTING" ] && [ -s "$GROK_LISTING" ]; then
+            _nm_from_listing "$GROK_LISTING"
         else
-            if timeout "${CLI_TIMEOUT}" grok models >"$GM" 2>/dev/null; then
-                NM_LIST=$(bash "$SCRIPT_DIR/list-host-models.sh" --from-file "$GM" | tr '\n' ' ')
-                NM_STATUS=OK
-                NM_DETAIL="${NM_LIST:-empty listing}"
+            NM_DETAIL="grok models answered but its output was not captured"
+        fi ;;
+    UNKNOWN)    NM_DETAIL="grok models not run — see the grok row" ;;
+    NO-NETWORK) NM_DETAIL="grok models failed or timed out — see the grok row" ;;
+    *)
+        # MISSING / INVALID / SKIPPED: the grok ROW is about the grok: section, not about
+        # native. Probe here, under the same discipline the row uses — nothing may take it down.
+        if ! command -v grok >/dev/null 2>&1; then
+            NM_DETAIL="no grok CLI on PATH — nothing to list"
+        elif [ "$SKIP_NET" = 1 ]; then
+            NM_DETAIL="skipped by PREFLIGHT_SKIP_NETWORK"
+        elif ! command -v timeout >/dev/null 2>&1; then
+            NM_DETAIL="no timeout(1) — grok models not run (brew install coreutils)"
+        else
+            _GM=""
+            if ! _GM="$(mktemp_or_fail)"; then
+                NM_DETAIL="cannot create a temp file — grok models not run"
             else
-                NM_STATUS=SKIP
-                NM_DETAIL="grok models failed or timed out"
+                if timeout "${CLI_TIMEOUT}" grok models >"$_GM" 2>/dev/null; then
+                    _nm_from_listing "$_GM"
+                else
+                    NM_DETAIL="grok models failed or timed out"
+                fi
+                rm -f "$_GM"
             fi
-            rm -f "$GM"
-        fi
-    fi
-fi
+        fi ;;
+esac
+[ -z "$GROK_LISTING" ] || rm -f "$GROK_LISTING"
 row native-models "$NM_STATUS" "$NM_DETAIL"
 
 if command -v claude >/dev/null 2>&1; then

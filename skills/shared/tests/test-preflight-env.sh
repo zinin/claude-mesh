@@ -593,9 +593,13 @@ assert_match "…including the second one"     "grok:grok-4.5" "$OUT"
 # empty: an unset GROK_SHIM_LOG, a shim that never records, or a PATH that finds a different
 # grok would all satisfy "empty" for the wrong reason. Here the identical plumbing must record
 # exactly one `models` call, so "empty" there can only mean the probe was not run.
-assert_eq   "…and the CLI really was invoked as \`grok models\`" \
-    "$(printf 'models\nmodels')" "$(cat "$GROK_LOG")"
-assert_eq   "…and native-models is OK from the same listing" OK "$(field native-models "$OUT")"
+# ONE call, not two: the native-models row is derived from the health probe's captured
+# stdout rather than probing again. Two calls cost two authenticated round-trips and up to
+# 2x CLI_TIMEOUT, and made the two rows independent observations of one fact — free to
+# disagree if a login expired between them.
+assert_eq   "…and the CLI was invoked as \`grok models\` exactly ONCE" \
+    "models" "$(cat "$GROK_LOG")"
+assert_eq   "…and native-models is OK from that same single listing" OK "$(field native-models "$OUT")"
 assert_match "native listing reaches available as native:<slug>" \
     ", native:grok-4.6, " "$(avail_wrap "$OUT")"
 assert_match "…and grok:<slug> is a different reviewer" \
@@ -606,6 +610,10 @@ run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$
 assert_eq   "grok models fails -> NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
 assert_match "…and suggests logging in"       "grok login" "$OUT"
 assert_eq   "…and native-models is SKIP, not a crash" SKIP "$(field native-models "$OUT")"
+assert_match "…whose detail points at the grok row instead of a second probe" \
+    "see the grok row" "$OUT"
+assert_eq   "…and the CLI was NOT invoked a second time after the failure" \
+    "models" "$(cat "$GROK_LOG")"
 
 # A machine without python3 must not be told a grok reviewer is available. grok-exec STOPs on
 # shared/extract-result.py — the only one of the three CLI engines that does — while `bc` only
@@ -643,8 +651,10 @@ for _bad in --help abc 0; do
     run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
               GROK_SHIM_FAIL=1 GROK_SHIM_LOG="$GROK_LOG" PREFLIGHT_CLI_TIMEOUT="$_bad"
     assert_eq "unusable PREFLIGHT_CLI_TIMEOUT=$_bad -> still NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
+    # ONE call: the probe ran (that is what this distinguishes from "never ran"), and a probe
+    # that ran and failed means native-models does not ask the CLI a second time.
     assert_eq "…and the probe really was run under $_bad" \
-        "$(printf 'models\nmodels')" "$(cat "$GROK_LOG")"
+        "models" "$(cat "$GROK_LOG")"
 done
 unset _bad
 
