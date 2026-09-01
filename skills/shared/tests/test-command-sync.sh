@@ -162,11 +162,17 @@ assert_nonempty "design PREFLIGHT extracted"  "$DESIGN_PREFLIGHT"
 assert_nonempty "code PREFLIGHT extracted"    "$CODE_PREFLIGHT"
 assert_eq "design DO NOT is 7 lines"      "7"  "$(printf '%s\n' "$DESIGN_DONOT" | grep -c '')"
 assert_eq "code DO NOT is 7 lines"        "7"  "$(printf '%s\n' "$CODE_DONOT" | grep -c '')"
-# 18, not 17: the preflight resolver searches ~/.claude/plugins and ~/.grok/plugins in
-# priority order — two find lines, never one find over both roots (`sort -V` compares whole
-# paths and .claude < .grok, so a single find picked the .grok copy whatever its version).
-assert_eq "design PREFLIGHT is 18 lines"  "18" "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c '')"
-assert_eq "code PREFLIGHT is 18 lines"    "18" "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c '')"
+# 19, not 18: installed-plugins first, then ~/.claude/plugins, then ~/.grok/plugins —
+# three find lines, never one find over both roots (`sort -V` compares whole paths
+# and .claude < .grok, so a single find picked the .grok copy whatever its version).
+# installed-plugins is required first on Grok unpublished installs (same hole as the
+# review→exec Read path).
+assert_eq "design PREFLIGHT is 19 lines"  "19" "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c '')"
+assert_eq "code PREFLIGHT is 19 lines"    "19" "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c '')"
+assert_ge "design PREFLIGHT searches installed-plugins" "1" \
+    "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c 'installed-plugins' || true)"
+assert_ge "code PREFLIGHT searches installed-plugins" "1" \
+    "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c 'installed-plugins' || true)"
 assert_eq "design DO NOT starts at its heading" "## DO NOT" "$(printf '%s\n' "$DESIGN_DONOT" | head -1)"
 assert_eq "code DO NOT starts at its heading"   "## DO NOT" "$(printf '%s\n' "$CODE_DONOT" | head -1)"
 # The two blocks of the SAME file must come out different, or the extractor is returning

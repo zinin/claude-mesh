@@ -600,6 +600,36 @@ assert_eq "verdict REAL (not the newer foreign BROKEN run)" "REAL" "$VERDICT"
 assert_eq "exit 0" "0" "$RC"
 rm -rf "$TDIR"
 
+# Grok overwrites GROK_SESSION_ID in wrapper children (measured 2026-09-01: parent
+# 01a05eb7-…, run stamped 01a05ec0-…). The orchestrator must still recognise that run.
+echo "=== Test: run identity — GROK parent accepts a child-stamped run via subagent meta ==="
+TDIR=$(mktemp -d)
+GH=$(mktemp -d)
+mkdir -p "$GH/sessions/cwd/subagents/grok-child-1"
+printf '%s\n' '{"parent_session_id": "grok-parent-1", "child_session_id": "grok-child-1"}' \
+    > "$GH/sessions/cwd/subagents/grok-child-1/meta.json"
+mine=$(mk_run "$TDIR/runs/claude/opus" 2026-09-01-23-58-07-206201-review)
+mk_output "$mine/output.txt" 'real review'; ln -s attempt-1 "$mine/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":44}' > "$mine/raw.jsonl"
+sid_stamp "$mine" grok-child-1
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict REAL when meta names this session as parent" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+# A child of someone else stays foreign even when a meta file exists.
+printf '%s\n' '{"parent_session_id": "other-parent", "child_session_id": "grok-child-1"}' \
+    > "$GH/sessions/cwd/subagents/grok-child-1/meta.json"
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict FLIP for a child of another parent" "FLIP" "$VERDICT"
+assert_eq "exit 3" "3" "$RC"
+# No meta at all: same FLIP as a stranger stamp (the 8571263 fallback does not apply).
+rm -rf "$GH/sessions"
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict FLIP without subagent meta" "FLIP" "$VERDICT"
+rm -rf "$TDIR" "$GH"
+
 # --- the dispatch window is the NAME window, the same one watch-runs.sh uses ---------------
 # It used to be `find -newermt` — MODIFICATION time. A run dir created BEFORE the window but
 # still being written stayed eligible forever, so /mesh-review Step 6.4a, which stamps a fresh

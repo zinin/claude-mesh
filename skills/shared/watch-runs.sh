@@ -181,11 +181,28 @@ ROWS=""
 # is a run from a plugin version older than this stamp, a direct *-exec invocation, or a
 # harness that does not export the variable. Calling those foreign would resolve nothing and
 # report MISSING for a live run — the one thing this whole feature exists not to do.
+# Grok wrapper children overwrite GROK_SESSION_ID with their own session id
+# (measured 2026-09-01: parent 01a05eb7-…, run stamped 01a05ec0-…). Claude Code
+# inherits CLAUDE_CODE_SESSION_ID across the agent boundary; Grok does not inherit
+# the parent's GROK_SESSION_ID. A child-stamped run still belongs to this
+# orchestrator when Grok's subagent meta names SELF_SID as parent_session_id.
+# GROK_HOME overrides ~/.grok (Grok user guide). No matching meta → foreign.
+grok_child_of_self() {
+    local child="$1" grok_home meta
+    [ -n "$child" ] && [ -n "$SELF_SID" ] || return 1
+    [[ "$child" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    grok_home="${GROK_HOME:-$HOME/.grok}"
+    for meta in "$grok_home"/sessions/*/subagents/"$child"/meta.json; do
+        [ -f "$meta" ] || continue
+        grep -Fq "\"parent_session_id\": \"$SELF_SID\"" "$meta" && return 0
+    done
+    return 1
+}
 run_is_mine() {
     [ -n "$SELF_SID" ] || return 0
     local v=""
     [ -r "$1/.session_id" ] && IFS= read -r v < "$1/.session_id"
-    [ -z "$v" ] || [ "$v" = "$SELF_SID" ]
+    [ -z "$v" ] || [ "$v" = "$SELF_SID" ] || grok_child_of_self "$v"
 }
 
 # The newest run dir for a roster entry, at/after --since. Selection is by NAME, not mtime: on

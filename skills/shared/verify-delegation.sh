@@ -99,11 +99,31 @@ resolve_plugin_data() {
 # another. FAIL-OPEN: an unstamped dir is a legacy run, a direct *-exec invocation, or a
 # harness without the variable, and calling those foreign would drop a finished review.
 SELF_SID="${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}"
+# Grok wrapper children overwrite GROK_SESSION_ID with their own session id
+# (measured 2026-09-01: parent 01a05eb7-…, run stamped 01a05ec0-…). Claude Code
+# inherits CLAUDE_CODE_SESSION_ID across the agent boundary; Grok does not inherit
+# the parent's GROK_SESSION_ID. A child-stamped run still belongs to this
+# orchestrator when Grok's subagent meta names SELF_SID as parent_session_id.
+# GROK_HOME overrides ~/.grok (Grok user guide). No matching meta → foreign:
+# two concurrent orchestrations must not steal each other's dirs.
+# Mirrored byte-for-byte in watch-runs.sh — the two must agree on which run is
+# "the run", or the watcher reports DONE on one dir while this gate inspects another.
+grok_child_of_self() {
+    local child="$1" grok_home meta
+    [ -n "$child" ] && [ -n "$SELF_SID" ] || return 1
+    [[ "$child" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    grok_home="${GROK_HOME:-$HOME/.grok}"
+    for meta in "$grok_home"/sessions/*/subagents/"$child"/meta.json; do
+        [ -f "$meta" ] || continue
+        grep -Fq "\"parent_session_id\": \"$SELF_SID\"" "$meta" && return 0
+    done
+    return 1
+}
 run_is_mine() {
     [ -n "$SELF_SID" ] || return 0
     local v=""
     [ -r "$1/.session_id" ] && IFS= read -r v < "$1/.session_id"
-    [ -z "$v" ] || [ "$v" = "$SELF_SID" ]
+    [ -z "$v" ] || [ "$v" = "$SELF_SID" ] || grok_child_of_self "$v"
 }
 
 ENGINE="${1:-}"

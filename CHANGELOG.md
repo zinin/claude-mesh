@@ -12,6 +12,8 @@ All notable changes to claude-mesh will be documented here.
 - **Unpublished Grok install lost to the Claude cache.** `resolve-plugin-root.sh` and every skill/command else-branch now search `~/.grok/installed-plugins` before `~/.claude/plugins`.
 - **HOST_CLAUDE `claude -p -m` is not a flag** on Claude Code 2.1.257. Pass `--model`.
 - **Empty `.session_id` on Grok.** Stamp and match `GROK_SESSION_ID` when `CLAUDE_CODE_SESSION_ID` is unset.
+- **Grok wrapper `.session_id` is the child session, not the parent.** Wrapper bash sees its own `GROK_SESSION_ID`; `watch-runs` / `verify-delegation` run as the orchestrator. A child-stamped run is still this dispatch when Grok's subagent `meta.json` names the parent. Without that meta the stamp stays foreign.
+- **Review→exec Read on Grok opened the Claude cache.** The no-Skill-tool paragraph in the five `*-code-review` skills (and fresh-session preflight) now searches `~/.grok/installed-plugins` before `~/.claude/plugins`.
 - Preflight no longer marks a zero-slug `grok models` listing as `OK` (and no longer leaks a temp file).
 
 ### Changed

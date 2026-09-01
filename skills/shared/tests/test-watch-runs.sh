@@ -625,6 +625,24 @@ assert_match "row says the runs are someone else's" "belong to another session" 
 rm -rf "$TDIR"
 
 echo ""
+echo "Test 37c: Grok parent accepts a child-stamped run when subagent meta names it"
+TDIR="$(mktemp -d)"
+GH="$(mktemp -d)"
+mkdir -p "$GH/sessions/cwd/subagents/grok-child-1"
+printf '%s\n' '{"parent_session_id": "grok-parent-1", "child_session_id": "grok-child-1"}' \
+    > "$GH/sessions/cwd/subagents/grok-child-1/meta.json"
+mine=$(mk_run "$TDIR" codex -60 100002); sid_stamp "$mine" grok-child-1
+printf 'review' > "$mine/output.txt"; wd_log "$mine" 0
+OUT="$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    timeout 10 bash "$SCRIPT" --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex 2>"$ERRF")"
+RC=$?
+REASON="$(printf '%s\n' "$OUT" | head -1)"
+assert_eq "reason ALL_DONE (child stamp is this session's wrapper)" "ALL_DONE" "$REASON"
+assert_match "row is DONE" "DONE" "$(row codex)"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR" "$GH"
+
+echo ""
 echo "Test 37b: MISSING with no run dir at all carries no foreign-session note"
 TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs/codex"
 run_as sid-A --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" codex

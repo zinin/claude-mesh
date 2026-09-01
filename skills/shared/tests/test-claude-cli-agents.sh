@@ -113,5 +113,26 @@ assert_ge "session stamp falls back to GROK_SESSION_ID" "1" \
     "$(grep -c 'GROK_SESSION_ID' "$REPO/skills/ext-claude-exec/SKILL.md")"
 
 echo ""
+echo "=== Test: Grok Read of *-exec searches installed-plugins first ==="
+# Agent defs already find review SKILL.md under installed-plugins. The next hop —
+# review skill → exec SKILL.md — still opened ~/.claude/plugins first (measured
+# 2026-09-01: cache 0.12.0 has no HOST_CLAUDE). The no-Skill-tool paragraph must
+# name installed-plugins before .claude/plugins.
+REVIEW_SKILLS="claude-code-review ext-claude-code-review codex-code-review gemini-code-review grok-code-review"
+read_stale=0
+for s in $REVIEW_SKILLS; do
+    f="$REPO/skills/$s/SKILL.md"
+    para="$(awk '/If this host has no Skill tool/,/Following the skill/' "$f")"
+    # Byte offset, not line number: all three finds live on one continuation line.
+    inst_pos=$(printf '%s' "$para" | grep -bo 'installed-plugins' | head -1 | cut -d: -f1)
+    claude_pos=$(printf '%s' "$para" | grep -bo '\.claude/plugins' | head -1 | cut -d: -f1)
+    if [ -z "$inst_pos" ] || [ -z "$claude_pos" ] || [ "$inst_pos" -ge "$claude_pos" ]; then
+        read_stale=$((read_stale+1))
+        echo "    stale $s: installed-plugins pos=${inst_pos:-none} .claude pos=${claude_pos:-none}"
+    fi
+done
+assert_eq "every review→exec Read searches installed-plugins before .claude/plugins" "0" "$read_stale"
+
+echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
