@@ -149,8 +149,12 @@ case "$ENGINE" in
         case "$MODEL" in
             ''|'-') echo "verify-delegation: engine claude requires a model argument (e.g. opus), got '${MODEL:-}'" >&2; exit 1 ;;
             # Same charset as GROK_IDENT_RE in config-loader.sh, and for the same reason: this
-            # value becomes a path component. A config-sourced model cannot fail it — the loader
-            # already rejected anything else — but this script is also a CLI entry point and BOTH
+            # value becomes a path component. Unlike grok, a config-sourced model CAN fail it:
+            # claude.models is validated with the wider IDENT_RE ([A-Za-z0-9._:@-]), because its
+            # original role is a Task `model:` value on Claude Code, where it is never a path.
+            # skills/claude-code-review/SKILL.md rejects such an alias in its own preflight,
+            # before a run dir exists, so one reaching here means that gate was bypassed. Beyond
+            # that, this script is also a CLI entry point and BOTH
             # orchestrators TEMPLATE the call, so the spelling that actually arrives wrong is
             # ext-claude's <provider>/<short>. That resolved runs/claude/<provider>/<short>, a path
             # nothing ever writes, and was then reported as FLIP — "this reviewer never

@@ -151,6 +151,20 @@ __MODEL_BOUNDARY_4b7e2c19_MODEL_END__
 # "Optional argument: MODEL" above. Membership is checked only for a MODEL that was supplied;
 # gating a STOP on a non-empty catalog would break the documented empty-`claude_models`
 # reviewer that `runs/claude/_default/` and the orchestrators' Step 5a already implement.
+# A supplied MODEL becomes TWO things downstream, and the second is stricter than the
+# catalog it came from. claude.models is validated with IDENT_RE ([A-Za-z0-9._:@-]) because
+# its original role is a Task `model:` value on Claude Code, where it is never a path — and
+# config.example.yaml keeps it deliberately permissive so a new model never needs a plugin
+# release. On this path the same alias also becomes `runs/claude/<alias>/` and a
+# `claude/<alias>` watch-runs roster entry, and BOTH of those are held to the narrow charset
+# for the reason config-loader.sh:59-62 gives for grok.models. Catch that here, before a run
+# dir exists: verify-delegation.sh and watch-runs.sh would each reject the alias afterwards
+# with a usage error, which the orchestrator reads as "fix the call" over a reviewer that
+# actually ran.
+case "${MODEL:-}" in
+    ''|*[!A-Za-z0-9._-]*|[!A-Za-z0-9]*)
+        [ -z "$MODEL" ] || { echo "STOP: MODEL '$MODEL' cannot be used as a claude reviewer here — the alias becomes a run-dir component (runs/claude/<alias>/) and a watch-runs roster entry, both limited to [A-Za-z0-9][A-Za-z0-9._-]*. claude.models allows ':' and '@' for the Claude Code Task model: parameter, which is not a path. Pick an alias without ':' or '@'."; exit 1; } ;;
+esac
 if [ -n "$CLAUDE_CAT" ] && [ -n "$MODEL" ]; then
     printf '%s\n' "$CLAUDE_CAT" | grep -Fxq -- "$MODEL" || { echo "STOP: MODEL '$MODEL' is not in the claude.models catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' ')) — pick one of those, or add it to config.yaml yourself. claude-mesh never substitutes a model of its own."; exit 1; }
     echo "OK: claude.models catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' '))"
