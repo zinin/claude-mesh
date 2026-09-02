@@ -186,7 +186,9 @@ if [ "$HOST" = grok ]; then
     # Numeric or the default: a non-numeric value makes timeout(1) itself fail, and with stderr
     # discarded native would degrade with no reason on screen (preflight-env.sh validates its
     # CLI budget the same way).
-    GMT="${GROK_MODELS_TIMEOUT:-30}"
+    # GROK_MODELS_TIMEOUT for this call alone, else preflight-env.sh's PREFLIGHT_CLI_TIMEOUT —
+    # its NO-NETWORK row tells the user to raise that one for exactly this probe — else 30.
+    GMT="${GROK_MODELS_TIMEOUT:-${PREFLIGHT_CLI_TIMEOUT:-30}}"
     case "$GMT" in ''|*[!0-9]*|0) echo "ВНИМАНИЕ: GROK_MODELS_TIMEOUT='$GMT' не число — использую 30" >&2; GMT=30 ;; esac
     if timeout "$GMT" grok models >"$GM" 2>/dev/null; then
       HOST_MODELS=$(bash "$(dirname "$LOADER")/list-host-models.sh" --from-file "$GM")

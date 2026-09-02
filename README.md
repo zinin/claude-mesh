@@ -93,6 +93,9 @@ The same `config.yaml` serves both hosts.
 - A 0.12.0 preset without `native` does not start host slugs on Grok. Add `native`
   (and `native_models`) yourself. Claude Code is unchanged.
 - Data dir is still `~/.claude/plugins/data/claude-mesh-zinin/`.
+- The `grok models` probe that builds the native page waits `GROK_MODELS_TIMEOUT` seconds, else
+  `PREFLIGHT_CLI_TIMEOUT` (the knob `preflight-env.sh` names in its NO-NETWORK row), else 30.
+  A non-numeric value falls back to 30 with a warning.
 
 ## Claude Code settings (not plugin config)
 
