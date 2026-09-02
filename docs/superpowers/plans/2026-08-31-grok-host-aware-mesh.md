@@ -101,6 +101,17 @@ Not plan tasks — recorded so the smoke below is run against the right tree.
 
 Suite after all of it: 18 scripts, every one `rc=0`.
 
+Second wave, 2026-09-02 — `/claude-mesh:mesh-review default` on Claude Code under
+`--plugin-dir`, which is also Task 12 Step 4. Reviewers: claude:opus, claude:fable,
+ext-claude zai/glm and deepseek/v4-pro (REAL); codex STALLED on the OpenAI quota.
+- `fdee5a0` — 20 auto-fixes. Critical: `grok_child_of_self` globbed `sessions/*/subagents/`,
+  one level shallower than the real `sessions/<cwd>/<parent id>/subagents/<child>/meta.json`,
+  so `0c851d0` never matched a file on a live host (fixtures mirrored the mistake).
+- `2d1d7bf` — resolver root-order / prose canary in `test-claude-cli-agents.sh`.
+- six `autodecide` commits, one per decision: `0002b48`, `52351e2`, `ae805b0`, `d188ed9`,
+  `a50e02f` (под вопросом), `f2dfa42`.
+Suite after `fdee5a0`: 18 scripts, 1360 assertions, every one `rc=0`.
+
 ### Task 12: Manual smoke (not optional)
 
 No code. Run on this machine after Tasks 1–11.
@@ -111,7 +122,7 @@ No code. Run on this machine after Tasks 1–11.
 
 - [ ] **Step 3: Claude Code, 0.12.0 preset.** Confirm 0.12.0 behaviour; transcript has Task, not `spawn_subagent`.
 
-- [ ] **Step 4: Claude Code, preset with `native` and `claude`.** One host set (opus/fable as configured), not two.
+- [x] **Step 4: Claude Code, preset with `native` and `claude`.** One host set (opus/fable as configured), not two. ✅ 2026-09-02: `/mesh-review default` under `--plugin-dir`; `HOST=claude-code`, exactly two host reviewers (opus, fable) via Task, no native rows, no `spawn_subagent`; codex and two ext-claude wrappers dispatched, watched, verified, re-dispatched. Findings: second review wave above.
 
 - [ ] **Step 5:** Record the four outcomes in the PR description. Do not commit secrets or run dirs.
 
