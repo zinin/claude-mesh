@@ -70,7 +70,7 @@ ROSTER=()
 # orchestrator's value), so a run dir stamped by the *-exec skill at creation carries the
 # session that dispatched it. Two orchestrations of one engine/model share the global data
 # dir, and without this the newest dir wins even when it belongs to someone else's dispatch.
-SELF_SID="${CLAUDE_CODE_SESSION_ID:-}"
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}"
 
 is_pos_int() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 die() { echo "watch-runs: $1" >&2; exit 64; }
@@ -181,11 +181,36 @@ ROWS=""
 # is a run from a plugin version older than this stamp, a direct *-exec invocation, or a
 # harness that does not export the variable. Calling those foreign would resolve nothing and
 # report MISSING for a live run — the one thing this whole feature exists not to do.
+# Grok wrapper children overwrite GROK_SESSION_ID with their own session id
+# (measured 2026-09-01: parent 01a05eb7-…, run stamped 01a05ec0-…). Claude Code
+# inherits CLAUDE_CODE_SESSION_ID across the agent boundary; Grok does not inherit
+# the parent's GROK_SESSION_ID. A child-stamped run still belongs to this
+# orchestrator when Grok's subagent meta names SELF_SID as parent_session_id.
+# GROK_HOME overrides ~/.grok (Grok user guide). No matching meta → foreign.
+grok_child_of_self() {
+    local child="$1" grok_home meta
+    [ -n "$child" ] && [ -n "$SELF_SID" ] || return 1
+    [[ "$child" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    [[ "$SELF_SID" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    grok_home="${GROK_HOME:-$HOME/.grok}"
+    # Measured 2026-09-02 (39 files): ~/.grok/sessions/<urlencoded cwd>/<parent session
+    # id>/subagents/<child id>/meta.json — the parent id is a path component under the cwd
+    # dir. The flatter sessions/*/subagents/ shape is kept as a second pattern for a build
+    # that drops the cwd level; before 2026-09-02 it was the ONLY pattern and matched nothing.
+    for meta in "$grok_home"/sessions/*/*/subagents/"$child"/meta.json \
+                "$grok_home"/sessions/*/subagents/"$child"/meta.json; do
+        [ -f "$meta" ] || continue
+        # Value match only — not one exact serialisation. A compacted or re-indented
+        # meta.json must not turn this orchestrator's own child into a foreign run.
+        grep -Eq "\"parent_session_id\"[[:space:]]*:[[:space:]]*\"$SELF_SID\"" "$meta" && return 0
+    done
+    return 1
+}
 run_is_mine() {
     [ -n "$SELF_SID" ] || return 0
     local v=""
     [ -r "$1/.session_id" ] && IFS= read -r v < "$1/.session_id"
-    [ -z "$v" ] || [ "$v" = "$SELF_SID" ]
+    [ -z "$v" ] || [ "$v" = "$SELF_SID" ] || grok_child_of_self "$v"
 }
 
 # The newest run dir for a roster entry, at/after --since. Selection is by NAME, not mtime: on

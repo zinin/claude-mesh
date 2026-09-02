@@ -1820,6 +1820,88 @@ for PAIR in "builtin: [codex, grok]|grok_models is empty" "builtin: [codex]
     rm -f "$ERR"; rm -rf "$TDIR"
 done
 
+# === native builtin and native_models ===
+# $BASE is the Test 50 providers+models snippet; redefine it here so this block
+# does not depend on a later test leaving it in scope.
+BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
+
+echo "=== Test: native is a valid builtin ==="
+TDIR=$(mktemp -d)
+printf '%s\n' "$BASE" > "$TDIR/config.yaml"
+printf 'defaults:\n  code_review:\n    builtin: [native]\n' >> "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "accepts builtin native with no native_models" "0" "$RC"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test: native_models without native in builtin is invalid ==="
+TDIR=$(mktemp -d)
+cp "$FIXTURES/invalid-defaults-native-models-no-native.yaml" "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "rejects native_models without native" "1" "$RC"
+assert_stderr_contains "names the missing builtin entry" 'is missing from defaults.code_review.builtin' "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test: native_models charset rejects a slash ==="
+TDIR=$(mktemp -d)
+cp "$FIXTURES/invalid-defaults-native-models-charset.yaml" "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "rejects slashed native_models entry" "1" "$RC"
+assert_stderr_contains "names the charset" '[A-Za-z0-9._-]' "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test: native_models charset rejects @ ==="
+TDIR=$(mktemp -d)
+printf '%s\n' "$BASE" > "$TDIR/config.yaml"
+printf 'defaults:\n  code_review:\n    builtin: [native]\n    native_models: ["opus@bedrock"]\n' >> "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "rejects @ in native_models" "1" "$RC"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test: native does not satisfy claude_models pairing ==="
+TDIR=$(mktemp -d)
+printf '%s\n' "$BASE" > "$TDIR/config.yaml"
+printf 'claude:\n  models: [opus]\n' >> "$TDIR/config.yaml"
+printf 'defaults:\n  code_review:\n    builtin: [native]\n    claude_models: [opus]\n' >> "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "native does not stand in for claude in claude_models pairing" "1" "$RC"
+assert_stderr_contains "still wants claude in builtin" '"claude" is missing from defaults.code_review.builtin' "$ERR"
+rm -rf "$TDIR" "$ERR"
+
+echo "=== Test: get-defaults emits native_models ==="
+TDIR=$(mktemp -d)
+printf '%s\n' "$BASE" > "$TDIR/config.yaml"
+printf 'defaults:\n  code_review:\n    builtin: [native]\n    native_models: [grok-4.6, glm-5-3]\n' >> "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.native_models | join(",")')
+assert_eq_str "native_models list" "grok-4.6,glm-5-3" "$GOT"
+printf '%s\n' "$BASE" > "$TDIR/config.yaml"
+printf 'defaults:\n  code_review:\n    builtin: [claude]\n' >> "$TDIR/config.yaml"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r 'has("native_models")')
+assert_eq_str "native_models key always present" "true" "$GOT"
+GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.native_models | type')
+assert_eq_str "absent native_models becomes []" "array" "$GOT"
+rm -rf "$TDIR"
+
+echo "=== Test: 0.12.0 preset without native still validates ==="
+TDIR=$(mktemp -d)
+printf '%s\n' "$BASE" > "$TDIR/config.yaml"
+printf 'claude:\n  models: [opus]\ncodex:\n  model: gpt-5.5\n' >> "$TDIR/config.yaml"
+printf 'defaults:\n  code_review:\n    builtin: [claude, codex]\n    claude_models: [opus]\n' >> "$TDIR/config.yaml"
+ERR=$(mktemp)
+CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "old preset without native stays valid" "0" "$RC"
+rm -rf "$TDIR" "$ERR"
+
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

@@ -410,6 +410,7 @@ probe_http() {          # $1 = url; echoes OK | NO-NETWORK | UNKNOWN
 # that same capture instead of reaching the report.
 CLI_STATUS=""
 cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_section flag, $5 = probe command (optional)
+                        # $6 = file to keep the probe's stdout in (optional, only with $5)
                         # $5 is deliberately UNQUOTED where it is EXPANDED — the `timeout` line
                         # inside the probe branch below, not the cli_row call site, which quotes
                         # it like any other argument. It must split into argv there
@@ -469,7 +470,12 @@ cli_row() {             # $1 = name, $2 = binary, $3 = probe url, $4 = has_secti
             echo "probing $1 (\`$5\`)…" >&2
             set -f                                   # see the contract note on $5 above
             # shellcheck disable=SC2086
-            timeout "$CLI_TIMEOUT" $5 >/dev/null 2>&1; rc=$?
+            # $6 keeps the probe's stdout so a caller does not have to run the same command
+            # a second time for its output. Without it the grok CLI was invoked twice per
+            # preflight — health probe, then listing — costing two authenticated round-trips
+            # and up to 2x CLI_TIMEOUT, and leaving two rows that describe ONE fact from two
+            # separate observations, free to disagree if a login expires between them.
+            timeout "$CLI_TIMEOUT" $5 >"${6:-/dev/null}" 2>/dev/null; rc=$?
             set +f                                   # restored on BOTH paths, before any branch
             if [ "$rc" -eq 0 ]; then
                 CLI_STATUS="OK"
@@ -506,7 +512,79 @@ cli_row codex  "codex"  "https://api.openai.com/v1/models"           "$HAS_CODEX
 cli_row gemini "gemini" "https://generativelanguage.googleapis.com/" "$HAS_GEMINI"; GEMINI_STATUS="$CLI_STATUS"
 # The URL argument is unused when a command probe is given; pass the CLI's own docs host so the
 # row's shape stays uniform and a future reader can see what an HTTP fallback would target.
-cli_row grok   "grok"   "https://api.x.ai/v1/models"                 "$HAS_GROK" "grok models"; GROK_STATUS="$CLI_STATUS"
+GROK_LISTING=""
+GROK_LISTING="$(mktemp_or_fail 2>/dev/null || true)"
+cli_row grok   "grok"   "https://api.x.ai/v1/models"                 "$HAS_GROK" "grok models" "$GROK_LISTING"; GROK_STATUS="$CLI_STATUS"
+
+# native-models: listing only. Never infer we are inside Grok Build.
+# Reuses the grok row's probe output whenever that probe actually ran. `grok models` is a
+# network+login round-trip; calling it twice cost two authenticated calls and up to 2x
+# CLI_TIMEOUT, and — the part that misleads rather than merely costs — made these two rows two
+# independent observations of ONE fact, free to disagree when a login expires between them.
+#
+# It does NOT simply follow GROK_STATUS. `native` and the `grok:` config section are separate
+# things by design: native_models needs no grok: section at all (it is charset-validated on its
+# own). So when the grok row returned WITHOUT probing for a config reason — no section, or an
+# invalid one — this must still list the host's slugs itself. Only a probe that ran and failed
+# (NO-NETWORK) or was suppressed (UNKNOWN: SKIP_NET / no timeout) means "do not ask again".
+NM_STATUS=SKIP
+NM_LIST=""
+_nm_from_listing() {        # $1 = file holding `grok models` output
+    NM_LIST=$(bash "$SCRIPT_DIR/list-host-models.sh" --from-file "$1" | tr '\n' ' ')
+    NM_LIST=${NM_LIST%% }
+    if [ -n "${NM_LIST// }" ]; then
+        NM_STATUS=OK
+        NM_DETAIL="$NM_LIST"
+    else
+        # Parsed zero slugs: not selectable. OK + empty used to advertise a bare
+        # `native` in SUMMARY while runtime degraded HOST_MODELS="".
+        NM_STATUS=SKIP
+        NM_DETAIL="empty listing"
+        NM_LIST=""
+    fi
+}
+case "$GROK_STATUS" in
+    OK)
+        if [ -n "$GROK_LISTING" ] && [ -s "$GROK_LISTING" ]; then
+            _nm_from_listing "$GROK_LISTING"
+        else
+            NM_DETAIL="grok models answered but its output was not captured"
+        fi ;;
+    UNKNOWN)    NM_DETAIL="grok models not run — see the grok row" ;;
+    NO-NETWORK) NM_DETAIL="grok models failed or timed out — see the grok row" ;;
+    *)
+        # MISSING / INVALID / SKIPPED: the grok ROW is about the grok: section, not about
+        # native. Probe here, under the same discipline the row uses — nothing may take it down.
+        if ! command -v grok >/dev/null 2>&1; then
+            NM_DETAIL="no grok CLI on PATH — nothing to list"
+        elif [ "$SKIP_NET" = 1 ]; then
+            NM_DETAIL="skipped by PREFLIGHT_SKIP_NETWORK"
+        elif ! command -v timeout >/dev/null 2>&1; then
+            NM_DETAIL="no timeout(1) — grok models not run (brew install coreutils)"
+        else
+            _GM=""
+            if ! _GM="$(mktemp_or_fail)"; then
+                NM_DETAIL="cannot create a temp file — grok models not run"
+            else
+                if timeout "${CLI_TIMEOUT}" grok models >"$_GM" 2>/dev/null; then
+                    _nm_from_listing "$_GM"
+                else
+                    NM_DETAIL="grok models failed or timed out"
+                fi
+                rm -f "$_GM"
+            fi
+        fi ;;
+esac
+[ -z "$GROK_LISTING" ] || rm -f "$GROK_LISTING"
+row native-models "$NM_STATUS" "$NM_DETAIL"
+
+CLAUDE_CLI_STATUS=OK
+if command -v claude >/dev/null 2>&1; then
+    row claude-cli OK "claude on PATH"
+else
+    CLAUDE_CLI_STATUS=MISSING
+    row claude-cli MISSING "claude CLI not on PATH"
+fi
 
 # ---------------------------------------------------------------- providers
 # Models of one provider share an endpoint, so probe once per provider and let Task 4 expand
@@ -874,6 +952,23 @@ else
     add_unavail "grok ($GROK_STATUS)"
 fi
 
+# Host slugs from a successful `grok models` listing. Not added when the listing
+# was SKIP/empty: SUMMARY names what can be selected, and a SKIP row is not that.
+#
+# The bare `native` below is the same fallback claude and grok already carry above, and it
+# closes the same hole for the same reason: a preset with `native` in builtin and an EMPTY
+# native_models is valid — that is the documented session-model fallback — and the defaults
+# line then prints a bare `native`. Without this, available holds only `native:<slug>` and
+# never the bare name, so a perfectly working Grok host reads as "default mode unsafe".
+if [ "$NM_STATUS" = "OK" ]; then
+    if [ -n "$NM_LIST" ]; then
+        for NM_SLUG in $NM_LIST; do
+            [ -n "$NM_SLUG" ] && add_avail "native:$NM_SLUG"
+        done
+    fi
+    add_avail native
+fi
+
 if [ -n "$MODELS" ]; then
     while IFS='|' read -r MID _LABEL; do
         [ -n "$MID" ] || continue
@@ -905,14 +1000,17 @@ fi
 # whenever CONFIG_STATUS=OK (the toolchain gate ran first).
 for PRESET in design_review code_review; do
     DLIST="—"
+    DJ=""
     if [ "$CONFIG_STATUS" = "OK" ] && DJ="$(bash "$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
-        # grok is expanded over grok_models exactly as claude is over claude_models, and for a
-        # harder reason: SUMMARY available spells this reviewer grok:<model>, so a bare `grok`
-        # here would print two different names for one reviewer and break the very membership
-        # check this line exists for. The validator guarantees a non-empty grok_models whenever
-        # `grok` is in builtin, so the expansion is always defined.
+        # grok and native are expanded over their *_models lists exactly as claude is over
+        # claude_models, and for the same reason: SUMMARY available spells those reviewers
+        # grok:<model> / native:<slug>, so a leftover-builtin `native` (or `grok`) here would
+        # print two different names for one reviewer and break the membership check this line
+        # exists for. Empty native_models is valid (session-model fallback) and stays a bare
+        # `native`. The validator guarantees a non-empty grok_models whenever `grok` is in
+        # builtin, so that expansion is always defined.
         DLIST="$("$JQ_BIN" -r '
-            ((.builtin // []) | map(select(. != "claude" and . != "grok"))) +
+            ((.builtin // []) | map(select(. != "claude" and . != "grok" and . != "native"))) +
             (if ((.builtin // []) | index("claude")) then
                  (if ((.claude_models // []) | length) > 0
                   then (.claude_models | map("claude:" + .))
@@ -923,6 +1021,11 @@ for PRESET in design_review code_review; do
                   then (.grok_models | map("grok:" + .))
                   else ["grok"] end)
              else [] end) +
+            (if ((.builtin // []) | index("native")) then
+                 (if ((.native_models // []) | length) > 0
+                  then (.native_models | map("native:" + .))
+                  else ["native"] end)
+             else [] end) +
             (.models // []) | join(", ")' <<<"$DJ")"
         # "—" alone would be read as "not answered", which is what the no-config case above
         # means. A preset that WAS read and is empty is a different fact: `default` mode will
@@ -930,7 +1033,30 @@ for PRESET in design_review code_review; do
         [ -n "$DLIST" ] || DLIST="— (preset empty)"
     fi
     printf 'SUMMARY defaults %s: %s\n' "$PRESET" "$DLIST"
+    # From the preset JSON, not from the rendered DLIST: `*native*` on the joined string also
+    # matched a model id that merely contains the word (`zai/alternative`), and the note below
+    # is about the `native` TYPE being in `builtin`.
+    if [ -n "${DJ:-}" ] && jq -e '((.builtin // []) | index("native")) != null' <<<"$DJ" >/dev/null 2>&1; then
+        SAW_NATIVE_DEFAULT=1
+    fi
 done
+# `native` is the one reviewer type whose meaning depends on a host this script cannot see.
+# Host detection is "does the orchestrator have spawn_subagent" — invisible from a shell, and
+# `grok` on PATH is NOT a proxy for it (a Claude Code session can have the grok CLI installed
+# and answering, which is exactly the machine this fires on). So the expansion above stays
+# unconditional — on Grok it is what catches a native_models slug missing from the live
+# listing — and the gap is explained instead of guessed at, the same way the
+# PREFLIGHT_SKIP_NETWORK note above says that those rows do not mean what they look like.
+if [ "${SAW_NATIVE_DEFAULT:-0}" = 1 ] && [ "$NM_STATUS" != "OK" ]; then
+    printf 'SUMMARY note: a preset names `native` but `grok models` did not answer, so no native:* entry is in SUMMARY available. On Grok Build that IS a real gap. On Claude Code it is not: there `native` collapses into `claude` and native_models is ignored, so exclude every native:* name from the defaults-vs-available membership check on that host\n'
+fi
+# `claude` / `claude:*` above are host reviewers on Claude Code and need no binary. On Grok
+# Build the same entries mean the Claude Code CLI (`claude -p`, HOST_CLAUDE=1), and the
+# claude-cli row is the only thing that says whether it can start. The script cannot see the
+# host (see the native note above), so it explains the row instead of dropping the entries.
+if [ "${CLAUDE_CLI_STATUS:-OK}" = MISSING ] && [ -z "$BLOCKER" ]; then
+    printf 'SUMMARY note: claude-cli is MISSING. `claude` / `claude:*` in SUMMARY available are the host reviewers on Claude Code and still run there; on Grok Build they mean the Claude Code CLI and will not start until `claude` is on PATH and logged in (`claude login`).\n'
+fi
 # One `hint:` line, whose text was chosen with the blocker above. The literal `hint: ` prefix is
 # load-bearing: the suite's closed-set gate skips this line on `$1 != "hint:"`, and $1 alone —
 # the second word differs per state.

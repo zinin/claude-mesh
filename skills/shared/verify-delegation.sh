@@ -11,7 +11,7 @@
 #
 # Usage:
 #   verify-delegation.sh <engine> <model|-> <since-epoch> [data-dir]
-#     engine      ext-claude | codex | gemini | grok
+#     engine      ext-claude | codex | gemini | grok | claude
 #     model       for ext-claude: "<provider>/<short>" (e.g. zai/glm); for grok: the model id
 #                 (e.g. grok-4.6); "-" for codex/gemini
 #     since-epoch only run dirs NAMED at/after this unix time are considered — the same
@@ -98,12 +98,40 @@ resolve_plugin_data() {
 # on which run is "the run", or the watcher reports DONE on one dir while this gate inspects
 # another. FAIL-OPEN: an unstamped dir is a legacy run, a direct *-exec invocation, or a
 # harness without the variable, and calling those foreign would drop a finished review.
-SELF_SID="${CLAUDE_CODE_SESSION_ID:-}"
+SELF_SID="${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}"
+# Grok wrapper children overwrite GROK_SESSION_ID with their own session id
+# (measured 2026-09-01: parent 01a05eb7-…, run stamped 01a05ec0-…). Claude Code
+# inherits CLAUDE_CODE_SESSION_ID across the agent boundary; Grok does not inherit
+# the parent's GROK_SESSION_ID. A child-stamped run still belongs to this
+# orchestrator when Grok's subagent meta names SELF_SID as parent_session_id.
+# GROK_HOME overrides ~/.grok (Grok user guide). No matching meta → foreign:
+# two concurrent orchestrations must not steal each other's dirs.
+# Mirrored byte-for-byte in watch-runs.sh — the two must agree on which run is
+# "the run", or the watcher reports DONE on one dir while this gate inspects another.
+grok_child_of_self() {
+    local child="$1" grok_home meta
+    [ -n "$child" ] && [ -n "$SELF_SID" ] || return 1
+    [[ "$child" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    [[ "$SELF_SID" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    grok_home="${GROK_HOME:-$HOME/.grok}"
+    # Measured 2026-09-02 (39 files): ~/.grok/sessions/<urlencoded cwd>/<parent session
+    # id>/subagents/<child id>/meta.json — the parent id is a path component under the cwd
+    # dir. The flatter sessions/*/subagents/ shape is kept as a second pattern for a build
+    # that drops the cwd level; before 2026-09-02 it was the ONLY pattern and matched nothing.
+    for meta in "$grok_home"/sessions/*/*/subagents/"$child"/meta.json \
+                "$grok_home"/sessions/*/subagents/"$child"/meta.json; do
+        [ -f "$meta" ] || continue
+        # Value match only — not one exact serialisation. A compacted or re-indented
+        # meta.json must not turn this orchestrator's own child into a foreign run.
+        grep -Eq "\"parent_session_id\"[[:space:]]*:[[:space:]]*\"$SELF_SID\"" "$meta" && return 0
+    done
+    return 1
+}
 run_is_mine() {
     [ -n "$SELF_SID" ] || return 0
     local v=""
     [ -r "$1/.session_id" ] && IFS= read -r v < "$1/.session_id"
-    [ -z "$v" ] || [ "$v" = "$SELF_SID" ]
+    [ -z "$v" ] || [ "$v" = "$SELF_SID" ] || grok_child_of_self "$v"
 }
 
 ENGINE="${1:-}"
@@ -143,6 +171,35 @@ case "$ENGINE" in
             *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "verify-delegation: engine grok model '$MODEL' is not a catalog id (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. grok-4.6; <provider>/<short> is ext-claude's spelling)" >&2; exit 1 ;;
         esac
         BASE="$DATA_DIR/runs/grok/$MODEL" ;;
+    # Same mandatory-model / charset guards as grok: dirs live under runs/claude/<alias>/,
+    # so empty/`-`/slash/leading-dot would resolve a path nothing writes and report FLIP.
+    claude)
+        case "$MODEL" in
+            ''|'-') echo "verify-delegation: engine claude requires a model argument (e.g. opus), got '${MODEL:-}'" >&2; exit 1 ;;
+            # The one documented name that is NOT a catalog alias: ext-claude-exec writes
+            # runs/claude/_default/ when MODEL is omitted (the CLI-default path), and the
+            # leading underscore is deliberate there — `default` would look like an alias a
+            # user could put in claude.models. watch-runs.sh already admits `claude/_default`
+            # (its roster class includes `_`), so without this the two consumers disagreed
+            # about one literal and both orchestrators worked around it by skipping the guard
+            # entirely for that reviewer — losing the dispatch-window check and the
+            # permission_denials -> DEGRADED check for the fallback reviewer alone. Exact
+            # literal, not a `_*` class: nothing else may start with an underscore.
+            '_default') ;;
+            # Same charset as GROK_IDENT_RE in config-loader.sh, and for the same reason: this
+            # value becomes a path component. Unlike grok, a config-sourced model CAN fail it:
+            # claude.models is validated with the wider IDENT_RE ([A-Za-z0-9._:@-]), because its
+            # original role is a Task `model:` value on Claude Code, where it is never a path.
+            # skills/claude-code-review/SKILL.md rejects such an alias in its own preflight,
+            # before a run dir exists, so one reaching here means that gate was bypassed. Beyond
+            # that, this script is also a CLI entry point and BOTH
+            # orchestrators TEMPLATE the call, so the spelling that actually arrives wrong is
+            # ext-claude's <provider>/<short>. That resolved runs/claude/<provider>/<short>, a path
+            # nothing ever writes, and was then reported as FLIP — "this reviewer never
+            # delegated" — about a reviewer that ran and delivered its review.
+            *[!A-Za-z0-9._-]*|[!A-Za-z0-9]*) echo "verify-delegation: engine claude model '$MODEL' is not a catalog id (expected [A-Za-z0-9][A-Za-z0-9._-]*, e.g. opus; <provider>/<short> is ext-claude's spelling)" >&2; exit 1 ;;
+        esac
+        BASE="$DATA_DIR/runs/claude/$MODEL" ;;
     codex)      BASE="$DATA_DIR/runs/codex" ;;
     gemini)     BASE="$DATA_DIR/runs/gemini" ;;
     *) echo "verify-delegation: unknown engine '$ENGINE'" >&2; exit 1 ;;
@@ -396,7 +453,7 @@ case "$ENGINE" in
             fail STALLED "the run used tools but output.txt holds only $OUT_BYTES non-space bytes — a notice or a fragment, not a review (the shortest genuine codex review in the archive is 1746)" 2
         emit REAL "delegated, non-empty review" 0
         ;;
-    ext-claude|grok)
+    ext-claude|grok|claude)
         # grok joins this branch rather than getting one of its own because it shares the
         # STREAM FORMAT, not merely the spirit: grok-exec runs the CLI with
         # --output-format streaming-messages-json, which is the Claude Code wire format byte
@@ -578,6 +635,7 @@ case "$ENGINE" in
             # remedy — a flag its own exec skill may already pass, or may not accept at all.
             case "$ENGINE" in
                 grok)       DENIAL_REMEDY="grok-exec already passes --permission-mode bypassPermissions, so this is not the missing-flag case: the CLI refused for a reason of its own (a sandbox profile, or a deny rule in ~/.grok). Keep the findings; do NOT re-dispatch, and check the CLI's own permission configuration" ;;
+                claude)     DENIAL_REMEDY="HOST_CLAUDE already passes --permission-mode bypassPermissions, so this is not the missing-flag case: the CLI refused for a reason of its own (a sandbox profile, or a deny rule in the claude CLI config). Keep the findings; do NOT re-dispatch" ;;
                 ext-claude) DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The remedy is the user's, not an agent's: the ext-claude run needs --permission-mode bypassPermissions, and an installed plugin only picks that up through a release" ;;
                 *)          DENIAL_REMEDY="Keep the findings; do NOT re-dispatch, an identical invocation is refused identically. The cause sits outside the run: read how this engine's exec skill invokes the CLI, and the CLI's own permission configuration" ;;
             esac

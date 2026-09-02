@@ -1,28 +1,35 @@
 ---
-name: grok-code-review
-description: Send code for external review to the xAI Grok CLI for cross-validation
+name: claude-code-review
+description: Send code for review to the official Claude Code CLI (claude -p, HOST_CLAUDE=1)
 user_invocable: true
 ---
 
-# Grok Code Review
+# Claude Code Review
 
-Dispatch code review to xAI Grok as an external reviewer process.
+Dispatch code review to the official Claude Code CLI (`claude -p` after `claude login`).
 
-**Announce at start:** "Using grok-code-review skill to get external review from Grok."
+**Announce at start:** "Using claude-code-review skill to get review from the Claude Code CLI."
 
-## Required argument: MODEL
+## Optional argument: MODEL
 
-`MODEL=<grok model id>` — one entry of the `grok.models` catalog, e.g. `MODEL=grok-4.6`.
-Without it, STOP and report:
+`MODEL=<alias>` — one entry of the `claude.models` catalog, e.g. `MODEL=opus`.
 
-```
-ERROR: MODEL is required. Example: MODEL=grok-4.6 Review the changes for production readiness
-```
+**An omitted MODEL is a first-class path, not an error.** It means "run the CLI default"
+(`claude -p` without `-m`), and the run lands in `runs/claude/_default/`. Both orchestrators
+dispatch it deliberately: `commands/mesh-review.md` Step 0 and Step 2.4 ("Empty selection is
+not an error"), and the sentinel option every one-option model page carries. That path is
+reachable with a NON-empty `claude.models` catalog — the preset's `claude_models` list and the
+`claude.models` catalog are different things — so the catalog being non-empty must never turn
+an omitted MODEL into a STOP. `agents/claude-code-reviewer.md` says the same thing from the
+other side: "If the first line is not `MODEL=`, still invoke the skill. Do not STOP."
 
-Never pick a model yourself: the catalog belongs to the user's config, and an invented id
-fails at the CLI with `unknown model id` after a run directory has already been created.
-`config-loader.sh list-grok-models` prints the catalog when you need to show the caller what
-is available.
+A MODEL that IS supplied is still checked against the catalog when the catalog is non-empty.
+
+Never pick a model yourself: the catalog belongs to the user's config, and an invented alias
+fails at the CLI after a run directory has already been created.
+`config-loader.sh list-claude-models` prints the catalog when you need to show the caller what
+is available. `get-flag has_claude_models` is optional: a missing or empty catalog is not a
+STOP (CLI default). A non-empty catalog must contain MODEL (`list-claude-models | grep -Fxq`).
 
 ## Optional arguments
 
@@ -53,12 +60,12 @@ else
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
-  SKILL_BASE="$PLUGIN_ROOT/skills/grok-code-review"
+  SKILL_BASE="$PLUGIN_ROOT/skills/claude-code-review"
 fi
 
 Do not rewrite the fence. The else-branch searches `$HOME/.grok/installed-plugins` first (only inside a Grok session: bash has `GROK_SESSION_ID` there and not on Claude Code, so a two-host machine's stale snapshot never reaches a Claude Code run) — an unpublished `grok plugin install <tree>` copy, the one `grok inspect` loads, which a stale Claude cache must not outrank (measured 2026-09-01: `sort -V` on the cache picked 0.12.0 and the wrappers ran the old loader) — then `$HOME/.claude/plugins`, then `$HOME/.grok/plugins`, each version-sorted, `| sort -V | tail -1`, and each tried only when the previous root finds nothing. The roots are tried in PRIORITY order, never in one find over all three: `sort -V` compares whole paths, and `.claude` < `.grok`, so a single find picked the `.grok` copy whatever its version. `.claude` is where a published copy lives on both hosts — Grok loads a marketplace claude-mesh from the Claude cache; only an unpublished tree sits under `installed-plugins`. It then sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. The else-branch repeats `resolve-plugin-root.sh`'s remaining order IDENTICALLY — `$CLAUDE_PLUGIN_ROOT`, `$GROK_PLUGIN_ROOT`, then the three plugin trees — because it cannot call the helper (that is the file it is locating). Keep the two in step: they are one contract in two copies. If nothing resolves it STOPs, rather than resolving a `PLUGIN_ROOT` from the current directory.
 
-Shared scripts live at `$SKILL_BASE/../shared/<x>` (e.g. `code-review-prompt.md`); the loader is `$SKILL_BASE/../shared/config-loader.sh`. Grok manages its own auth — this skill does NOT source provider tokens; it delegates execution to the `grok-exec` skill.
+Shared scripts live at `$SKILL_BASE/../shared/<x>` (e.g. `code-review-prompt.md`); the loader is `$SKILL_BASE/../shared/config-loader.sh`. Auth is `claude login` — this skill does NOT source provider tokens; it delegates execution to `ext-claude-exec` with `HOST_CLAUDE=1`.
 
 ## CRITICAL: Tool Execution Rules
 
@@ -95,9 +102,11 @@ EOF
 **Mandatory:**
 - Critical changes (auth, payments, data migrations)
 - Before merge to main on important features
+- On Grok Build, when the user asked for `claude` reviewers (`opus` / `fable`) rather than
+  native host slugs
 
 **Optional:**
-- When want "second opinion" from different model
+- When want "second opinion" from the Claude Code CLI
 - Parallel with internal superpowers:requesting-code-review
 
 ## Pre-flight Checks
@@ -120,64 +129,74 @@ else
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
-  SKILL_BASE="$PLUGIN_ROOT/skills/grok-code-review"
+  SKILL_BASE="$PLUGIN_ROOT/skills/claude-code-review"
 fi
 LOADER="$SKILL_BASE/../shared/config-loader.sh"
-command -v grok >/dev/null 2>&1 || { echo "STOP: grok CLI not found — install Grok Build with 'curl -fsSL https://x.ai/cli/install.sh | bash', then run 'grok login'"; exit 1; }
-echo "OK: grok found"
+command -v claude >/dev/null 2>&1 || { echo "STOP: claude CLI not found — install Claude Code, then run 'claude login'"; exit 1; }
+echo "OK: claude found"
 command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found - required by shared/render-template.py (Step 3)"; exit 1; }
 echo "OK: python3 found"
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "STOP: Not a git repository"; exit 1; }
 echo "OK: git repo"
-# HARD gate here, unlike grok-exec's soft one. grok-exec only WARNs on a missing grok: section
-# because grok handles its own auth, so a direct call is still runnable without a catalog. A
-# REVIEW names a model FROM that catalog, and there is no catalog without the section — so this
-# skill STOPs where grok-exec continues. Keep the two behaviours distinct.
 [ -x "$LOADER" ] || { echo "STOP: config-loader.sh not found or not executable at $LOADER"; exit 1; }
-# `get-flag has_grok` VALIDATES before it reads: it prints 1/0 when the config parses, and exits
-# NON-ZERO carrying the validator's own message when the grok: section is present but malformed
-# (config-loader.sh cmd_get_flag: "a consumer telling absent from broken must check rc, not
-# stdout"; rc=2 is the separate "no config.yaml at all"). So branch on the rc and keep stderr out
-# of the value — swallowing the rc reports "no grok: section" for a section that is right there,
-# and the user then hunts for something that is not missing.
-GROK_ERR=$(mktemp) || { echo "STOP: mktemp failed"; exit 1; }
+# has_claude_models is OPTIONAL: an empty or missing catalog means CLI default (no -m),
+# not a STOP. Branch on the rc anyway: the flag VALIDATES before it reads, and a malformed
+# claude: section must not be reported as "no catalog". rc=2 is "no config.yaml at all",
+# which is unconfigured — continue without a membership check. Swallowing the rc reports
+# "empty catalog" for a section that is right there.
+CLAUDE_ERR=$(mktemp) || { echo "STOP: mktemp failed"; exit 1; }
 FLAG_RC=0
-HAS_GROK=$("$LOADER" get-flag has_grok 2>"$GROK_ERR") || FLAG_RC=$?
-if [ "$FLAG_RC" -eq 2 ]; then
-    echo "STOP: there is no config.yaml yet — copy config.example.yaml into the plugin data dir and add a grok: section. It is user-owned; agents never create or edit it. The loader says:"
-    cat "$GROK_ERR"; rm -f "$GROK_ERR"; exit 1
-elif [ "$FLAG_RC" -ne 0 ]; then
-    echo "STOP: config-loader could not read the grok: section (rc=$FLAG_RC) — config.yaml is user-owned; agents never edit it. The loader says:"
-    cat "$GROK_ERR"; rm -f "$GROK_ERR"; exit 1
+HAS_CLAUDE_MODELS=$("$LOADER" get-flag has_claude_models 2>"$CLAUDE_ERR") || FLAG_RC=$?
+if [ "$FLAG_RC" -eq 1 ]; then
+    echo "STOP: config-loader could not read claude.models (rc=$FLAG_RC) — config.yaml is user-owned; agents never edit it. The loader says:"
+    cat "$CLAUDE_ERR"; rm -f "$CLAUDE_ERR"; exit 1
 fi
-rm -f "$GROK_ERR"
-if [ "$HAS_GROK" != "1" ]; then
-    echo "STOP: no grok: section in config.yaml — add one with a models: catalog, or pick another reviewer"; exit 1
+rm -f "$CLAUDE_ERR"
+CLAUDE_CAT=""
+if [ "$FLAG_RC" -eq 0 ]; then
+    CLAUDE_CAT=$("$LOADER" list-claude-models) || { echo "STOP: claude.models is present but does not validate — fix config.yaml (user-owned; agents never edit it)" >&2; exit 1; }
 fi
-# The catalog itself, so the caller can see which ids are on offer. After the gate above this
-# `||` branch is near-dead (has_grok validated the same catalog); it stays because it costs one
-# line and it is what reports a config.yaml edited between the two calls.
-GROK_CAT=$("$LOADER" list-grok-models) || { echo "STOP: grok: section is present but its catalog does not validate — fix config.yaml (user-owned; agents never edit it)" >&2; exit 1; }
-echo "OK: grok: section present ($(printf '%s' "$GROK_CAT" | tr '\n' ' '))"
-# The catalog is in hand, so check the caller's MODEL against it HERE — a typo then fails before
-# a run dir exists and before the CLI spends an invocation being told the id is unknown. `grep
-# -Fxq` matches whole lines only, so `grok-4` never passes for `grok-4.6`. Substitute the MODEL
-# argument into the heredoc BODY below; an empty body means the caller sent none, which is
-# the `ERROR: MODEL is required` case above. A QUOTED heredoc, not a double-quoted
-# assignment: a substituted value lands in an executable context, and the catalog check
-# two lines down runs AFTER it — measured, a value carrying `"; cmd; x="` executed before
-# that check rejected it. Same binding grok-exec gives MODEL, and DESC / PLAN_REF /
-# WORK_DIR in this same file. `&&` cannot chain across a heredoc (it turns the body into
-# commands), which is why the assignment stands alone.
+# Quoted heredoc, not a double-quoted assignment: a substituted value lands in an
+# executable context, and the catalog check two lines down runs AFTER it — measured, a
+# value carrying `"; cmd; x="` executed before that check rejected it. Same binding
+# grok-code-review gives MODEL. `&&` cannot chain across a heredoc (it turns the body
+# into commands), which is why the assignment stands alone.
 MODEL=$(cat <<'__MODEL_BOUNDARY_4b7e2c19_MODEL_END__'
 <the MODEL argument this skill was called with>
 __MODEL_BOUNDARY_4b7e2c19_MODEL_END__
 )
-[ -n "$MODEL" ] || { echo "STOP: MODEL is required and was not substituted into this fence. Example: MODEL=grok-4.6"; exit 1; }
-printf '%s\n' "$GROK_CAT" | grep -Fxq -- "$MODEL" || { echo "STOP: MODEL '$MODEL' is not in the grok.models catalog ($(printf '%s' "$GROK_CAT" | tr '\n' ' ')) — pick one of those, or add it to config.yaml yourself. claude-mesh never substitutes a model of its own."; exit 1; }
+# An omitted MODEL is the CLI-default path and is valid whatever the catalog holds — see
+# "Optional argument: MODEL" above. Membership is checked only for a MODEL that was supplied;
+# gating a STOP on a non-empty catalog would break the documented empty-`claude_models`
+# reviewer that `runs/claude/_default/` and the orchestrators' Step 5a already implement.
+# A supplied MODEL becomes TWO things downstream, and the second is stricter than the
+# catalog it came from. claude.models is validated with IDENT_RE ([A-Za-z0-9._:@-]) because
+# its original role is a Task `model:` value on Claude Code, where it is never a path — and
+# config.example.yaml keeps it deliberately permissive so a new model never needs a plugin
+# release. On this path the same alias also becomes `runs/claude/<alias>/` and a
+# `claude/<alias>` watch-runs roster entry, and BOTH of those are held to the narrow charset
+# for the reason config-loader.sh:59-62 gives for grok.models. Catch that here, before a run
+# dir exists: verify-delegation.sh and watch-runs.sh would each reject the alias afterwards
+# with a usage error, which the orchestrator reads as "fix the call" over a reviewer that
+# actually ran.
+case "${MODEL:-}" in
+    ''|*[!A-Za-z0-9._-]*|[!A-Za-z0-9]*)
+        [ -z "$MODEL" ] || { echo "STOP: MODEL '$MODEL' cannot be used as a claude reviewer here — the alias becomes a run-dir component (runs/claude/<alias>/) and a watch-runs roster entry, both limited to [A-Za-z0-9][A-Za-z0-9._-]*. claude.models allows ':' and '@' for the Claude Code Task model: parameter, which is not a path. Pick an alias without ':' or '@'."; exit 1; } ;;
+esac
+if [ -n "$CLAUDE_CAT" ] && [ -n "$MODEL" ]; then
+    printf '%s\n' "$CLAUDE_CAT" | grep -Fxq -- "$MODEL" || { echo "STOP: MODEL '$MODEL' is not in the claude.models catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' ')) — pick one of those, or add it to config.yaml yourself. claude-mesh never substitutes a model of its own."; exit 1; }
+    echo "OK: claude.models catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' '))"
+elif [ -n "$CLAUDE_CAT" ]; then
+    echo "OK: MODEL omitted — CLI default (claude -p without -m), runs/claude/_default/; catalog ($(printf '%s' "$CLAUDE_CAT" | tr '\n' ' ')) not consulted"
+else
+    echo "OK: claude.models catalog empty (has_claude_models=${HAS_CLAUDE_MODELS:-0}) — CLI default if MODEL is omitted"
+fi
 ```
 
 If any pre-flight check fails, STOP and report the error to the user verbatim. Do NOT edit config.yaml (or any plugin config) yourself — only the user changes it.
+
+Do **not** append a tooling-constraint paragraph. `claude -p` does not see Grok's plugin list
+(spec §4). This skill has no such section.
 
 ## Process
 
@@ -226,7 +245,7 @@ If no formal plan exists, use: `{PLAN_REFERENCE}` = "No formal plan - review for
 
 ### Step 3: Prepare Prompt
 
-Render the template `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` = the absolute base dir Claude Code prints at skill load; see "Locating plugin files" above) via `render-template.py`, substituting the **actual values** (not variables) collected in Steps 1-2, then append the tooling constraint — SINGLE Bash call:
+Render the template `$SKILL_BASE/../shared/code-review-prompt.md` (`SKILL_BASE` = the absolute base dir Claude Code prints at skill load; see "Locating plugin files" above) via `render-template.py`, substituting the **actual values** (not variables) collected in Steps 1-2 — SINGLE Bash call. Do **not** append a tooling constraint.
 
 ```bash
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
@@ -245,7 +264,7 @@ else
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
   [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
-  SKILL_BASE="$PLUGIN_ROOT/skills/grok-code-review"
+  SKILL_BASE="$PLUGIN_ROOT/skills/claude-code-review"
 fi
 DESC=$(cat <<'MESH_DESC_EOF'
 <what was implemented — plain prose; apostrophes, quotes, &&, $(), backticks are all safe inside this quoted heredoc>
@@ -263,40 +282,9 @@ python3 "$SKILL_BASE/../shared/render-template.py" "$SKILL_BASE/../shared/code-r
     PLAN_REFERENCE="$PLAN_REF" \
     > "$PROMPT_FILE" || { echo "STOP: prompt render failed - see stderr above"; exit 1; }
 [ -s "$PROMPT_FILE" ] || { echo "STOP: rendered prompt is empty"; exit 1; }
-# Grok loads the user's Claude Code plugins, so `claude-mesh:mesh-review` and every other
-# skill on this machine is visible to it. Nothing stops it from "helpfully" launching one
-# instead of reviewing — and a nested orchestration would write run dirs this session never
-# dispatched. codex and gemini need no such line: they cannot see those skills at all.
-cat >> "$PROMPT_FILE" << 'GROK_TOOLING_EOF' || { echo "STOP: could not append the tooling constraint"; exit 1; }
-
-## Tooling constraint
-
-Do NOT invoke any skill or slash command, and do NOT delegate this review to another agent or
-orchestration. Names like `claude-mesh:mesh-review` may be visible in your environment; they
-are not part of this task. Read the code with your own file, search and shell tools, and
-answer with the review itself.
-GROK_TOOLING_EOF
 echo "PROMPT_FILE=$PROMPT_FILE"
 cat "$PROMPT_FILE"
 ```
-
-**The append is part of THIS block — never its own Bash call.** A shell variable does not
-survive from one Bash-tool call to the next (see "Bash Variables" above), so a separately
-opened `cat >> "$PROMPT_FILE"` expands to `cat >> ""` and dies with `ambiguous redirect`,
-shipping an unconstrained prompt or no prompt at all.
-
-**No `&&` chaining across the heredoc** — which is why this block uses sequential commands with
-explicit `|| { …; exit 1; }` guards instead of the `&&` chain the sibling skills use. What breaks
-is the backslash-continued chain, not the `||`. Measured on bash 5.2: with
-`cat >> "$f" << 'INNER' && \` the backslash pulls the body's first line into the command list,
-where bash RUNS it (`appended-line: command not found`), and the delimiter line then closes an
-EMPTY heredoc — so nothing is appended at all, `cat` exits 0, and the block reports success while
-handing Step 4 an unconstrained prompt. A guard on the opener line with NO trailing backslash —
-`cat >> "$f" << 'EOF' || { …; exit 1; }`, the form used above — is a different construct and was
-measured safe under `set -euo pipefail`: the whole body is appended, none of it is executed, and
-a failed redirect stops the block. Which is what that guard is for: an unguarded append that
-fails would let Step 4 ship a prompt with no tooling constraint, which is exactly the prompt that
-lets grok launch a nested orchestration.
 
 Quoting rules (mesh-review hardening, 2026-07-16):
 - Prose values go through quoted heredocs (`<<'MESH_DESC_EOF'`) and `"$VAR"` expansions —
@@ -311,36 +299,35 @@ Quoting rules (mesh-review hardening, 2026-07-16):
   `a && b` silently corrupts the prompt. `render-template.py` substitutes argv values
   literally on any bash version (tests: `shared/tests/test-render-template.sh`).
 
-The `cat` output — the rendered template plus the tooling constraint — is the formatted prompt
-text for Step 4.
+The `cat` output — the rendered template — is the formatted prompt text for Step 4.
 
-### Step 4: Execute via grok-exec Skill
+### Step 4: Execute via ext-claude-exec
 
-**If this host has a Skill tool** (Claude Code): invoke `grok-exec` with the Skill tool, then follow it.
+**If this host has a Skill tool** (Claude Code): invoke `ext-claude-exec` with the Skill tool, then follow it.
 
 ```
-Skill tool -> skill: "claude-mesh:grok-exec"
+Skill tool -> skill: "claude-mesh:ext-claude-exec"
 ```
 
-**If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/grok-exec/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
-`find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
+**If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/ext-claude-exec/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
+`find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/ext-claude-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/ext-claude-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/ext-claude-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
 Following the skill **is** CLI delegation. It is not a review you perform yourself.
 
 Pass these parameters:
 
 ```
-PROMPT=<formatted prompt from Step 3, including the tooling constraint>
+HOST_CLAUDE=1
+PROMPT=<formatted prompt from Step 3>
 TASK_NAME="review-${BRANCH}"
 MODEL=<the MODEL argument this skill was called with>
 SUPERVISED_MODE=shell
 ```
 
-**Model:** always pass it through — this skill refuses to run without one, so there is
-nothing to resolve. Do NOT pass `REASONING_EFFORT` unless the caller explicitly named one:
-`grok-exec` resolves the level for the model it was handed by itself — `grok.model_efforts` for
-that model, then the section-wide `grok.reasoning_effort`.
+**Model:** pass it through when the caller named one. An empty MODEL with an empty catalog
+omits `-m` (CLI default). Do NOT invent an alias.
 
-The run lands in `${CLAUDE_PLUGIN_DATA}/runs/grok/<model>/{timestamp}-review-{branch}/`:
+The run lands in `${CLAUDE_PLUGIN_DATA}/runs/claude/<alias>/{timestamp}-review-{branch}/`
+(or `runs/claude/_default/` when MODEL is omitted):
 
 ```
 ├── prompt.md       # The review prompt
@@ -356,11 +343,11 @@ Under `SUPERVISED_MODE=shell` the directory also carries `stderr.txt`, the per-a
 
 ### Step 5: Present Results
 
-After grok-exec completes, read `output.txt` from the work directory and present to user. Then run this success-restart diagnostic check:
+After ext-claude-exec completes, read `output.txt` from the work directory and present to user. Then run this success-restart diagnostic check:
 
 ```bash
 WORK_DIR=$(cat <<'WORK_DIR_EOF'
-<work directory from grok-exec>
+<work directory from ext-claude-exec>
 WORK_DIR_EOF
 ) && \
 ATTEMPTS=0 && \
@@ -376,7 +363,7 @@ if [ ! -f "$WORK_DIR/watchdog.exit" ] && [ "$ATTEMPTS" -gt 1 ]; then \
 fi
 ```
 
-If `$WORK_DIR/watchdog.exit` exists, do not print additional diagnostics here; `grok-exec`
+If `$WORK_DIR/watchdog.exit` exists, do not print additional diagnostics here; `ext-claude-exec`
 already emitted the full diagnostics block on its bail path.
 
 Decide from `output.txt`, never from `report.md`: the renderer walks the WHOLE run, so
@@ -403,22 +390,21 @@ Also provide links to supervised-compatible artifacts:
 Apply `superpowers:receiving-code-review` skill principles:
 
 1. **Verify** — check each issue against actual codebase
-2. **Don't blindly agree** — Grok can be wrong
+2. **Don't blindly agree** — the CLI reviewer can be wrong
 3. **Fix Critical** — immediately, no exceptions
 4. **Fix Important** — before proceeding to next task
-5. **Push back** — if Grok misunderstood, explain why with code references
+5. **Push back** — if the reviewer misunderstood, explain why with code references
 
 ## Checklist
 
-- [ ] MODEL argument received (never invented)
-- [ ] Pre-flight checks passed, including the hard `grok:` section gate
+- [ ] MODEL argument received when the catalog is non-empty (never invented)
+- [ ] Pre-flight checks passed (`command -v claude`; catalog membership only when a MODEL was supplied)
 - [ ] Git SHA range collected
 - [ ] Description/plan identified
-- [ ] Prompt formatted from template
-- [ ] Tooling constraint appended in the SAME Bash call as the render
-- [ ] grok-exec skill invoked with the caller's MODEL
-- [ ] grok-exec invoked with SUPERVISED_MODE=shell
-- [ ] Diagnostics block emitted if restart or bail occurred (success-restart banner here; bail diagnostics from grok-exec)
+- [ ] Prompt formatted from template (no tooling-constraint append)
+- [ ] ext-claude-exec invoked with HOST_CLAUDE=1 and the caller's MODEL
+- [ ] ext-claude-exec invoked with SUPERVISED_MODE=shell
+- [ ] Diagnostics block emitted if restart or bail occurred (success-restart banner here; bail diagnostics from ext-claude-exec)
 - [ ] Results presented to user
 - [ ] Feedback processed (fixes or pushback)
 
@@ -426,14 +412,14 @@ Apply `superpowers:receiving-code-review` skill principles:
 
 | Error | Solution |
 |-------|----------|
-| `grok: command not found` | Install Grok Build — `curl -fsSL https://x.ai/cli/install.sh \| bash`, the installer xAI documents in the CLI's own README — then `grok login` |
-| `not authenticated` | `grok login` |
-| `unknown model id` | The MODEL is not one xAI serves — show `config-loader.sh list-grok-models` and let the caller choose; never substitute one |
-| `STOP: no grok: section` | The user adds a `grok:` block with a `models:` catalog — agents never edit config.yaml |
-| Timeout (30 min per attempt, 60 min overall) | Watchdog bail: read `watchdog.exit` and the per-attempt tails grok-exec printed |
+| `claude: command not found` | Install Claude Code, then `claude login` |
+| `not authenticated` | `claude login` — do not paste a token into config.yaml |
+| `unknown model` / CLI refuses `-m` | The MODEL is not a Claude Code alias — show `config-loader.sh list-claude-models` and let the caller choose; never substitute one |
+| empty catalog, no MODEL | Expected: one run with no `-m` (CLI default). Run dir `runs/claude/_default/` |
+| Timeout (30 min per attempt, 60 min overall) | Watchdog bail: read `watchdog.exit` and the per-attempt tails ext-claude-exec printed |
 | Empty response | Check `$WORK_DIR/stderr.txt` and `$WORK_DIR/raw.jsonl`, retry |
 | No git changes | Skip review, inform user |
-| Grok disagrees with plan | Discuss with user, don't auto-fix |
+| Reviewer disagrees with plan | Discuss with user, don't auto-fix |
 | Variables empty | Ensure ALL commands in SINGLE Bash call |
 
 ## Integration Notes
@@ -441,8 +427,7 @@ Apply `superpowers:receiving-code-review` skill principles:
 - Can run **parallel** with `superpowers:requesting-code-review` for dual validation
 - Output format matches internal reviewer for consistency
 - Uses `receiving-code-review` principles for processing feedback
-- Grok has filesystem access via tools — it reads files and runs git diff itself
-- Uses shared `grok-exec` skill for execution (reusable for other tasks)
-- Grok is the one engine here that can SEE this machine's Claude Code skills (`grok inspect`
-  lists `~/.claude/CLAUDE.md` and every installed `claude-*` plugin), which is why Step 3
-  appends the tooling constraint. There is no CLI flag that suppresses it.
+- The Claude Code CLI has filesystem access via tools — it reads files and runs git diff itself
+- Uses shared `ext-claude-exec` skill with `HOST_CLAUDE=1` (official `claude login`, not a provider export)
+- Run dirs are `$DATA_DIR/runs/claude/<alias>/` (depth 2, like grok)
+- No tooling-constraint paragraph: `claude -p` does not see Grok's plugin list

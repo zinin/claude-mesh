@@ -27,6 +27,11 @@ CMD_DIR="$REPO/commands"
 FAIL=0
 PASS=0
 
+assert_match_snippet() {   # desc, pattern, text — pins that the guard survived extraction
+    local desc="$1" pat="$2" txt="$3"
+    if printf '%s' "$txt" | tail -1 | grep -q -- "$pat"; then PASS=$((PASS+1)); echo "  PASS: $desc"
+    else FAIL=$((FAIL+1)); echo "  FAIL: $desc (last line: $(printf '%s' "$txt" | tail -1))"; fi
+}
 assert_eq() {
     local desc="$1" expected="$2" actual="$3"
     if [ "$expected" = "$actual" ]; then
@@ -37,7 +42,13 @@ assert_eq() {
 }
 
 PRIMARY='LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"'
-FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
+# The two roots are searched in PRIORITY order, never in one find over both: `sort -V`
+# compares whole paths and `.claude` < `.grok`, so a single find picked the .grok copy
+# whatever its version — the same class of silent mis-resolution as the original `head -1`.
+FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)" || true'
+FALLBACK2='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)" || true'
+# installed-plugins is searched only inside a Grok session (GROK_SESSION_ID set) — see Test 6.
+FALLBACK_INST='[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)" || true'
 
 # === Test 1: every command site uses the same resolver ===
 # The counts are a deliberate canary, not incidental. A new command that resolves the loader
@@ -60,8 +71,15 @@ echo "=== Test 1: resolver present and in sync across command files ==="
 # item, so its fence is indented. This canary is about content drift, not indentation.
 n_primary=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$PRIMARY")
 n_fallback=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$FALLBACK")
+n_fallback2=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$FALLBACK2")
+n_fallback_inst=$(sed 's/^[[:space:]]*//' "$CMD_DIR"/*.md | grep -Fxc "$FALLBACK_INST")
 assert_eq "7 primary lines across commands/" "7" "$n_primary"
-assert_eq "7 fallback lines across commands/" "7" "$n_fallback"
+assert_eq "7 .claude fallback lines across commands/" "7" "$n_fallback"
+assert_eq "7 .grok fallback lines across commands/" "7" "$n_fallback2"
+assert_eq "7 installed-plugins fallback lines across commands/" "7" "$n_fallback_inst"
+# Neither root may be searched together with the other in one find.
+assert_eq "0 cross-root finds remain" "0" \
+    "$(grep -c '.claude/plugins "$HOME"/.grok/plugins' "$CMD_DIR"/*.md | awk -F: '{s+=$2} END {print s+0}')"
 assert_eq "mesh-review.md carries 5" "5" \
     "$(sed 's/^[[:space:]]*//' "$CMD_DIR/mesh-review.md" | grep -Fxc "$PRIMARY")"
 assert_eq "do-plan.md carries 2" "2" "$(grep -Fxc "$PRIMARY" "$CMD_DIR/do-plan.md")"
@@ -76,14 +94,18 @@ assert_eq "0 occurrences of 'head -1' on the loader glob" "0" "$stale"
 # Three lines, not two: the third is the `|| { echo …; exit 1; }` guard, and Test 5 below
 # only means anything if it actually runs. `run_snippet` assumes the extracted block is a
 # self-contained, well-formed bash fragment — it is concatenated into `bash -c`.
-SNIPPET="$(grep -Fx -A2 -h "$PRIMARY" "$CMD_DIR/mesh-review.md" | grep -v '^--$' | head -3)"
+# Five lines: the substituted primary, installed-plugins find, .claude find, .grok find,
+# then the guard. The window must cover the guard — extracting too few lines silently
+# dropped it and Test 5 then passed a snippet that could not fail.
+SNIPPET="$(grep -Fx -A4 -h "$PRIMARY" "$CMD_DIR/mesh-review.md" | grep -v '^--$' | head -5)"
 echo "=== extraction ==="
-assert_eq "snippet extracted (3 lines)" "3" "$(printf '%s' "$SNIPPET" | grep -c '')"
+assert_eq "snippet extracted (5 lines)" "5" "$(printf '%s' "$SNIPPET" | grep -c '')"
+assert_match_snippet "…and the last line is the not-found guard" '\[ -f "$LOADER" \] || {' "$SNIPPET"
 
 # Run the extracted snippet under a controlled HOME / plugin root. rc is asserted too:
 # an empty $GOT must mean "resolver found nothing", never "the snippet failed to run".
-run_snippet() {   # $1 = HOME, $2 = CLAUDE_PLUGIN_ROOT
-    GOT=$(HOME="$1" CLAUDE_PLUGIN_ROOT="$2" bash -c "$SNIPPET"$'\n''printf %s "$LOADER"' 2>/dev/null); RC=$?
+run_snippet() {   # $1 = HOME, $2 = CLAUDE_PLUGIN_ROOT, $3 = GROK_SESSION_ID (empty = not a Grok session)
+    GOT=$(HOME="$1" CLAUDE_PLUGIN_ROOT="$2" GROK_SESSION_ID="${3:-}" bash -c "$SNIPPET"$'\n''printf %s "$LOADER"' 2>/dev/null); RC=$?
 }
 
 # === Test 3: substituted ${CLAUDE_PLUGIN_ROOT} wins over anything installed ===
@@ -112,6 +134,25 @@ assert_eq "snippet ran cleanly" "0" "$RC"
 assert_eq "resolves to 0.10.0" "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.10.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
 
+# === Test 6: installed-plugins is a Grok-session root ===
+# The unpublished snapshot outranks the Claude cache only when GROK_SESSION_ID is set — bash
+# inside Grok Build has it, Claude Code does not (measured 2026-09-01). A Claude Code session on
+# a machine that also runs Grok smokes must not execute that snapshot: it falls behind the tree
+# the moment a commit lands (decided 2026-09-02).
+echo "=== Test 6: installed-plugins wins only inside a Grok session ==="
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared" \
+         "$TDIR/home/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared"
+: > "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh"
+: > "$TDIR/home/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared/config-loader.sh"
+run_snippet "$TDIR/home" "" "grok-session-1"
+assert_eq "snippet ran cleanly (Grok session)" "0" "$RC"
+assert_eq "Grok session: the snapshot wins" "$TDIR/home/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared/config-loader.sh" "$GOT"
+run_snippet "$TDIR/home" ""
+assert_eq "snippet ran cleanly (no Grok session)" "0" "$RC"
+assert_eq "no Grok session: the Claude cache wins" "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh" "$GOT"
+rm -rf "$TDIR"
+
 # === Test 5: nothing installed and no substitution -> the guard exits 1 ===
 # The point is that the call site FAILS LOUDLY rather than carrying an empty $LOADER into
 # `"$LOADER" get-flag …`, where the shell would report a confusing "not found".
@@ -121,6 +162,25 @@ mkdir -p "$TDIR/home/.claude/plugins"
 run_snippet "$TDIR/home" ""
 assert_eq "guard exits 1" "1" "$RC"
 assert_eq "nothing printed" "" "$GOT"
+rm -rf "$TDIR"
+
+# === Test 7: missing installed-plugins must not abort under set -euo pipefail ===
+# Marketplace Grok: GROK_SESSION_ID is set, ~/.grok/installed-plugins does not exist,
+# the Claude cache does. `find` on a missing dir is rc=1; with pipefail that used to
+# kill the last `||` arm under `set -e` before the .claude fallback (measured 2026-09-02).
+# Command fences themselves are `set -u` only; skill launch fences are `set -euo pipefail`.
+# Run the live command snippet under -e so a missing `|| true` cannot hide here.
+echo "=== Test 7: missing installed-plugins does not abort under set -euo pipefail ==="
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared"
+: > "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh"
+GOT=$(HOME="$TDIR/home" CLAUDE_PLUGIN_ROOT="" GROK_SESSION_ID="grok-session-1" \
+    bash -c 'set -euo pipefail
+'"$SNIPPET"'
+printf %s "$LOADER"'); RC=$?
+assert_eq "strict snippet ran cleanly" "0" "$RC"
+assert_eq "falls through to the Claude cache" \
+    "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
 
 echo ""

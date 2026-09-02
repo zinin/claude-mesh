@@ -2,6 +2,32 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Added
+- **Host-aware mesh on Grok Build.** `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `general-purpose` reviewers with `model:` slugs from `grok models` (`builtin: native` / `native_models`). Wrappers still run when selected. On Grok, `claude` is the Claude Code CLI (`claude -p --model`, `runs/claude/<alias>/`).
+
+### Fixed
+- **Grok native reviewers had no shell.** `explore` on Grok 1.0.13 is `read_file`/`list_dir`/`grep` only, so `git diff` never ran. Native dispatch is `general-purpose` (do not edit files).
+- **Unpublished Grok install lost to the Claude cache.** `resolve-plugin-root.sh` and every skill/command else-branch now search `~/.grok/installed-plugins` before `~/.claude/plugins`. Only inside a Grok session (`GROK_SESSION_ID` set in bash): a Claude Code session keeps the 0.12.0 order, so a stale Grok snapshot on a two-host machine cannot outrank the Claude cache.
+- **HOST_CLAUDE `claude -p -m` is not a flag** on Claude Code 2.1.257. Pass `--model`.
+- **Empty `.session_id` on Grok.** Stamp and match `GROK_SESSION_ID` when `CLAUDE_CODE_SESSION_ID` is unset.
+- **Grok wrapper `.session_id` is the child session, not the parent.** Wrapper bash sees its own `GROK_SESSION_ID`; `watch-runs` / `verify-delegation` run as the orchestrator. A child-stamped run is still this dispatch when Grok's subagent `meta.json` names the parent. Without that meta the stamp stays foreign. The meta lives at `~/.grok/sessions/<cwd>/<parent id>/subagents/<child id>/meta.json`; the first cut globbed one level too shallow and matched nothing, and the match is now on the value, not on Grok's pretty-printing.
+- **Grok wait rule contradicted by the exec skills.** The four `*-exec` skills told every wrapper to end its turn after the launch; on Grok Build the wrapper waits on the command id instead, as the agent definitions already said.
+- `mesh-design-review` merge template gained the `native:<slug>` section; the Grok wait loop now binds `runtime.timeouts.global_sec` (`GLOBAL_SEC`) instead of naming a value nothing had read.
+- `list-host-models.sh` stops at the first non-bullet line after `Available models:` — bulleted prose printed after the list no longer becomes slugs.
+- Preflight: `native` detection reads the preset JSON, not the joined summary string; a `claude-cli MISSING` row now carries a note that `claude:*` is the CLI on Grok Build.
+- HOST_CLAUDE without a config.yaml: `get-runtime` rc=2 now means the default timeouts (1800/600/3600, 2 retries) plus a WARN naming the data dir, matching the review skill's preflight; rc=1 (a config that does not validate) still STOPs.
+- Grok native reviewers run as `general-purpose` with a shell, so both orchestrators now hash the working tree before dispatch and after the native wait; a difference is reported (a `tree | CHANGED` row in mesh-review, a note atop the design-review merged file), never reverted.
+- The orchestrators' `grok models` probe honours `GROK_MODELS_TIMEOUT`, else `PREFLIGHT_CLI_TIMEOUT` (the knob preflight's NO-NETWORK row names), else 30; documented in README.
+- `ext-claude-exec`: Step 1 records the validated `MODEL` / `HOST_CLAUDE` pair in `$WORK_DIR/.mode`; both launch fences re-check their own substitution against it and STOP before the CLI starts on a mismatch.
+- **Review→exec Read on Grok opened the Claude cache.** The no-Skill-tool paragraph in the five `*-code-review` skills (and fresh-session preflight) now searches `~/.grok/installed-plugins` before `~/.claude/plugins`.
+- Preflight no longer marks a zero-slug `grok models` listing as `OK` (and no longer leaks a temp file).
+- **Grok wrapper fences died before the Claude-cache fallback** when `~/.grok/installed-plugins` was absent (marketplace install, no `grok plugin install`). `find` on a missing dir is rc=1; under `set -euo pipefail` that killed the last `||` arm, so Step 1/2 never reached `~/.claude/plugins`. Each loader-find assignment now ends with `|| true`.
+
+### Changed
+- **Grok-only break:** a 0.12.0 preset with `builtin: [claude, …]` and no `native` no longer means "review on the host model". It means `claude -p`. Claude Code behaviour for that preset is unchanged.
+
 ## [0.12.0] - 2026-08-30
 
 ### Added

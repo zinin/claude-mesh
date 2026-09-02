@@ -73,9 +73,9 @@ reason_count() { printf '%s' "$REASON" | grep -o '[0-9]\+ tool call(s)' | grep -
 run_as() {
     local sid="$1"; shift
     if [ "$sid" = "-" ]; then
-        VERDICT=$(env -u CLAUDE_CODE_SESSION_ID bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
+        VERDICT=$(env -u CLAUDE_CODE_SESSION_ID -u GROK_SESSION_ID bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
     else
-        VERDICT=$(env "CLAUDE_CODE_SESSION_ID=$sid" bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
+        VERDICT=$(env -u GROK_SESSION_ID "CLAUDE_CODE_SESSION_ID=$sid" bash "$SCRIPT" "$@" 2>/dev/null); RC=$?
     fi
 }
 # stamp a run dir with a session id
@@ -578,8 +578,61 @@ run_as sid-A ext-claude zai/glm 1 "$TDIR"
 assert_eq "verdict FLIP" "FLIP" "$VERDICT"
 assert_eq "exit 3" "3" "$RC"
 assert_match "reason names the session mismatch" "belong to another session" \
-    "$(env CLAUDE_CODE_SESSION_ID=sid-A bash "$SCRIPT" ext-claude zai/glm 1 "$TDIR" 2>&1 >/dev/null)"
+    "$(env -u GROK_SESSION_ID CLAUDE_CODE_SESSION_ID=sid-A bash "$SCRIPT" ext-claude zai/glm 1 "$TDIR" 2>&1 >/dev/null)"
 rm -rf "$TDIR"
+
+# Grok Build exports GROK_SESSION_ID, not CLAUDE_CODE_SESSION_ID. Measured 2026-09-01:
+# wrappers wrote a blank .session_id and the guard could not tell runs apart.
+# Fail-open (empty SELF_SID) would pick the newest dir — here a BROKEN stranger.
+# With the fallback the older REAL run stamped grok-sid-1 is the one that counts.
+echo "=== Test: run identity — GROK_SESSION_ID matches a stamped run when CLAUDE_CODE_SESSION_ID is unset ==="
+TDIR=$(mktemp -d)
+mine=$(mk_run "$TDIR/runs/claude/opus" 2026-09-01-22-00-00-1000-review)
+mk_output "$mine/output.txt" 'real review'; ln -s attempt-1 "$mine/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":26}' > "$mine/raw.jsonl"
+sid_stamp "$mine" grok-sid-1
+theirs=$(mk_run "$TDIR/runs/claude/opus" 2026-09-01-22-05-00-1000-other)
+mk_output "$theirs/output.txt" 'broken'; ln -s attempt-1 "$theirs/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1}' > "$theirs/raw.jsonl"
+sid_stamp "$theirs" grok-sid-2
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-sid-1 bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict REAL (not the newer foreign BROKEN run)" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+# Grok overwrites GROK_SESSION_ID in wrapper children (measured 2026-09-01: parent
+# 01a05eb7-…, run stamped 01a05ec0-…). The orchestrator must still recognise that run.
+echo "=== Test: run identity — GROK parent accepts a child-stamped run via subagent meta ==="
+TDIR=$(mktemp -d)
+GH=$(mktemp -d)
+# Real layout, measured 2026-09-02: sessions/<urlencoded cwd>/<parent id>/subagents/<child id>/.
+# The first cut globbed sessions/*/subagents/ — one level too shallow — and this fixture
+# mirrored the mistake, so the suite was green over a function that never matched a file.
+# Compact JSON on purpose: the match is on the VALUE, not on Grok's pretty-printing.
+mkdir -p "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1"
+printf '%s\n' '{"parent_session_id":"grok-parent-1","child_session_id":"grok-child-1"}' \
+    > "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1/meta.json"
+mine=$(mk_run "$TDIR/runs/claude/opus" 2026-09-01-23-58-07-206201-review)
+mk_output "$mine/output.txt" 'real review'; ln -s attempt-1 "$mine/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":44}' > "$mine/raw.jsonl"
+sid_stamp "$mine" grok-child-1
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict REAL when meta names this session as parent" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+# A child of someone else stays foreign even when a meta file exists.
+printf '%s\n' '{"parent_session_id": "other-parent", "child_session_id": "grok-child-1"}' \
+    > "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1/meta.json"
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict FLIP for a child of another parent" "FLIP" "$VERDICT"
+assert_eq "exit 3" "3" "$RC"
+# No meta at all: same FLIP as a stranger stamp (the 8571263 fallback does not apply).
+rm -rf "$GH/sessions"
+VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
+assert_eq "verdict FLIP without subagent meta" "FLIP" "$VERDICT"
+rm -rf "$TDIR" "$GH"
 
 # --- the dispatch window is the NAME window, the same one watch-runs.sh uses ---------------
 # It used to be `find -newermt` — MODIFICATION time. A run dir created BEFORE the window but
@@ -1475,6 +1528,79 @@ mk_output "$rd/output.txt" 'a real review'; ln -s attempt-1 "$rd/final"
 run ext-claude zai/glm 1 "$TDIR"
 assert_eq "a genuine final zero still scores BROKEN" "BROKEN" "$VERDICT"
 assert_eq "exit 4" "4" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: claude FLIP (no run dir) ==="
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/runs/claude/opus"
+run claude opus 1 "$TDIR"
+assert_eq "verdict FLIP" "FLIP" "$VERDICT"
+assert_eq "exit 3" "3" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: claude REAL (num_turns 12) ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/claude/opus" 2026-08-31-11-00-00-1000-review)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":12}' > "$rd/raw.jsonl"
+run claude opus 1 "$TDIR"
+assert_eq "verdict REAL" "REAL" "$VERDICT"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR"
+
+echo "=== Test: claude requires a model argument ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/claude"
+run claude - 1 "$TDIR"
+assert_eq "exit 1 (usage error, no verdict)" "1" "$RC"
+assert_eq "no verdict printed" "" "$VERDICT"
+rm -rf "$TDIR"
+
+echo "=== Test: claude rejects a slashed model ==="
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/claude"
+run claude zai/glm 1 "$TDIR"
+assert_eq "slashed model: exit 1" "1" "$RC"
+assert_eq "slashed model: no verdict" "" "$VERDICT"
+run claude opus 1 "$TDIR"
+assert_eq "alias still reaches a verdict" "3" "$RC"
+assert_eq "…FLIP" "FLIP" "$VERDICT"
+rm -rf "$TDIR"
+
+echo "=== Test: claude accepts the _default fallback dir, and only that underscore name ==="
+# runs/claude/_default/ is what ext-claude-exec writes when MODEL is omitted (the CLI-default
+# path). The leading underscore is deliberate — `default` would look like a catalog alias — and
+# watch-runs.sh already admits `claude/_default`. The guard has to take the same literal, or the
+# fallback reviewer is the one wrapper whose verdict is read by hand, losing the dispatch-window
+# and permission_denials checks. Exact literal only: no other `_*` name is accepted.
+TDIR=$(mktemp -d); mkdir -p "$TDIR/runs/claude"
+run claude _default 1 "$TDIR"
+assert_eq "_default reaches a verdict, not a usage error" "3" "$RC"
+assert_eq "…FLIP with no run dir" "FLIP" "$VERDICT"
+for bad in _other _ _default2 __default; do
+    run claude "$bad" 1 "$TDIR"
+    assert_eq "'$bad' is still a usage error" "1" "$RC"
+    assert_eq "'$bad' prints no verdict" "" "$VERDICT"
+done
+rd=$(mk_run "$TDIR/runs/claude/_default" 2026-08-31-11-00-00-1000-fallback)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":9}' > "$rd/raw.jsonl"
+run claude _default 1 "$TDIR"
+assert_eq "a real _default run verifies REAL" "0" "$RC"
+assert_eq "…verdict REAL" "REAL" "$VERDICT"
+rm -rf "$TDIR"
+
+echo "=== Test: claude DEGRADED remedy is not ext-claude's missing-flag line ==="
+TDIR=$(mktemp -d)
+rd=$(mk_run "$TDIR/runs/claude/opus" 2026-08-31-11-00-00-1000-denied)
+mk_output "$rd/output.txt" '### Findings'
+ln -s attempt-1 "$rd/final"
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":9,"permission_denials":[{"tool_name":"Read"}]}' > "$rd/raw.jsonl"
+run_full claude opus 1 "$TDIR"
+assert_eq "verdict DEGRADED" "DEGRADED" "$VERDICT"
+assert_eq "exit 5" "5" "$RC"
+assert_no_match "does not prescribe the ext-claude missing-flag remedy" "the ext-claude run needs" "$REASON"
+assert_match "names HOST_CLAUDE already passes the flag" "HOST_CLAUDE" "$REASON"
 rm -rf "$TDIR"
 
 echo ""

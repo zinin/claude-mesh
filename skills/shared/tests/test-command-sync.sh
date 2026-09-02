@@ -162,8 +162,17 @@ assert_nonempty "design PREFLIGHT extracted"  "$DESIGN_PREFLIGHT"
 assert_nonempty "code PREFLIGHT extracted"    "$CODE_PREFLIGHT"
 assert_eq "design DO NOT is 7 lines"      "7"  "$(printf '%s\n' "$DESIGN_DONOT" | grep -c '')"
 assert_eq "code DO NOT is 7 lines"        "7"  "$(printf '%s\n' "$CODE_DONOT" | grep -c '')"
-assert_eq "design PREFLIGHT is 17 lines"  "17" "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c '')"
-assert_eq "code PREFLIGHT is 17 lines"    "17" "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c '')"
+# 19, not 18: installed-plugins first, then ~/.claude/plugins, then ~/.grok/plugins —
+# three find lines, never one find over both roots (`sort -V` compares whole paths
+# and .claude < .grok, so a single find picked the .grok copy whatever its version).
+# installed-plugins is required first on Grok unpublished installs (same hole as the
+# review→exec Read path).
+assert_eq "design PREFLIGHT is 19 lines"  "19" "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c '')"
+assert_eq "code PREFLIGHT is 19 lines"    "19" "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c '')"
+assert_ge "design PREFLIGHT searches installed-plugins" "1" \
+    "$(printf '%s\n' "$DESIGN_PREFLIGHT" | grep -c 'installed-plugins' || true)"
+assert_ge "code PREFLIGHT searches installed-plugins" "1" \
+    "$(printf '%s\n' "$CODE_PREFLIGHT" | grep -c 'installed-plugins' || true)"
 assert_eq "design DO NOT starts at its heading" "## DO NOT" "$(printf '%s\n' "$DESIGN_DONOT" | head -1)"
 assert_eq "code DO NOT starts at its heading"   "## DO NOT" "$(printf '%s\n' "$CODE_DONOT" | head -1)"
 # The two blocks of the SAME file must come out different, or the extractor is returning
@@ -292,7 +301,33 @@ assert_eq "design review prints it too" "1" \
 for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
     assert_ge "${f#"$REPO"/} binds SELECTED_GROK_MODELS" "4" \
         "$(grep -c 'SELECTED_GROK_MODELS' "$f")"
+    assert_ge "${f#"$REPO"/} binds SELECTED_NATIVE_MODELS" "4" \
+        "$(grep -c 'SELECTED_NATIVE_MODELS' "$f")"
+    assert_ge "${f#"$REPO"/}: spawn_subagent is the Grok host test" "1" \
+        "$(grep -c 'spawn_subagent' "$f")"
+    assert_ge "${f#"$REPO"/}: Grok CLI order names claude first" "1" \
+        "$(grep -c 'claude / codex / gemini / grok' "$f")"
+    assert_ge "${f#"$REPO"/}: native degrade notice" "1" \
+        "$(grep -c 'native не запущен' "$f")"
+    # Empty SELECTED_NATIVE_MODELS is the session-model fallback only while native stays
+    # selected and HOST_MODELS listed. Degrade (failed grok models / empty intersect of a
+    # non-empty preset) must drop the type, or confirm shows native (модель сессии).
+    assert_ge "${f#"$REPO"/}: degrade removes native from selected types" "1" \
+        "$(grep -c 'remove native from selected types' "$f")"
+    assert_ge "${f#"$REPO"/}: empty intersect does not omit-model" "1" \
+        "$(grep -c 'do not substitute the session model' "$f")"
+    assert_ge "${f#"$REPO"/}: session-model fallback needs a live catalog" "1" \
+        "$(grep -c 'session-model fallback only when HOST_MODELS is non-empty' "$f")"
 done
+# mesh-review dispatches claude-code-reviewer; design review dispatches claude-executor.
+assert_ge "design review dispatches claude-executor" "1" \
+    "$(grep -c 'claude-mesh:claude-executor' "$DESIGN_SKILL")"
+assert_eq "design review never dispatches claude-code-reviewer" "0" \
+    "$(grep -c 'claude-mesh:claude-code-reviewer' "$DESIGN_SKILL")"
+assert_ge "mesh-review dispatches claude-code-reviewer" "1" \
+    "$(grep -c 'claude-mesh:claude-code-reviewer' "$MESH_REVIEW")"
+assert_eq "mesh-review never dispatches claude-executor" "0" \
+    "$(grep -c 'claude-mesh:claude-executor' "$MESH_REVIEW")"
 
 # Every `ни одной …` sentinel must carry its own drop clause. The sentinel exists because
 # AskUserQuestion refuses a one-option page, so each of the three model pages offers its empty
@@ -344,6 +379,89 @@ assert_eq "the base-branch prefix rule names both exceptions, not grok alone" "0
     "$(grep -c 'grok is the one exception' "$MESH_REVIEW")"
 assert_eq "no one-line 'MODEL=<id> Review …' form left to be prefixed" "0" \
     "$(grep -c 'MODEL=<id> Review the changes' "$MESH_REVIEW")"
+
+# Native children are general-purpose with a shell (below), so both orchestrators stamp a tree
+# hash before dispatch and compare it after the native wait — the mechanical check behind
+# "Do not edit files". Both files, both halves.
+assert_ge "mesh-review stamps TREE_BEFORE for Grok native" "1" "$(grep -c 'TREE_BEFORE' "$MESH_REVIEW")"
+assert_ge "mesh-review compares TREE_AFTER" "1" "$(grep -c 'TREE_AFTER' "$MESH_REVIEW")"
+assert_ge "design review stamps TREE_BEFORE for Grok native" "1" "$(grep -c 'TREE_BEFORE' "$DESIGN_SKILL")"
+assert_ge "design review compares TREE_AFTER" "1" "$(grep -c 'TREE_AFTER' "$DESIGN_SKILL")"
+
+# Task 9 / Grok 1.0.13 smoke: native reviewers need shell (`git diff`, tests).
+# Built-in `explore` on this host only has read_file/list_dir/grep — no
+# run_terminal_command — so dispatch is general-purpose. The child must still
+# be told not to edit (that type can write). Presence floors, never exact counts.
+assert_eq "mesh-review Grok native does not use explore" "0" \
+    "$(grep -cE 'subagent_type: "?explore"?' "$MESH_REVIEW")"
+assert_eq "design review Grok native does not use explore" "0" \
+    "$(grep -cE 'subagent_type: "?explore"?' "$DESIGN_SKILL")"
+assert_ge "mesh-review Grok native uses general-purpose" "1" \
+    "$(grep -cE 'subagent_type: "?general-purpose"?' "$MESH_REVIEW")"
+assert_ge "design review Grok native uses general-purpose" "1" \
+    "$(grep -cE 'subagent_type: "?general-purpose"?' "$DESIGN_SKILL")"
+assert_ge "mesh-review native prompt forbids edits" "1" \
+    "$(grep -c 'Do not edit files' "$MESH_REVIEW")"
+assert_ge "design review native prompt forbids edits" "1" \
+    "$(grep -c 'Do not edit files' "$DESIGN_SKILL")"
+assert_ge "mesh-review native is INLINE in 6.0" "1" \
+    "$(grep -c 'native:<slug> INLINE' "$MESH_REVIEW")"
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_ge "${f#"$REPO"/}: native skipped by verify-delegation" "1" \
+        "$(grep -c 'verify-delegation.sh is never invoked for native' "$f")"
+done
+# Roster spelling for host claude CLI:
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_ge "${f#"$REPO"/}: claude/opus roster spelling" "1" \
+        "$(grep -c 'claude/opus' "$f")"
+    assert_ge "${f#"$REPO"/}: claude:opus reviewer spelling" "1" \
+        "$(grep -c 'claude:opus' "$f")"
+done
+
+# Do not add a brittle STOP-count. Instead pin the exact STOP sentence:
+# На Grok team mode не поддерживается — остановите запуск и используйте background.
+assert_ge "mesh-review Grok team STOP sentence" "1" \
+    "$(grep -c 'На Grok team mode не поддерживается' "$MESH_REVIEW")"
+assert_ge "design review Grok team STOP sentence" "1" \
+    "$(grep -c 'На Grok team mode не поддерживается' "$DESIGN_SKILL")"
+
+# Task 9 fix round: three Important review findings.
+# 1. Redispatch must not reuse the CC `DISPATCH_MODEL` form on Grok (opus is not a
+#    host slug) and must not SendMessage-ping there.
+assert_eq "redispatch does not apply CC DISPATCH_MODEL unconditionally" "0" \
+    "$(grep -c 'Apply the Step 5a \*\*Dispatch model\*\* rule on re-dispatch too (add `model: "<DISPATCH_MODEL>"` when non-empty, else omit)' "$MESH_REVIEW")"
+assert_eq "redispatch does not reuse the CC ping loop on Grok" "0" \
+    "$(grep -c 'run the same disk-watch + ping loop as Step 5a' "$MESH_REVIEW")"
+assert_ge "redispatch Grok spawn model is HOST_MODELS only" "1" \
+    "$(grep -c 'HOST=grok re-dispatch: do not pass DISPATCH_MODEL unless it is in HOST_MODELS' "$MESH_REVIEW")"
+assert_ge "redispatch Grok wait reads output.txt" "1" \
+    "$(grep -c 'HOST=grok re-dispatch wait: silent+REAL reads output.txt' "$MESH_REVIEW")"
+# 2. Design-review CC watcher example must name depth-0 engines; claude/opus is Grok-only.
+assert_ge "design review CC watcher example names depth-0 engines" "1" \
+    "$(grep -c 'codex gemini grok/grok-4.6 ext-claude/zai/glm' "$DESIGN_SKILL")"
+# 3. `_default` IS passed to the guard — it is the one accepted leading-underscore name.
+#    ext-claude-exec writes runs/claude/_default/ when MODEL is omitted, watch-runs.sh already
+#    admits `claude/_default`, and the guard now takes the same literal. Skipping the guard for
+#    that reviewer (the earlier rule) made the fallback the only wrapper whose verdict came from
+#    reading a directory by hand — without the dispatch-window check or permission_denials.
+assert_ge "mesh-review passes claude _default to the guard" "1" \
+    "$(grep -c 'claude _default' "$MESH_REVIEW")"
+assert_ge "design review passes claude _default to the guard" "1" \
+    "$(grep -c 'claude _default' "$DESIGN_SKILL")"
+for f in "$MESH_REVIEW" "$DESIGN_SKILL"; do
+    assert_eq "${f#"$REPO"/}: omit-MODEL no longer skips verify-delegation" "0" \
+        "$(grep -c 'If MODEL was omitted, skip verify-delegation' "$f")"
+    assert_ge "${f#"$REPO"/}: HOST=grok uses ask_user_question" "1" \
+        "$(grep -c 'ask_user_question' "$f")"
+    assert_ge "${f#"$REPO"/}: Other is not an id" "1" \
+        "$(grep -c 'Other is not an id' "$f")"
+done
+assert_ge "design review Grok review-discussion is spawn_subagent" "1" \
+    "$(grep -c 'spawn_subagent claude-mesh:review-discussion background true' "$DESIGN_SKILL")"
+assert_ge "mesh-review Step 0 Grok claude is claude-code-reviewer" "1" \
+    "$(grep -c 'HOST=grok: one `claude-mesh:claude-code-reviewer` per entry' "$MESH_REVIEW")"
+assert_ge "design review Step 5.1 Grok claude is claude-executor" "1" \
+    "$(grep -c 'HOST=grok: one `claude-mesh:claude-executor` per entry' "$DESIGN_SKILL")"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed, $SKIP skipped ==="

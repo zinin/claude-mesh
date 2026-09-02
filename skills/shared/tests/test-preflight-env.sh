@@ -57,6 +57,10 @@ assert_no_match() {
 # Status column of a named row ("" when the row is absent).
 field() { awk -v n="$1" '$1==n {print $2; exit}' <<<"$2"; }
 
+# Exact entry on a `SUMMARY available:` line. `grok:grok-4.6` is a suffix of
+# `native:grok-4.6`; wrapping with ", " makes a substring test tell them apart.
+avail_wrap() { printf ', %s, ' "$(grep '^SUMMARY available:' <<<"$1" | sed 's/^SUMMARY available: //')"; }
+
 # Default git shim: answers instantly that there is no 'origin'. Without it every scenario
 # below would run a real `git ls-remote` against this repository's remote — up to the git
 # budget each, on a network the suite is not testing. Scenarios that DO test git pass their
@@ -84,6 +88,17 @@ echo "200"
 exit 0
 SH
 chmod +x "$WORK/curlfast/curl"
+
+# Fail-fast grok stub. native-models runs `grok models` whenever grok is on PATH,
+# which on a developer laptop is a 2s authenticated round-trip (or a 15s timeout)
+# in EVERY scenario. Hide the real binary unless the scenario planted a suite-owned
+# shim under $WORK (not a farm symlink to the real grok).
+mkdir -p "$WORK/grokskip"
+cat > "$WORK/grokskip/grok" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$WORK/grokskip/grok"
 
 # A PATH farm: every real PATH entry symlinked into one directory (first occurrence wins, as
 # in a real PATH search), minus the binaries named. The only way to make ONE tool genuinely
@@ -152,10 +167,27 @@ run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
     fi
     local errf
     errf="$(mktemp "$WORK/stderr-XXXXXX")"
+    local probe_path="$WORK/curlfast:$PATH"
+    local -a env_rest=()
+    local a grok_bin keep_grok
+    for a in "$@"; do
+        case "$a" in
+            PATH=*) probe_path="${a#PATH=}" ;;
+            *) env_rest+=("$a") ;;
+        esac
+    done
+    # Suite-owned grok is a regular file under $WORK (cli-grok, cli-grok-slow). A
+    # farm entry is a symlink to the real binary; the developer's grok is neither.
+    grok_bin="$(PATH="$probe_path" command -v grok 2>/dev/null || true)"
+    keep_grok=0
+    case "$grok_bin" in
+        "$WORK"/*) [ -L "$grok_bin" ] || keep_grok=1 ;;
+    esac
+    [ "$keep_grok" = 1 ] || [ -z "$grok_bin" ] || probe_path="$WORK/grokskip:$probe_path"
     OUT="$(env CLAUDE_PLUGIN_DATA="$CFG_DIR" TMPDIR="$CFG_DIR" \
                PREFLIGHT_GIT_BIN="$WORK/gitfast/git" \
-               PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$WORK/curlfast:$PATH" \
-               "$@" bash "$SCRIPT" 2>"$errf")"
+               PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$probe_path" \
+               "${env_rest[@]}" bash "$SCRIPT" 2>"$errf")"
     RC=$?
     ERR="$(cat "$errf")"
     rm -f "$errf"
@@ -177,6 +209,9 @@ assert_match "config detail names config.yaml" "$CFG_DIR/config.yaml" "$OUT"
 assert_eq   "builtin-claude always OK"        OK   "$(field builtin-claude "$OUT")"
 assert_eq   "claude catalog -> OK"            OK   "$(field claude-models "$OUT")"
 assert_match "catalog lists both aliases"     "opus, fable" "$OUT"
+assert_match "native-models row exists" "native-models" "$OUT"
+assert_match "claude-cli row exists" "claude-cli" "$OUT"
+assert_no_match "does not invent host grok-build from PATH" "host             grok-build" "$OUT"
 
 run_probe none
 assert_eq   "missing config exits 0"          0        "$RC"
@@ -525,7 +560,24 @@ cat > "$WORK/cli-grok/grok" <<'SH'
 printf '%s\n' "$*" >> "${GROK_SHIM_LOG:-/dev/null}"
 case "${1:-}" in
   models) [ "${GROK_SHIM_FAIL:-0}" = 1 ] && { echo "not logged in" >&2; exit 1; }
-          printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n' ;;
+          # List rows (`* slug` / `- slug`) are what list-host-models.sh reads.
+          # `Default model: grok-4.6` alone is dropped, and native:<slug> never
+          # reaches SUMMARY available.
+          if [ "${GROK_SHIM_EMPTY:-0}" = 1 ]; then
+            printf '%s\n' \
+              'You are logged in with grok.com.' \
+              '' \
+              'Available models:'
+            exit 0
+          fi
+          printf '%s\n' \
+            'You are logged in with grok.com.' \
+            '' \
+            'Default model: grok-4.6' \
+            '' \
+            'Available models:' \
+            '  * grok-4.6 (default)' \
+            '  - grok-4.5' ;;
   *)      exit 0 ;;
 esac
 SH
@@ -548,12 +600,37 @@ assert_match "…including the second one"     "grok:grok-4.5" "$OUT"
 # empty: an unset GROK_SHIM_LOG, a shim that never records, or a PATH that finds a different
 # grok would all satisfy "empty" for the wrong reason. Here the identical plumbing must record
 # exactly one `models` call, so "empty" there can only mean the probe was not run.
-assert_eq   "…and the CLI really was invoked, once, as \`grok models\`" "models" "$(cat "$GROK_LOG")"
+# ONE call, not two: the native-models row is derived from the health probe's captured
+# stdout rather than probing again. Two calls cost two authenticated round-trips and up to
+# 2x CLI_TIMEOUT, and made the two rows independent observations of one fact — free to
+# disagree if a login expired between them.
+assert_eq   "…and the CLI was invoked as \`grok models\` exactly ONCE" \
+    "models" "$(cat "$GROK_LOG")"
+assert_eq   "…and native-models is OK from that same single listing" OK "$(field native-models "$OUT")"
+assert_match "native listing reaches available as native:<slug>" \
+    ", native:grok-4.6, " "$(avail_wrap "$OUT")"
+assert_match "…and grok:<slug> is a different reviewer" \
+    ", grok:grok-4.6, " "$(avail_wrap "$OUT")"
+
+# grok models answers but parses to zero slugs → native-models is not OK, and
+# SUMMARY must not advertise a selectable native reviewer.
+run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
+          GROK_SHIM_EMPTY=1
+assert_eq   "empty grok models listing -> native-models SKIP" SKIP "$(field native-models "$OUT")"
+assert_no_match "empty listing does not advertise native in available" \
+    ", native," "$(avail_wrap "$OUT")"
+assert_no_match "…nor a native:<slug>" \
+    ", native:" "$(avail_wrap "$OUT")"
 
 # The CLI is there but not logged in -> NO-NETWORK, and the hint names the fix.
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" GROK_SHIM_FAIL=1
 assert_eq   "grok models fails -> NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
 assert_match "…and suggests logging in"       "grok login" "$OUT"
+assert_eq   "…and native-models is SKIP, not a crash" SKIP "$(field native-models "$OUT")"
+assert_match "…whose detail points at the grok row instead of a second probe" \
+    "see the grok row" "$OUT"
+assert_eq   "…and the CLI was NOT invoked a second time after the failure" \
+    "models" "$(cat "$GROK_LOG")"
 
 # A machine without python3 must not be told a grok reviewer is available. grok-exec STOPs on
 # shared/extract-result.py — the only one of the three CLI engines that does — while `bc` only
@@ -572,7 +649,9 @@ assert_match "…but SUMMARY withdraws it, naming why" "grok (python3 missing" "
 # a grep that matched nothing would satisfy assert_no_match for the wrong reason, which this
 # suite has been bitten by before.
 assert_match "…the available line is present and non-empty" "claude" "$(grep '^SUMMARY available' <<<"$OUT")"
-assert_no_match "…and no grok model is advertised as available" "grok:grok-4.6" "$(grep '^SUMMARY available' <<<"$OUT")"
+# `grok:grok-4.6` is a suffix of `native:grok-4.6` — exact entries only.
+assert_no_match "…and no grok model is advertised as available" \
+    ", grok:grok-4.6, " "$(avail_wrap "$OUT")"
 assert_match "…while the deps row names grok, not ext-claude alone" "grok-exec STOPs without python3" "$OUT"
 
 # An UNUSABLE PREFLIGHT_CLI_TIMEOUT must not be able to invent a verdict. The budget is pasted
@@ -589,13 +668,20 @@ for _bad in --help abc 0; do
     run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$WORK/cli-grok:$SHIM:$PATH" \
               GROK_SHIM_FAIL=1 GROK_SHIM_LOG="$GROK_LOG" PREFLIGHT_CLI_TIMEOUT="$_bad"
     assert_eq "unusable PREFLIGHT_CLI_TIMEOUT=$_bad -> still NO-NETWORK" NO-NETWORK "$(field grok "$OUT")"
-    assert_eq "…and the probe really was run once under $_bad" "models" "$(cat "$GROK_LOG")"
+    # ONE call: the probe ran (that is what this distinguishes from "never ran"), and a probe
+    # that ran and failed means native-models does not ask the CLI a second time.
+    assert_eq "…and the probe really was run under $_bad" \
+        "models" "$(cat "$GROK_LOG")"
 done
 unset _bad
 
 # Section present, binary absent -> MISSING (the section gate passes, the CLI gate does not).
 run_probe valid-grok.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$WORK/nocli"
 assert_eq   "grok binary absent -> MISSING"  MISSING "$(field grok "$OUT")"
+# native-models lists host slugs via `grok models`. No grok on PATH is SKIP, never a
+# non-zero exit — the probe still answers, it just has nothing to list.
+assert_eq   "no grok -> native-models SKIP"  SKIP "$(field native-models "$OUT")"
+assert_eq   "…and the probe still exits 0"   0    "$RC"
 
 # A malformed grok: section is INVALID before any CLI or network claim — same order as codex.
 run_probe broken-grok-valid-codex.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
@@ -960,6 +1046,49 @@ assert_match "…from the preset's own list, not the whole catalog" \
     "SUMMARY defaults code_review: grok:grok-4.5" "$OUT"
 assert_eq "…so default mode stays a plain membership check" "" "$(defaults_not_available "$OUT")"
 
+# native is the same membership trap as grok: SUMMARY available spells native:<slug>, so a
+# defaults line that printed a bare `native` (the leftover-builtin passthrough) would make
+# `default` look unsafe on a working Grok host. native_models is a strict subset, different
+# per preset, on purpose. No grok: section — grok:<slug> must not appear as the native name.
+run_probe valid-native-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "native on a defaults line is spelled native:<slug>" \
+    "SUMMARY defaults design_review: native:grok-4.6, zai/glm" "$OUT"
+assert_match "…from the preset's own list, not the whole host listing" \
+    "SUMMARY defaults code_review: native:grok-4.5" "$OUT"
+assert_match "…and available uses the same native:<slug> spelling" \
+    ", native:grok-4.6, " "$(avail_wrap "$OUT")"
+assert_no_match "…which is not grok:<slug>" \
+    ", grok:grok-4.6, " "$(avail_wrap "$OUT")"
+assert_eq "…so default mode stays a plain membership check with native too" "" \
+    "$(defaults_not_available "$OUT")"
+
+# The SAME fixture on a Claude-Code-shaped host: no grok CLI, so no listing and no native:*
+# in available, while the defaults line still expands native over native_models. That gap is
+# real on Grok and a false alarm on Claude Code — where `native` collapses into `claude` and
+# native_models is ignored — and the script cannot tell the two hosts apart (host detection is
+# `spawn_subagent` presence, invisible from a shell; grok-on-PATH is not a proxy, since a
+# Claude Code session can have the CLI installed and answering). So it must SAY so rather than
+# guess. Until this case was tested, the fixture only ever ran with a grok shim on PATH.
+run_probe valid-native-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$SHIM:$PATH" PREFLIGHT_SKIP_NETWORK=1
+assert_match "no grok CLI → native-models does not run"  "native-models"  "$OUT"
+assert_no_match "…so no native:<slug> reaches available" ", native:"      "$(avail_wrap "$OUT")"
+assert_match "…while the defaults line still names one"  "native:grok-4.6" "$OUT"
+assert_match "…and a note explains the gap is host-conditional" \
+    "SUMMARY note: a preset names \`native\`" "$OUT"
+
+# The mirror case on a WORKING host: `native` in builtin with an EMPTY native_models is the
+# documented session-model fallback, so the defaults line prints a bare `native`. available
+# has to carry the bare name too — claude and grok both do — or a healthy Grok host reads as
+# "default mode unsafe".
+run_probe valid-native-defaults.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" \
+          PATH="$WORK/cli-grok:$SHIM:$PATH" SHIM_HTTP_CODE=200
+assert_match "a live listing also offers the bare native fallback" \
+    ", native, " "$(avail_wrap "$OUT")"
+assert_no_match "…and needs no host-conditional note" \
+    "SUMMARY note: a preset names" "$OUT"
+
 # A fast re-run probes nothing, so every network verdict is UNKNOWN. UNKNOWN is not a degraded
 # OK — treating it as unavailable reports a fully working machine as "claude only", and the
 # reading session cannot see the flag it did not set. The summary has to say so itself.
@@ -1005,7 +1134,7 @@ assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin yq jq config builtin-claude claude-models codex gemini grok provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "plugin yq jq config builtin-claude claude-models codex gemini grok native-models claude-cli provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines
@@ -1034,7 +1163,7 @@ chmod +x "$WORK/curlstall/curl"
 ICFG="$(mktemp -d "$WORK/int-XXXXXX")"
 cp "$TESTS_DIR/fixtures/valid-claude-models.yaml" "$ICFG/config.yaml"
 env CLAUDE_PLUGIN_DATA="$ICFG" TMPDIR="$ICFG" \
-    PREFLIGHT_CURL_BIN="$WORK/curlstall/curl" PATH="$WORK/curlstall:$PATH" \
+    PREFLIGHT_CURL_BIN="$WORK/curlstall/curl" PATH="$WORK/curlstall:$WORK/grokskip:$PATH" \
     bash "$SCRIPT" >/dev/null 2>&1 &
 IPID=$!
 IW=0
@@ -1113,7 +1242,7 @@ assert_eq   "no config -> ceiling SKIPPED"   SKIPPED "$(field bash-timeout "$OUT
 # (provider:zai, Task 2),
 # so a shape check is the same forward-compatibility trap in a new costume.
 ROWS="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ && $1 != "hint:" {print $2}' <<<"$ALL_OUT")"
-BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|LOW|SKIPPED|UNKNOWN)$' || true)"
+BAD="$(sort -u <<<"$ROWS" | grep -Ev '^(OK|MISSING|NO-NETWORK|AUTH-FAILED|INVALID|LOW|SKIPPED|SKIP|UNKNOWN)$' || true)"
 assert_eq   "status column stays in the closed set (every scenario)" "" "$BAD"
 # Both gates above and below pass on empty input, so they must prove they looked at something.
 # Today: 7 scenarios x 4-5 rows = 29. The floor only gets safer as Tasks 2-4 add scenarios.

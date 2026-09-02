@@ -90,9 +90,9 @@ wd_log() { printf '{"ts":"x","event":"cleanup","attempt":1,"details":{"exit_code
 run_as() {
     local sid="$1"; shift
     if [ "$sid" = "-" ]; then
-        OUT="$(env -u CLAUDE_CODE_SESSION_ID timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
+        OUT="$(env -u CLAUDE_CODE_SESSION_ID -u GROK_SESSION_ID timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
     else
-        OUT="$(env "CLAUDE_CODE_SESSION_ID=$sid" timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
+        OUT="$(env -u GROK_SESSION_ID "CLAUDE_CODE_SESSION_ID=$sid" timeout 10 bash "$SCRIPT" "$@" 2>"$ERRF")"; RC=$?
     fi
     REASON="$(printf '%s\n' "$OUT" | head -1)"; ERR="$(cat "$ERRF")"
 }
@@ -625,6 +625,26 @@ assert_match "row says the runs are someone else's" "belong to another session" 
 rm -rf "$TDIR"
 
 echo ""
+echo "Test 37c: Grok parent accepts a child-stamped run when subagent meta names it"
+TDIR="$(mktemp -d)"
+GH="$(mktemp -d)"
+# Real layout, measured 2026-09-02: sessions/<urlencoded cwd>/<parent id>/subagents/<child id>/.
+# Compact JSON on purpose: the match is on the VALUE, not on Grok's pretty-printing.
+mkdir -p "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1"
+printf '%s\n' '{"parent_session_id":"grok-parent-1","child_session_id":"grok-child-1"}' \
+    > "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1/meta.json"
+mine=$(mk_run "$TDIR" codex -60 100002); sid_stamp "$mine" grok-child-1
+printf 'review' > "$mine/output.txt"; wd_log "$mine" 0
+OUT="$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
+    timeout 10 bash "$SCRIPT" --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR" codex 2>"$ERRF")"
+RC=$?
+REASON="$(printf '%s\n' "$OUT" | head -1)"
+assert_eq "reason ALL_DONE (child stamp is this session's wrapper)" "ALL_DONE" "$REASON"
+assert_match "row is DONE" "DONE" "$(row codex)"
+assert_eq "exit 0" "0" "$RC"
+rm -rf "$TDIR" "$GH"
+
+echo ""
 echo "Test 37b: MISSING with no run dir at all carries no foreign-session note"
 TDIR="$(mktemp -d)"; mkdir -p "$TDIR/runs/codex"
 run_as sid-A --once --since "$SINCE_OLD" --stall-sec 600 --data-dir "$TDIR" codex
@@ -682,6 +702,16 @@ assert_match "4.5 is still RUN" "RUN" "$(row grok/grok-4.5)"
 # skip grok entries leaves it passing, with an em dash where the dir name belongs. The dir name
 # is what proves the 4.5 run was found on its own, one directory over from the 4.6 one.
 assert_match "4.5 row names its own dir" "$(basename "$b")" "$(row grok/grok-4.5)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 42: a claude roster entry follows runs/claude/<alias>/"
+TDIR="$(mktemp -d)"
+a="$(mk_run "$TDIR" claude/opus)"
+wd_log "$a" 0; printf 'findings\n' > "$a/output.txt"
+run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" claude/opus
+assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
+assert_match "claude row is DONE" "DONE" "$(row claude/opus)"
 rm -rf "$TDIR"
 
 echo ""
