@@ -23,6 +23,7 @@ All notable changes to claude-mesh will be documented here.
 - `ext-claude-exec`: Step 1 records the validated `MODEL` / `HOST_CLAUDE` pair in `$WORK_DIR/.mode`; both launch fences re-check their own substitution against it and STOP before the CLI starts on a mismatch.
 - **Review→exec Read on Grok opened the Claude cache.** The no-Skill-tool paragraph in the five `*-code-review` skills (and fresh-session preflight) now searches `~/.grok/installed-plugins` before `~/.claude/plugins`.
 - Preflight no longer marks a zero-slug `grok models` listing as `OK` (and no longer leaks a temp file).
+- **Grok wrapper fences died before the Claude-cache fallback** when `~/.grok/installed-plugins` was absent (marketplace install, no `grok plugin install`). `find` on a missing dir is rc=1; under `set -euo pipefail` that killed the last `||` arm, so Step 1/2 never reached `~/.claude/plugins`. Each loader-find assignment now ends with `|| true`.
 
 ### Changed
 - **Grok-only break:** a 0.12.0 preset with `builtin: [claude, …]` and no `native` no longer means "review on the host model". It means `claude -p`. Claude Code behaviour for that preset is unchanged.

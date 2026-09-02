@@ -24,9 +24,9 @@ fi
 # runs Grok smokes must not execute that snapshot — it falls behind the tree the moment a
 # commit lands (decided 2026-09-02) — so without the variable the order is 0.12.0's.
 found=""
-[ -z "${GROK_SESSION_ID:-}" ] || found="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -n "$found" ] || found="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -n "$found" ] || found="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -z "${GROK_SESSION_ID:-}" ] || found="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -n "$found" ] || found="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -n "$found" ] || found="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
 if [ -n "$found" ]; then
     printf '%s\n' "$(cd "$(dirname "$found")/../.." && pwd)"
     exit 0

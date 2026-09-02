@@ -174,5 +174,43 @@ done
 assert_eq "every skill fence searches installed-plugins, .claude, .grok in that order, and the prose says so" "0" "$order_bad"
 
 echo ""
+echo "=== Test: missing installed-plugins does not abort a set -euo pipefail skill fence ==="
+# ext-claude-exec Step 1/2 fences are `set -euo pipefail`. The last `||` arm is the
+# installed-plugins find; GNU find returns 1 on a missing dir, pipefail promotes that
+# to the assignment, and `set -e` then exits before the .claude fallback — silent
+# death of every wrapper on marketplace Grok (no grok plugin install). Extract the
+# live three-line chain so this assertion cannot drift from the fence.
+ELSE_CHAIN="$(awk '/find "\$HOME"\/\.grok\/installed-plugins/ {print; getline; print; getline; print; exit}' \
+    "$REPO/skills/ext-claude-exec/SKILL.md")"
+assert_eq "extracted a 3-line else-chain from ext-claude-exec" "3" \
+    "$(printf '%s\n' "$ELSE_CHAIN" | grep -c .)"
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared"
+: > "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh"
+GOT=$(HOME="$TDIR/home" GROK_SESSION_ID="grok-session-1" bash -c 'set -euo pipefail
+_LOADER=""
+'"$ELSE_CHAIN"'
+printf %s "$_LOADER"'); RC=$?
+assert_eq "skill else-chain ran cleanly under set -e" "0" "$RC"
+assert_eq "skill else-chain falls through to the Claude cache" \
+    "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh" "$GOT"
+rm -rf "$TDIR"
+
+echo ""
+echo "=== Test: every loader-find assignment is guarded against find rc=1 ==="
+# The three roots are each a `find | sort | tail` assignment. Any one of them on a
+# missing directory is the same set -e hole. `|| true` after the assignment is the
+# contract; a new fence without it must fail this count.
+unprotected=0
+while IFS= read -r line; do
+    printf '%s\n' "$line" | grep -q '|| true[[:space:]]*$' && continue
+    unprotected=$((unprotected+1))
+    echo "    unguarded: $line"
+done < <(grep -h 'find "$HOME"/.*/config-loader.sh' \
+    "$REPO"/skills/*/SKILL.md "$REPO"/commands/*.md \
+    "$REPO"/skills/shared/resolve-plugin-root.sh || true)
+assert_eq "every loader find assignment ends with || true" "0" "$unprotected"
+
+echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

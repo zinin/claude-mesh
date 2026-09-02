@@ -45,10 +45,10 @@ PRIMARY='LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"'
 # The two roots are searched in PRIORITY order, never in one find over both: `sort -V`
 # compares whole paths and `.claude` < `.grok`, so a single find picked the .grok copy
 # whatever its version — the same class of silent mis-resolution as the original `head -1`.
-FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
-FALLBACK2='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
+FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)" || true'
+FALLBACK2='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)" || true'
 # installed-plugins is searched only inside a Grok session (GROK_SESSION_ID set) — see Test 6.
-FALLBACK_INST='[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
+FALLBACK_INST='[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)" || true'
 
 # === Test 1: every command site uses the same resolver ===
 # The counts are a deliberate canary, not incidental. A new command that resolves the loader
@@ -162,6 +162,25 @@ mkdir -p "$TDIR/home/.claude/plugins"
 run_snippet "$TDIR/home" ""
 assert_eq "guard exits 1" "1" "$RC"
 assert_eq "nothing printed" "" "$GOT"
+rm -rf "$TDIR"
+
+# === Test 7: missing installed-plugins must not abort under set -euo pipefail ===
+# Marketplace Grok: GROK_SESSION_ID is set, ~/.grok/installed-plugins does not exist,
+# the Claude cache does. `find` on a missing dir is rc=1; with pipefail that used to
+# kill the last `||` arm under `set -e` before the .claude fallback (measured 2026-09-02).
+# Command fences themselves are `set -u` only; skill launch fences are `set -euo pipefail`.
+# Run the live command snippet under -e so a missing `|| true` cannot hide here.
+echo "=== Test 7: missing installed-plugins does not abort under set -euo pipefail ==="
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared"
+: > "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh"
+GOT=$(HOME="$TDIR/home" CLAUDE_PLUGIN_ROOT="" GROK_SESSION_ID="grok-session-1" \
+    bash -c 'set -euo pipefail
+'"$SNIPPET"'
+printf %s "$LOADER"'); RC=$?
+assert_eq "strict snippet ran cleanly" "0" "$RC"
+assert_eq "falls through to the Claude cache" \
+    "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
 
 echo ""

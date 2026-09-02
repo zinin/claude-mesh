@@ -92,9 +92,9 @@ Use `config-loader.sh` instead of raw `yq` so validation runs the same way every
 # not substitute: a VERSION-sorted glob — plain `find | head -1` is directory order and was
 # observed picking a stale cached 0.4.0 over the installed 0.4.2.
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
-[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
 [ -f "$LOADER" ] || { echo "config-loader.sh not found under ~/.claude/plugins or ~/.grok/plugins (is claude-mesh installed?)" >&2; exit 1; }
 # iter-3 CRITICAL-3: a bare $() swallows the loader exit code. Probe once with explicit rc
 # capture so rc=2 (config.yaml not created yet — fresh install) is NOT misreported as
@@ -412,9 +412,9 @@ Build `CLAUDE_DEFAULT_IDS` from the preset — **rc-aware, and never through a p
 # this Bash call runs in a FRESH shell where $LOADER no longer exists. Without re-resolving
 # it, `$("" get-defaults …)` fails and the `||` below misreports a valid config as invalid.
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
-[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
 # NOT the first get-defaults call on the interactive path any more — Step 1 reads the preset
 # for Q1's and Step 2.1's ★ markers, so validate_defaults has already run and a bad
@@ -470,9 +470,9 @@ re-resolved):
 
 ```bash
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
-[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
 GD_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
 CR_DEFAULTS=$("$LOADER" get-defaults code_review 2>"$GD_ERR") \
@@ -738,9 +738,9 @@ When each agent completes, read its output. After all agents finish (or the user
 
    ```bash
    LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
-   [ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+   [ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
    [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
    WATCH="$(dirname "$LOADER")/watch-runs.sh"
    [ -x "$WATCH" ] || { echo "watch-runs.sh missing or not executable at $WATCH" >&2; exit 1; }
@@ -834,9 +834,9 @@ Run points 1 and 2 in the SAME Bash call: `$VERIFY` and `$DATA_DIR` are stamped 
 # Same resolution as Step 1 — the guard MUST come from the plugin copy that is actually
 # running, otherwise a --plugin-dir dev load verifies with the installed cache's guard.
 LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
-[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
+[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)" || true
 [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
 VERIFY="$(dirname "$LOADER")/verify-delegation.sh"
 DATA_DIR="$("$LOADER" data-dir)"
