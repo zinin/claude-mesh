@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.14.1] - 2026-09-02
 
 ### Changed
 - **`/transfer-session` always writes under `docs/`.** `docs/session-transfer-<date>-<time>.md`,
