@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.14.0] - 2026-09-02
 
 ### Changed
 - **Fresh-session prompt generators print the file path, not the prompt.** `/transfer-session`,
