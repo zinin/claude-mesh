@@ -47,16 +47,26 @@ grok plugin enable claude-mesh
 
 Then start a **new** session (or reload plugins). This is a **copy**, not a
 symlink, at `~/.grok/installed-plugins/claude-mesh-<hash>`. After you change
-the working tree (native `general-purpose`, `--model`, plugin-root fallback),
-edits do not apply until:
+the working tree, edits do not apply until you **reinstall**:
 
 ```bash
-grok plugin update claude-mesh
+grok plugin uninstall claude-mesh --confirm
+grok plugin install /absolute/path/to/claude-mesh --trust
+grok plugin enable claude-mesh
 ```
 
-and a new session. The Claude marketplace cache under
+and start a new session. `grok plugin update claude-mesh` does **not** recopy a
+local install — measured 2026-09-01: it answered `local symlink, already live`
+while the directory stayed the old copy. The Claude marketplace cache under
 `~/.claude/plugins/cache/zinin/claude-mesh/` is left alone — Claude Code smoke
 still uses `--plugin-dir`.
+
+**Keep exactly one snapshot.** The resolver picks the `claude-mesh-<hash>` that
+sorts last, and the hash is not a version: with two snapshots (installed from two
+paths, e.g. a worktree) the pick is arbitrary. `ls -d ~/.grok/installed-plugins/claude-mesh-*`
+must list one entry; uninstall before installing from another path. The
+snapshot is searched only inside a Grok session (`GROK_SESSION_ID` set), so a
+stale one cannot reach a Claude Code run — but it will reach the next Grok one.
 
 Remove the native copy: `grok plugin uninstall claude-mesh --confirm`.
 
@@ -73,6 +83,10 @@ cmp -s "$SNAP/commands/mesh-review.md" commands/mesh-review.md \
 ```
 
 Expect a path under `~/.grok/installed-plugins/claude-mesh-*` and `SNAP == working tree`.
+`cmp` one file alone proves little: `commands/mesh-review.md` matched a snapshot that was
+three commits stale because those commits never touched it. Compare a file your change
+touched, or the whole tree — `diff -rq "$SNAP" . -x .git -x docs -x runs` prints nothing
+when the snapshot is current.
 If the path is `~/.claude/plugins/cache/zinin/claude-mesh/…`, STOP — that is the
 published cache, not this tree.
 
