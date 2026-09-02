@@ -474,7 +474,7 @@ assert_no_match "…and never reaches stderr either"    "tkn-zai" "$ERR"
 LEFT="$(find "$CFG_DIR" -name 'claude-mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "exported env files removed" 0 "$LEFT"
 
-echo "== Task 3: CLI, git and clipboard rows =="
+echo "== Task 3: CLI and git rows =="
 
 # codex and gemini ship via npm, so a developer's PATH very likely has both — and then
 # "section present, CLI absent" could never be reached and the suite would be reporting the
@@ -845,14 +845,18 @@ assert_eq   "no timeout(1) -> UNKNOWN, not NO-NETWORK" UNKNOWN "$(field git-remo
 assert_match "…naming the missing binary"              "timeout" "$(grep '^git-remote' <<<"$OUT")"
 
 assert_match "gh row present"        "gh"        "$OUT"
-assert_match "clipboard row present" "clipboard" "$OUT"
-# Those two are substring checks and would pass on prose. `field` proves each is a real row;
-# the status itself is machine-dependent (gh/glab/xclip may or may not be installed), so it is
-# checked for membership in the closed set rather than for a fixed value.
-for TOOLROW in gh glab clipboard; do
+# A substring check that would pass on prose. `field` proves each is a real row; the status
+# itself is machine-dependent (gh/glab may or may not be installed), so it is checked for
+# membership in the closed set rather than for a fixed value.
+for TOOLROW in gh glab; do
     assert_eq "$TOOLROW is a row with a real status" 1 \
         "$(grep -Ec '^(OK|MISSING)$' <<<"$(field "$TOOLROW" "$OUT")")"
 done
+# No `clipboard` row: nothing in the plugin copies a generated prompt any more — every
+# fresh-session generator prints the file path instead — so the row had no reader left, and
+# its MISSING advice ("print generated prompts into the chat") said the opposite of what the
+# generators now do. `field` is "" for an absent row; a status here means the row came back.
+assert_eq "no clipboard row" "" "$(field clipboard "$OUT")"
 
 echo "== Task 4: SUMMARY =="
 
@@ -1134,7 +1138,7 @@ assert_eq "SUMMARY agrees with provider rows" "" "$BAD_SUMMARY"
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 ORDER="$(awk 'NF>=2 && $1 !~ /^SUMMARY/ {print $1}' <<<"$OUT" | tr '\n' ' ')"
 assert_eq "row order is the documented one" \
-  "plugin yq jq config builtin-claude claude-models codex gemini grok native-models claude-cli provider:zai provider:ollama git-remote gh glab clipboard bash-timeout " \
+  "plugin yq jq config builtin-claude claude-models codex gemini grok native-models claude-cli provider:zai provider:ollama git-remote gh glab bash-timeout " \
   "$ORDER"
 
 # Accumulating, in the spirit of the FINAL GATES below but specific to this task: the two lines

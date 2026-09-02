@@ -10,9 +10,9 @@ description: Generate a prompt for reviewing an implemented plan via /claude-mes
      tightly each is held; where they differ, design-review text first, code-review second:
        1. DO NOT — byte-identical. Asserted by skills/shared/tests/test-command-sync.sh.
        2. PREFLIGHT — byte-identical. Asserted by the same test.
-       3. ENVIRONMENT — one phrase differs: `mesh-design-review commits its own auto-fixes and
-          its iteration log` / `mesh-review commits its own auto-fixes and decisions`. The
-          shorter phrase reflows the wrap of the sentence that follows.
+       3. ENVIRONMENT — one phrase differs, and it closes the section: `mesh-design-review
+          commits its own auto-fixes and its iteration log` / `mesh-review commits its own
+          auto-fixes and decisions`.
        4. THEN STOP item 1 — `Summarise the documents in 5–10 lines.` /
           `Summarise what was built, in 5–10 lines.`
        5. WHEN THE USER SAYS GO, opening paragraph — identical after the invocation sentence
@@ -162,8 +162,7 @@ Do not continue the work.
 This session probably runs in a sandbox. git remote, gh and glab may be unreachable. The set
 of configured agents and models HERE differs from the session that wrote this prompt — assume
 no reviewer exists until the preflight below says so. Local commits are normal and expected:
-mesh-review commits its own auto-fixes and decisions. If no clipboard utility exists, print
-generated prompts into the chat instead of trying to copy them.
+mesh-review commits its own auto-fixes and decisions.
 
 ## PREFLIGHT — run this before anything else
 
@@ -232,14 +231,18 @@ test reports a match where the orchestrator would find none.
 Anything short of that → select interactively.
 ````
 
-### 6. Save, display, offer the clipboard
+### 6. Save and report the path
 
 1. Write to `docs/superpowers/plans/<DATE>-<TOPIC>-code-review-prompt.md`. If that file
    exists, suffix `-2`, then `-3` — never overwrite an earlier prompt.
-2. Print the full prompt on screen.
-3. Copy to the clipboard: `xclip -selection clipboard` / `xsel --clipboard` on Linux,
-   `pbcopy` on macOS. If none exists — which is normal inside a sandbox — say so, name the
-   file path, and move on. A missing clipboard is a note, never a failure.
-4. Tell the user: "Prompt ready. Open a new Claude Code session and paste it."
+2. Do NOT print the prompt — it lives in the file, and echoing it into the chat only spends
+   tokens. No clipboard either. Print exactly this and nothing more:
+
+   ```
+   Prompt saved: code-review prompt for branch <BRANCH> against <BASE_BRANCH>
+     relative: <the path step 1 actually wrote — suffix included>
+     absolute: <realpath of that same file>
+   Open a fresh Claude Code session and hand it this file.
+   ```
 
 Do not commit the file.

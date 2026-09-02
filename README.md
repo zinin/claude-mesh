@@ -25,7 +25,9 @@ daemon), and session helpers.
   resolves on Grok Build, where there is no in-process Claude. See "Grok Build" below
 - **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
   `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
-  `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`
+  `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`. The
+  prompt generators write the prompt to a file and print only its path — relative and
+  absolute — never the prompt itself, and never touch the clipboard
 - **`/claude-mesh:auto-decide-disputed`** — invoke mid-review to hand the remaining disputed issues
   to the agent itself: it writes the same structured analysis, rebuts its own recommendation in a
   `Проверка решения` section, marks each decision `уверенно` / `под вопросом`, and commits them one
@@ -35,9 +37,9 @@ daemon), and session helpers.
   for a fresh session that reviews rather than implements, and never name a model: the session
   runs `skills/shared/preflight-env.sh` where it actually lives and picks reviewers from what
   that reports. For reviews that will run in an environment with a different `config.yaml` —
-  typically another machine, VM or sandbox. Workflow: generate the prompt on the host, paste
-  it into a fresh session inside the sandbox; that session probes its own environment and
-  selects reviewers from what it finds
+  typically another machine, VM or sandbox. Workflow: generate the prompt on the host, hand
+  the file it names to a fresh session inside the sandbox; that session probes its own
+  environment and selects reviewers from what it finds
 - **`/claude-mesh:claude-md-writer`** — best practices for writing and refactoring `CLAUDE.md`:
   size budgets, the three-tier `CLAUDE.md` → `.claude/rules/` → co-located layout, `paths:`
   frontmatter for conditional loading, quality checklist. Vendored from an external project —
