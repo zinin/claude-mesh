@@ -240,8 +240,8 @@ Anything short of that → select interactively.
 
    ```
    Prompt saved: code-review prompt for branch <BRANCH> against <BASE_BRANCH>
-     relative: docs/superpowers/plans/<DATE>-<TOPIC>-code-review-prompt.md
-     absolute: <realpath of that file>
+     relative: <the path step 1 actually wrote — suffix included>
+     absolute: <realpath of that same file>
    Open a fresh Claude Code session and hand it this file.
    ```
 

@@ -188,8 +188,8 @@ Anything short of that → select interactively.
 
    ```
    Prompt saved: design-review prompt for <feature>, iteration N
-     relative: docs/superpowers/plans/<DATE>-<TOPIC>-design-review-prompt-iter-N.md
-     absolute: <realpath of that file>
+     relative: <the path step 1 actually wrote — suffix included>
+     absolute: <realpath of that same file>
    Open a fresh Claude Code session and hand it this file.
    ```
 
