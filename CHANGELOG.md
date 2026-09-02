@@ -2,6 +2,19 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Changed
+- **Fresh-session prompt generators print the file path, not the prompt.** `/transfer-session`,
+  `/exec-plan-fresh-session`, `/continue-plan-fresh-session`, `/design-review-fresh-session`
+  and `/code-review-fresh-session` still write the prompt to the same file; the chat now gets
+  a one-line summary plus the relative and absolute path. Echoing the prompt only spent tokens.
+
+### Removed
+- **Clipboard copy.** No generator calls xclip/xsel/pbcopy any more, and the generated review
+  prompts no longer tell the sandbox session about clipboards. `preflight-env.sh` lost its
+  `clipboard` row — its only reader was that advice.
+
 ## [0.13.0] - 2026-09-02
 
 ### Added

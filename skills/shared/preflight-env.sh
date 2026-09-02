@@ -728,7 +728,7 @@ else
     done <<< "$MODELS"
 fi
 
-# ---------------------------------------------------------------- git, forge CLIs, clipboard
+# --------------------------------------------------------------------------- git, forge CLIs
 # git remote — local refs are enough for the review skills; this row exists so the reading
 # session does not plan a push it cannot make. GIT_TERMINAL_PROMPT=0 + BatchMode: a remote
 # that wants credentials or host-key confirmation must answer instantly instead of stalling
@@ -763,16 +763,6 @@ for TOOL in gh glab; do
         row "$TOOL" MISSING "not on PATH"
     fi
 done
-
-CLIP=""
-for C in xclip xsel pbcopy; do
-    command -v "$C" >/dev/null 2>&1 && { CLIP="$C"; break; }
-done
-if [ -n "$CLIP" ]; then
-    row clipboard OK "$CLIP"
-else
-    row clipboard MISSING "no xclip/xsel/pbcopy — print generated prompts into the chat"
-fi
 
 # ------------------------------------------- Bash tool timeout ceiling (Claude Code, not config)
 # Last of the environment rows, and an environment row it is: these two variables are Claude
