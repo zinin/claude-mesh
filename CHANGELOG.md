@@ -18,6 +18,7 @@ All notable changes to claude-mesh will be documented here.
 - `list-host-models.sh` stops at the first non-bullet line after `Available models:` — bulleted prose printed after the list no longer becomes slugs.
 - Preflight: `native` detection reads the preset JSON, not the joined summary string; a `claude-cli MISSING` row now carries a note that `claude:*` is the CLI on Grok Build.
 - HOST_CLAUDE without a config.yaml: `get-runtime` rc=2 now means the default timeouts (1800/600/3600, 2 retries) plus a WARN naming the data dir, matching the review skill's preflight; rc=1 (a config that does not validate) still STOPs.
+- Grok native reviewers run as `general-purpose` with a shell, so both orchestrators now hash the working tree before dispatch and after the native wait; a difference is reported (a `tree | CHANGED` row in mesh-review, a note atop the design-review merged file), never reverted.
 - **Review→exec Read on Grok opened the Claude cache.** The no-Skill-tool paragraph in the five `*-code-review` skills (and fresh-session preflight) now searches `~/.grok/installed-plugins` before `~/.claude/plugins`.
 - Preflight no longer marks a zero-slug `grok models` listing as `OK` (and no longer leaks a temp file).
 

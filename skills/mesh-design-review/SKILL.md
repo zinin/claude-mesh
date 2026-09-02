@@ -683,7 +683,7 @@ Remember the confirmed set (built-in TYPES + `SELECTED_NATIVE_MODELS` + `SELECTE
 
 **LOOP START:**
 
-Before dispatch — via a Bash call, stamp `DISPATCH_EPOCH=$(date +%s)` and keep the number (the result-collection watch below needs it).
+Before dispatch — via a Bash call, stamp `DISPATCH_EPOCH=$(date +%s)` and keep the number (the result-collection watch below needs it). HOST=grok: in the same call, also stamp `TREE_BEFORE=$( { git status --porcelain --untracked-files=all; git diff HEAD; } | sha256sum | cut -d' ' -f1 )` and keep it — native executors are `general-purpose` with a shell, and nothing but the prompt keeps them from writing; this hash is the mechanical check behind «Do not edit files».
 
 Launch **all selected** agents **in parallel** in a single message:
 
@@ -808,6 +808,8 @@ Agent-specific parameters:
 Collect output paths from every **executor** (codex / gemini / grok / ext-claude, and on HOST=grok also `claude`) — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports. HOST=claude-code claude reviewers have no output path to collect: they create no `runs/<engine>/…` dir and return their review as the Task result. HOST=grok native has no output path either: no `runs/native/…`; `verify-delegation.sh is never invoked for native`; the result is the child's text (INLINE).
 
 **Wait — HOST=grok.** No sleep poller. Completions arrive as harness notifications on the `spawn_subagent` ids; fetch each with `get_command_or_subagent_output`. A wait-all on several ids is allowed; each call's `timeout_ms` ≤ 600000. Loop until every child has finished or `GLOBAL_SEC` seconds — the `runtime.timeouts.global_sec` value echoed by the Step 5.0 preflight fence; substitute the number, it does not survive between calls — have elapsed since `DISPATCH_EPOCH`; then treat whatever is still running as dead and route it to Error Handling. Native is not on the watcher roster (`verify-delegation.sh is never invoked for native`). Wrappers still go through `watch-runs.sh` + `verify-delegation.sh`. Silent wrapper + `REAL` → read `output.txt` yourself — that is the **primary** collection path on Grok, not after two pings. No SendMessage.
+
+**Tree check (native, HOST=grok):** when the last native child has finished, recompute the same hash as `TREE_AFTER`. If it differs from `TREE_BEFORE`, run `git status --porcelain --untracked-files=all` and put the list at the top of the Step 7 merged file as `Tree changed during review: <list>`. The user's own edits during the review are the innocent explanation — say so; anything else was written by a native child. Never revert on your own.
 
 **Wait — HOST=claude-code.** **CRITICAL — an executor's report does NOT arrive on its own: disk-watch the runs and ping idle executors.** Each executor launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…` under the plugin data dir), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits, so the report stalls until pinged (same mechanics verified 2026-07-10 on the mesh-review wrappers: 0 notifications in 5/5 transcripts, reports stalled 8–12 min over a finished `output.txt`). After dispatch (both hosts run the disk watch for wrappers; HOST=grok does not SendMessage):
 

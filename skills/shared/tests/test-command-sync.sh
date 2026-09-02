@@ -380,6 +380,14 @@ assert_eq "the base-branch prefix rule names both exceptions, not grok alone" "0
 assert_eq "no one-line 'MODEL=<id> Review …' form left to be prefixed" "0" \
     "$(grep -c 'MODEL=<id> Review the changes' "$MESH_REVIEW")"
 
+# Native children are general-purpose with a shell (below), so both orchestrators stamp a tree
+# hash before dispatch and compare it after the native wait — the mechanical check behind
+# "Do not edit files". Both files, both halves.
+assert_ge "mesh-review stamps TREE_BEFORE for Grok native" "1" "$(grep -c 'TREE_BEFORE' "$MESH_REVIEW")"
+assert_ge "mesh-review compares TREE_AFTER" "1" "$(grep -c 'TREE_AFTER' "$MESH_REVIEW")"
+assert_ge "design review stamps TREE_BEFORE for Grok native" "1" "$(grep -c 'TREE_BEFORE' "$DESIGN_SKILL")"
+assert_ge "design review compares TREE_AFTER" "1" "$(grep -c 'TREE_AFTER' "$DESIGN_SKILL")"
+
 # Task 9 / Grok 1.0.13 smoke: native reviewers need shell (`git diff`, tests).
 # Built-in `explore` on this host only has read_file/list_dir/grep — no
 # run_terminal_command — so dispatch is general-purpose. The child must still
