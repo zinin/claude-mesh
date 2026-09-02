@@ -87,9 +87,15 @@ mkdir -p "$INST_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0/skills/shared" \
          "$INST_HOME/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared"
 touch "$INST_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0/skills/shared/config-loader.sh" \
       "$INST_HOME/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared/config-loader.sh"
-GOT=$(HOME="$INST_HOME" GROK_PLUGIN_ROOT= CLAUDE_PLUGIN_ROOT= SKILL_BASE= "$SCRIPT")
-assert_eq "installed-plugins wins over a stale .claude cache" \
+GOT=$(HOME="$INST_HOME" GROK_PLUGIN_ROOT= CLAUDE_PLUGIN_ROOT= SKILL_BASE= GROK_SESSION_ID=grok-1 "$SCRIPT")
+assert_eq "installed-plugins wins over a stale .claude cache (Grok session)" \
     "$INST_HOME/.grok/installed-plugins/claude-mesh-aabbccdd" "$GOT"
+# 5e. …but only inside a Grok session. Without GROK_SESSION_ID — bash under Claude Code — the
+#     same snapshot must NOT outrank the Claude cache: on a machine that runs both hosts it is
+#     stale the moment a commit lands (decided 2026-09-02), and Claude Code keeps the 0.12.0 order.
+GOT=$(HOME="$INST_HOME" GROK_PLUGIN_ROOT= CLAUDE_PLUGIN_ROOT= SKILL_BASE= GROK_SESSION_ID= "$SCRIPT")
+assert_eq "no Grok session: .claude cache wins over installed-plugins" \
+    "$INST_HOME/.claude/plugins/cache/z/claude-mesh/0.12.0" "$GOT"
 rm -rf "$INST_HOME"
 
 rm -rf "$EMPTY_DIR" "$FAKE_HOME"

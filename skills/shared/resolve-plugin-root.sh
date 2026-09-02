@@ -19,7 +19,12 @@ fi
 # 2026-09-01, sort -V | tail -1 on the cache picked 0.12.0 and HOST_CLAUDE wrappers
 # ran the old loader. Search installed-plugins first, then the two cache trees.
 # Priority, not a cross-root sort: `sort -V` compares whole paths.
-found="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+# installed-plugins is a GROK-SESSION root: bash inside Grok Build has GROK_SESSION_ID and
+# Claude Code does not (measured 2026-09-01). A Claude Code session on a machine that also
+# runs Grok smokes must not execute that snapshot — it falls behind the tree the moment a
+# commit lands (decided 2026-09-02) — so without the variable the order is 0.12.0's.
+found=""
+[ -z "${GROK_SESSION_ID:-}" ] || found="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -n "$found" ] || found="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 [ -n "$found" ] || found="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
 if [ -n "$found" ]; then

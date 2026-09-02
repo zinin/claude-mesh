@@ -47,7 +47,8 @@ PRIMARY='LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"'
 # whatever its version — the same class of silent mis-resolution as the original `head -1`.
 FALLBACK='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
 FALLBACK2='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
-FALLBACK_INST='[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
+# installed-plugins is searched only inside a Grok session (GROK_SESSION_ID set) — see Test 6.
+FALLBACK_INST='[ -f "$LOADER" ] || [ -z "${GROK_SESSION_ID:-}" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '"'"'*claude-mesh*/skills/shared/config-loader.sh'"'"' 2>/dev/null | sort -V | tail -1)"'
 
 # === Test 1: every command site uses the same resolver ===
 # The counts are a deliberate canary, not incidental. A new command that resolves the loader
@@ -103,8 +104,8 @@ assert_match_snippet "…and the last line is the not-found guard" '\[ -f "$LOAD
 
 # Run the extracted snippet under a controlled HOME / plugin root. rc is asserted too:
 # an empty $GOT must mean "resolver found nothing", never "the snippet failed to run".
-run_snippet() {   # $1 = HOME, $2 = CLAUDE_PLUGIN_ROOT
-    GOT=$(HOME="$1" CLAUDE_PLUGIN_ROOT="$2" bash -c "$SNIPPET"$'\n''printf %s "$LOADER"' 2>/dev/null); RC=$?
+run_snippet() {   # $1 = HOME, $2 = CLAUDE_PLUGIN_ROOT, $3 = GROK_SESSION_ID (empty = not a Grok session)
+    GOT=$(HOME="$1" CLAUDE_PLUGIN_ROOT="$2" GROK_SESSION_ID="${3:-}" bash -c "$SNIPPET"$'\n''printf %s "$LOADER"' 2>/dev/null); RC=$?
 }
 
 # === Test 3: substituted ${CLAUDE_PLUGIN_ROOT} wins over anything installed ===
@@ -131,6 +132,25 @@ done
 run_snippet "$TDIR/home" ""
 assert_eq "snippet ran cleanly" "0" "$RC"
 assert_eq "resolves to 0.10.0" "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.10.0/skills/shared/config-loader.sh" "$GOT"
+rm -rf "$TDIR"
+
+# === Test 6: installed-plugins is a Grok-session root ===
+# The unpublished snapshot outranks the Claude cache only when GROK_SESSION_ID is set — bash
+# inside Grok Build has it, Claude Code does not (measured 2026-09-01). A Claude Code session on
+# a machine that also runs Grok smokes must not execute that snapshot: it falls behind the tree
+# the moment a commit lands (decided 2026-09-02).
+echo "=== Test 6: installed-plugins wins only inside a Grok session ==="
+TDIR=$(mktemp -d)
+mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared" \
+         "$TDIR/home/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared"
+: > "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh"
+: > "$TDIR/home/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared/config-loader.sh"
+run_snippet "$TDIR/home" "" "grok-session-1"
+assert_eq "snippet ran cleanly (Grok session)" "0" "$RC"
+assert_eq "Grok session: the snapshot wins" "$TDIR/home/.grok/installed-plugins/claude-mesh-aabbccdd/skills/shared/config-loader.sh" "$GOT"
+run_snippet "$TDIR/home" ""
+assert_eq "snippet ran cleanly (no Grok session)" "0" "$RC"
+assert_eq "no Grok session: the Claude cache wins" "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
 
 # === Test 5: nothing installed and no substitution -> the guard exits 1 ===

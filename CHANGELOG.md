@@ -9,7 +9,7 @@ All notable changes to claude-mesh will be documented here.
 
 ### Fixed
 - **Grok native reviewers had no shell.** `explore` on Grok 1.0.13 is `read_file`/`list_dir`/`grep` only, so `git diff` never ran. Native dispatch is `general-purpose` (do not edit files).
-- **Unpublished Grok install lost to the Claude cache.** `resolve-plugin-root.sh` and every skill/command else-branch now search `~/.grok/installed-plugins` before `~/.claude/plugins`.
+- **Unpublished Grok install lost to the Claude cache.** `resolve-plugin-root.sh` and every skill/command else-branch now search `~/.grok/installed-plugins` before `~/.claude/plugins`. Only inside a Grok session (`GROK_SESSION_ID` set in bash): a Claude Code session keeps the 0.12.0 order, so a stale Grok snapshot on a two-host machine cannot outrank the Claude cache.
 - **HOST_CLAUDE `claude -p -m` is not a flag** on Claude Code 2.1.257. Pass `--model`.
 - **Empty `.session_id` on Grok.** Stamp and match `GROK_SESSION_ID` when `CLAUDE_CODE_SESSION_ID` is unset.
 - **Grok wrapper `.session_id` is the child session, not the parent.** Wrapper bash sees its own `GROK_SESSION_ID`; `watch-runs` / `verify-delegation` run as the orchestrator. A child-stamped run is still this dispatch when Grok's subagent `meta.json` names the parent. Without that meta the stamp stays foreign. The meta lives at `~/.grok/sessions/<cwd>/<parent id>/subagents/<child id>/meta.json`; the first cut globbed one level too shallow and matched nothing, and the match is now on the value, not on Grok's pretty-printing.
