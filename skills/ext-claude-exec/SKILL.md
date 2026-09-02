@@ -147,7 +147,19 @@ if [ "${HOST_CLAUDE:-}" = "1" ]; then
     # ANTHROPIC_BASE_URL from a previous ext-claude run would send opus to z.ai.
     # shellcheck source=/dev/null
     . "$SKILL_DIR/host-claude-env.sh"
-    RUNTIME=$("$LOADER" get-runtime) || { echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned)" >&2; exit 1; }
+    # rc=2 is "no config.yaml at all": the official CLI needs no provider section, so a
+    # standalone claude-executor / claude-code-reviewer run gets the documented defaults and a
+    # WARN naming the dir the loader looked in. rc=1 (a file that exists and does not validate)
+    # still STOPs — that is a user-owned config to fix, never to guess around.
+    RT_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
+    RT_RC=0; RUNTIME=$("$LOADER" get-runtime 2>"$RT_ERR") || RT_RC=$?
+    if [ "$RT_RC" -eq 2 ]; then
+        echo "WARN: no config.yaml under $("$LOADER" data-dir) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
+        RUNTIME='{"timeouts":{"single_run_sec":1800,"stall_sec":600,"global_sec":3600,"max_retries":2}}'
+    elif [ "$RT_RC" -ne 0 ]; then
+        echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned):" >&2; cat "$RT_ERR" >&2; rm -f "$RT_ERR"; exit 1
+    fi
+    rm -f "$RT_ERR"
     SINGLE_RUN=$(printf '%s' "$RUNTIME" | jq -r '.timeouts.single_run_sec')
     STALL=$(printf '%s' "$RUNTIME" | jq -r '.timeouts.stall_sec')
     GLOBAL=$(printf '%s' "$RUNTIME" | jq -r '.timeouts.global_sec')
@@ -317,7 +329,19 @@ if [ "${HOST_CLAUDE:-}" = "1" ]; then
     # send HOST_CLAUDE opus to z.ai. Timeouts from get-runtime JSON, not from export.
     # shellcheck source=/dev/null
     . "$SKILL_DIR/host-claude-env.sh"
-    RUNTIME=$("$LOADER" get-runtime) || { echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned)" >&2; exit 1; }
+    # rc=2 is "no config.yaml at all": the official CLI needs no provider section, so a
+    # standalone claude-executor / claude-code-reviewer run gets the documented defaults and a
+    # WARN naming the dir the loader looked in. rc=1 (a file that exists and does not validate)
+    # still STOPs — that is a user-owned config to fix, never to guess around.
+    RT_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
+    RT_RC=0; RUNTIME=$("$LOADER" get-runtime 2>"$RT_ERR") || RT_RC=$?
+    if [ "$RT_RC" -eq 2 ]; then
+        echo "WARN: no config.yaml under $("$LOADER" data-dir) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
+        RUNTIME='{"timeouts":{"single_run_sec":1800,"stall_sec":600,"global_sec":3600,"max_retries":2}}'
+    elif [ "$RT_RC" -ne 0 ]; then
+        echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned):" >&2; cat "$RT_ERR" >&2; rm -f "$RT_ERR"; exit 1
+    fi
+    rm -f "$RT_ERR"
     SINGLE_RUN=$(printf '%s' "$RUNTIME" | jq -r '.timeouts.single_run_sec')
     echo "=== Ext-Claude Exec (HOST_CLAUDE stream mode) ==="
     echo "Work dir: $WORK_DIR"
@@ -451,7 +475,19 @@ if [ "${HOST_CLAUDE:-}" = "1" ]; then
     # from get-runtime JSON, not from CLAUDE_MESH_TIMEOUT_* (those come from export).
     # shellcheck source=/dev/null
     . "$SKILL_DIR/host-claude-env.sh"
-    RUNTIME=$("$LOADER" get-runtime) || { echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned)" >&2; exit 1; }
+    # rc=2 is "no config.yaml at all": the official CLI needs no provider section, so a
+    # standalone claude-executor / claude-code-reviewer run gets the documented defaults and a
+    # WARN naming the dir the loader looked in. rc=1 (a file that exists and does not validate)
+    # still STOPs — that is a user-owned config to fix, never to guess around.
+    RT_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
+    RT_RC=0; RUNTIME=$("$LOADER" get-runtime 2>"$RT_ERR") || RT_RC=$?
+    if [ "$RT_RC" -eq 2 ]; then
+        echo "WARN: no config.yaml under $("$LOADER" data-dir) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
+        RUNTIME='{"timeouts":{"single_run_sec":1800,"stall_sec":600,"global_sec":3600,"max_retries":2}}'
+    elif [ "$RT_RC" -ne 0 ]; then
+        echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned):" >&2; cat "$RT_ERR" >&2; rm -f "$RT_ERR"; exit 1
+    fi
+    rm -f "$RT_ERR"
     SINGLE_RUN=$(printf '%s' "$RUNTIME" | jq -r '.timeouts.single_run_sec')
     STALL=$(printf '%s' "$RUNTIME" | jq -r '.timeouts.stall_sec')
     GLOBAL=$(printf '%s' "$RUNTIME" | jq -r '.timeouts.global_sec')
