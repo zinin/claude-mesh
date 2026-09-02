@@ -20,6 +20,7 @@ All notable changes to claude-mesh will be documented here.
 - HOST_CLAUDE without a config.yaml: `get-runtime` rc=2 now means the default timeouts (1800/600/3600, 2 retries) plus a WARN naming the data dir, matching the review skill's preflight; rc=1 (a config that does not validate) still STOPs.
 - Grok native reviewers run as `general-purpose` with a shell, so both orchestrators now hash the working tree before dispatch and after the native wait; a difference is reported (a `tree | CHANGED` row in mesh-review, a note atop the design-review merged file), never reverted.
 - The orchestrators' `grok models` probe honours `GROK_MODELS_TIMEOUT`, else `PREFLIGHT_CLI_TIMEOUT` (the knob preflight's NO-NETWORK row names), else 30; documented in README.
+- `ext-claude-exec`: Step 1 records the validated `MODEL` / `HOST_CLAUDE` pair in `$WORK_DIR/.mode`; both launch fences re-check their own substitution against it and STOP before the CLI starts on a mismatch.
 - **Review→exec Read on Grok opened the Claude cache.** The no-Skill-tool paragraph in the five `*-code-review` skills (and fresh-session preflight) now searches `~/.grok/installed-plugins` before `~/.claude/plugins`.
 - Preflight no longer marks a zero-slug `grok models` listing as `OK` (and no longer leaks a temp file).
 

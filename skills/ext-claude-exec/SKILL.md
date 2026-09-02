@@ -280,6 +280,11 @@ echo "$TASK_NAME" > "$WORK_DIR/.task_name"
 # a concurrent orchestration started under the same engine/model in the same data dir.
 # Unconditional: an empty value writes an empty line, which both readers treat as unstamped.
 printf '%s\n' "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" > "$WORK_DIR/.session_id"
+# The mode this run was decided in, read back by both Step 2 launch fences: they receive
+# MODEL / HOST_CLAUDE by a second substitution and must not launch on a value that differs
+# from the one this fence validated — HOST_CLAUDE=1 here and empty there would send the alias
+# down the provider path with a leftover ANTHROPIC_BASE_URL.
+printf 'MODEL=%s\nHOST_CLAUDE=%s\n' "${MODEL:-}" "${HOST_CLAUDE:-}" > "$WORK_DIR/.mode"
 
 cat > "$WORK_DIR/prompt.md" << '__PROMPT_BOUND_a8f7e2c4__'
 {PROMPT}
@@ -301,6 +306,15 @@ set -euo pipefail
 WORK_DIR="{WORK_DIR}"
 MODEL="{MODEL}"
 HOST_CLAUDE="{HOST_CLAUDE}"
+# Cross-fence consistency: Step 1 recorded the MODEL / HOST_CLAUDE it validated in
+# $WORK_DIR/.mode. A value substituted differently here would launch under the wrong path —
+# HOST_CLAUDE=1 there and empty here sends the alias to a provider endpoint — so stop BEFORE
+# the CLI starts, not after. A run dir without .mode predates this stamp and is not checked.
+if [ -f "$WORK_DIR/.mode" ]; then
+    _M_MODEL=$(sed -n 's/^MODEL=//p' "$WORK_DIR/.mode"); _M_HOST=$(sed -n 's/^HOST_CLAUDE=//p' "$WORK_DIR/.mode")
+    [ "$_M_MODEL" = "${MODEL:-}" ] && [ "$_M_HOST" = "${HOST_CLAUDE:-}" ] \
+        || { echo "STOP: this fence's MODEL='${MODEL:-}' HOST_CLAUDE='${HOST_CLAUDE:-}' differ from Step 1's MODEL='$_M_MODEL' HOST_CLAUDE='$_M_HOST' (\$WORK_DIR/.mode) — substitute the same values as Step 1; do not launch" >&2; exit 1; }
+fi
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
@@ -446,6 +460,15 @@ command -v jq >/dev/null 2>&1 || { echo "supervised mode requires jq" >&2; exit 
 WORK_DIR="{WORK_DIR}"
 MODEL="{MODEL}"
 HOST_CLAUDE="{HOST_CLAUDE}"
+# Cross-fence consistency: Step 1 recorded the MODEL / HOST_CLAUDE it validated in
+# $WORK_DIR/.mode. A value substituted differently here would launch under the wrong path —
+# HOST_CLAUDE=1 there and empty here sends the alias to a provider endpoint — so stop BEFORE
+# the CLI starts, not after. A run dir without .mode predates this stamp and is not checked.
+if [ -f "$WORK_DIR/.mode" ]; then
+    _M_MODEL=$(sed -n 's/^MODEL=//p' "$WORK_DIR/.mode"); _M_HOST=$(sed -n 's/^HOST_CLAUDE=//p' "$WORK_DIR/.mode")
+    [ "$_M_MODEL" = "${MODEL:-}" ] && [ "$_M_HOST" = "${HOST_CLAUDE:-}" ] \
+        || { echo "STOP: this fence's MODEL='${MODEL:-}' HOST_CLAUDE='${HOST_CLAUDE:-}' differ from Step 1's MODEL='$_M_MODEL' HOST_CLAUDE='$_M_HOST' (\$WORK_DIR/.mode) — substitute the same values as Step 1; do not launch" >&2; exit 1; }
+fi
 # Task 2.5: SKILL_BASE = absolute base dir Claude Code prints at skill load.
 SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then

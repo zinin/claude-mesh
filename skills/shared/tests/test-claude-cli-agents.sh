@@ -134,6 +134,15 @@ done
 assert_eq "every review→exec Read searches installed-plugins before .claude/plugins" "0" "$read_stale"
 
 echo ""
+echo "=== Test: ext-claude-exec launch fences re-check MODEL / HOST_CLAUDE against Step 1 ==="
+# MODEL and HOST_CLAUDE are substituted into every fence separately. Step 1 writes the pair it
+# validated to $WORK_DIR/.mode; both Step 2 launch fences must read it back and STOP on a
+# mismatch before the CLI starts (decided 2026-09-02). One write, two checks.
+EXEC_SKILL="$REPO/skills/ext-claude-exec/SKILL.md"
+assert_eq "Step 1 writes .mode once" "1" "$(grep -c '> "\$WORK_DIR/.mode"' "$EXEC_SKILL")"
+assert_eq "both launch fences read .mode" "2" "$(grep -c 'if \[ -f "\$WORK_DIR/.mode" \]; then' "$EXEC_SKILL")"
+
+echo ""
 echo "=== Test: resolver fences keep the ROOT ORDER, and the prose agrees ==="
 # 0c851d0 moved installed-plugins to the front of every fence and left the prose in all ten
 # skills saying `.claude` first; the counts above never looked at ORDER or at prose, so the
