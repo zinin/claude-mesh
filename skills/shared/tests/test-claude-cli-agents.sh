@@ -134,5 +134,36 @@ done
 assert_eq "every review→exec Read searches installed-plugins before .claude/plugins" "0" "$read_stale"
 
 echo ""
+echo "=== Test: resolver fences keep the ROOT ORDER, and the prose agrees ==="
+# 0c851d0 moved installed-plugins to the front of every fence and left the prose in all ten
+# skills saying `.claude` first; the counts above never looked at ORDER or at prose, so the
+# drift was invisible until an external review read both. Every fence holds exactly one find
+# per root, so pairing the i-th line of each root by position checks every fence: the
+# installed-plugins line must precede the .claude line, which must precede the .grok line.
+order_bad=0
+for s in $SKILLS_WITH_RESOLVER; do
+    f="$REPO/skills/$s/SKILL.md"
+    # Byte offsets, not line numbers: the review→exec Read paragraph carries all three finds
+    # on ONE line, and a line-number comparison reads that correct order as a tie.
+    inst="$(grep -boF 'find "$HOME"/.grok/installed-plugins -path' "$f" | cut -d: -f1)"
+    cc="$(grep -boF 'find "$HOME"/.claude/plugins -path' "$f" | cut -d: -f1)"
+    gp="$(grep -boF 'find "$HOME"/.grok/plugins -path' "$f" | cut -d: -f1)"
+    n_i="$(printf '%s\n' "$inst" | grep -c .)"; n_c="$(printf '%s\n' "$cc" | grep -c .)"; n_g="$(printf '%s\n' "$gp" | grep -c .)"
+    if [ "$n_i" -eq 0 ] || [ "$n_i" != "$n_c" ] || [ "$n_c" != "$n_g" ]; then
+        order_bad=$((order_bad+1)); echo "    $s: find counts installed=$n_i claude=$n_c grok=$n_g"; continue
+    fi
+    if ! paste <(printf '%s\n' "$inst") <(printf '%s\n' "$cc") <(printf '%s\n' "$gp") | while IFS=$'\t' read -r a b c; do
+            [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] || { echo "    $s: fence order wrong at byte offsets $a/$b/$c"; exit 1; }
+        done; then
+        order_bad=$((order_bad+1))
+    fi
+    [ "$(grep -cF 'searches `$HOME/.grok/installed-plugins` first' "$f")" = 1 ] \
+        || { order_bad=$((order_bad+1)); echo "    $s: prose does not say installed-plugins first (exactly once)"; }
+    [ "$(grep -cF 'searches `$HOME/.claude/plugins` first' "$f")" = 0 ] \
+        || { order_bad=$((order_bad+1)); echo "    $s: stale prose says .claude first"; }
+done
+assert_eq "every skill fence searches installed-plugins, .claude, .grok in that order, and the prose says so" "0" "$order_bad"
+
+echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
