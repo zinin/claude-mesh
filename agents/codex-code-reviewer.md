@@ -44,9 +44,14 @@ a review from a **different model** (OpenAI Codex), not from Claude.
 
 ## Verification
 
-After the skill completes, verify that artifacts were created (Task 2.5: `${CLAUDE_PLUGIN_DATA}` is empty in agent Bash calls — glob the data dir, list newest run dirs by mtime):
+After the skill completes, verify that artifacts were created (Task 2.5: `${CLAUDE_PLUGIN_DATA}` is empty in agent Bash calls — glob the data dir, newest run dirs by mtime) — and list only YOURS. The `*-exec` skills stamp `.session_id` into every run dir, and an unfiltered "newest under runs/codex" answers a different question whenever another session is reviewing on this machine at the same time — on 2026-08-30 such a listing reported a live reviewer dead (see `grok-code-reviewer.md`). A run carrying no `.session_id` stays eligible on purpose — it predates the stamp.
 ```bash
-find "$HOME"/.claude/plugins/data/claude-mesh-*/runs/codex -mindepth 1 -maxdepth 1 -type d 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2-
+for d in "$HOME"/.claude/plugins/data/claude-mesh-*/runs/codex/*/; do
+    [ -d "$d" ] || continue
+    run_sid=""; [ -r "$d/.session_id" ] && IFS= read -r run_sid < "$d/.session_id"
+    [ -z "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" ] || [ -z "$run_sid" ] || [ "$run_sid" = "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" ] || continue
+    printf '%s %s\n' "$(stat -c %Y "$d")" "$d"
+done | sort -rn | head -5 | cut -d' ' -f2-
 ```
 
 If no new directory was created, the review did NOT execute properly — report this as an error.

@@ -191,10 +191,18 @@ grok_child_of_self() {
     local child="$1" grok_home meta
     [ -n "$child" ] && [ -n "$SELF_SID" ] || return 1
     [[ "$child" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+    [[ "$SELF_SID" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
     grok_home="${GROK_HOME:-$HOME/.grok}"
-    for meta in "$grok_home"/sessions/*/subagents/"$child"/meta.json; do
+    # Measured 2026-09-02 (39 files): ~/.grok/sessions/<urlencoded cwd>/<parent session
+    # id>/subagents/<child id>/meta.json — the parent id is a path component under the cwd
+    # dir. The flatter sessions/*/subagents/ shape is kept as a second pattern for a build
+    # that drops the cwd level; before 2026-09-02 it was the ONLY pattern and matched nothing.
+    for meta in "$grok_home"/sessions/*/*/subagents/"$child"/meta.json \
+                "$grok_home"/sessions/*/subagents/"$child"/meta.json; do
         [ -f "$meta" ] || continue
-        grep -Fq "\"parent_session_id\": \"$SELF_SID\"" "$meta" && return 0
+        # Value match only — not one exact serialisation. A compacted or re-indented
+        # meta.json must not turn this orchestrator's own child into a foreign run.
+        grep -Eq "\"parent_session_id\"[[:space:]]*:[[:space:]]*\"$SELF_SID\"" "$meta" && return 0
     done
     return 1
 }

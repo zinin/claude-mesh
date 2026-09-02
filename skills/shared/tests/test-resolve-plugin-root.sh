@@ -9,7 +9,7 @@
 #   2. SKILL_BASE is a skill dir → walk up two       (:6-8)
 #   3. CLAUDE_PLUGIN_ROOT                            (:10-12)
 #   4. GROK_PLUGIN_ROOT — new in the host-aware work (:13-15)
-#   5. find fallback, then the not-found exit 1      (:16-22)
+#   5. find fallback (installed-plugins, .claude, .grok), then the not-found exit 1 (:22-30)
 #
 # Branch 4 is the whole reason the script exists on Grok Build, and branch 5's exit 1 is
 # what stops a caller from resolving a PLUGIN_ROOT out of its current directory.

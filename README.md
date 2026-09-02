@@ -42,7 +42,7 @@ daemon), and session helpers.
   size budgets, the three-tier `CLAUDE.md` → `.claude/rules/` → co-located layout, `paths:`
   frontmatter for conditional loading, quality checklist. Vendored from an external project —
   see [Credits](#credits)
-- **Grok Build** — `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `explore` reviewers (`builtin: native`, slugs from `grok models`) alongside the CLI wrappers. `grok plugin list` empty is not "missing" — see [Grok Build](#grok-build)
+- **Grok Build** — `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `general-purpose` reviewers (`builtin: native`, slugs from `grok models`; `explore` has no shell on Grok 1.0.13, so the child is told not to edit files) alongside the CLI wrappers. `grok plugin list` empty is not "missing" — see [Grok Build](#grok-build)
 - **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else)
 
 ## Install
@@ -86,6 +86,10 @@ The same `config.yaml` serves both hosts.
   may say none installed; that is not "missing". `grok inspect` is the inventory.
 - On Grok, `builtin: native` runs `spawn_subagent` with slugs from `grok models`.
   `builtin: claude` runs `claude -p` (Claude Code CLI).
+- Grok `claude` reviewers run under `HOST_CLAUDE=1`: the CLI's own `claude login` credentials,
+  no provider `export` from `config.yaml`. That run unsets `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`
+  and the Bedrock / Vertex routing variables, so API-key, Bedrock or Vertex auth is not used
+  there — log the CLI in first. Run dirs: `runs/claude/<alias>/`.
 - A 0.12.0 preset without `native` does not start host slugs on Grok. Add `native`
   (and `native_models`) yourself. Claude Code is unchanged.
 - Data dir is still `~/.claude/plugins/data/claude-mesh-zinin/`.

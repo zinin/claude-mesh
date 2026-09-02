@@ -628,9 +628,11 @@ echo ""
 echo "Test 37c: Grok parent accepts a child-stamped run when subagent meta names it"
 TDIR="$(mktemp -d)"
 GH="$(mktemp -d)"
-mkdir -p "$GH/sessions/cwd/subagents/grok-child-1"
-printf '%s\n' '{"parent_session_id": "grok-parent-1", "child_session_id": "grok-child-1"}' \
-    > "$GH/sessions/cwd/subagents/grok-child-1/meta.json"
+# Real layout, measured 2026-09-02: sessions/<urlencoded cwd>/<parent id>/subagents/<child id>/.
+# Compact JSON on purpose: the match is on the VALUE, not on Grok's pretty-printing.
+mkdir -p "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1"
+printf '%s\n' '{"parent_session_id":"grok-parent-1","child_session_id":"grok-child-1"}' \
+    > "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1/meta.json"
 mine=$(mk_run "$TDIR" codex -60 100002); sid_stamp "$mine" grok-child-1
 printf 'review' > "$mine/output.txt"; wd_log "$mine" 0
 OUT="$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \

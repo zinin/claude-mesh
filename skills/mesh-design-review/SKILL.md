@@ -19,7 +19,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -29,12 +29,12 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
 fi
 
-Do not rewrite the fence. The else-branch searches `$HOME/.claude/plugins` first — version-sorted, `| sort -V | tail -1` — and only falls back to `$HOME/.grok/plugins` when that finds nothing. The roots are tried in PRIORITY order, never in one find over both: `sort -V` compares whole paths, and `.claude` < `.grok`, so a single find picked the `.grok` copy whatever its version. `.claude` is where the active copy lives on both hosts — Grok loads claude-mesh from the Claude cache. It then sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. The else-branch repeats `resolve-plugin-root.sh`'s remaining order IDENTICALLY — `$CLAUDE_PLUGIN_ROOT`, `$GROK_PLUGIN_ROOT`, then the two plugin trees — because it cannot call the helper (that is the file it is locating). Keep the two in step: they are one contract in two copies. If nothing resolves it STOPs, rather than resolving a `PLUGIN_ROOT` from the current directory.
+Do not rewrite the fence. The else-branch searches `$HOME/.grok/installed-plugins` first — an unpublished `grok plugin install <tree>` copy, the one `grok inspect` loads, which a stale Claude cache must not outrank (measured 2026-09-01: `sort -V` on the cache picked 0.12.0 and the wrappers ran the old loader) — then `$HOME/.claude/plugins`, then `$HOME/.grok/plugins`, each version-sorted, `| sort -V | tail -1`, and each tried only when the previous root finds nothing. The roots are tried in PRIORITY order, never in one find over all three: `sort -V` compares whole paths, and `.claude` < `.grok`, so a single find picked the `.grok` copy whatever its version. `.claude` is where a published copy lives on both hosts — Grok loads a marketplace claude-mesh from the Claude cache; only an unpublished tree sits under `installed-plugins`. It then sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. The else-branch repeats `resolve-plugin-root.sh`'s remaining order IDENTICALLY — `$CLAUDE_PLUGIN_ROOT`, `$GROK_PLUGIN_ROOT`, then the three plugin trees — because it cannot call the helper (that is the file it is locating). Keep the two in step: they are one contract in two copies. If nothing resolves it STOPs, rather than resolving a `PLUGIN_ROOT` from the current directory.
 
 From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
@@ -274,7 +274,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -284,7 +284,7 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
 fi
@@ -379,13 +379,23 @@ if [ "$HOST" = grok ]; then
     echo "ВНИМАНИЕ: timeout(1) отсутствует — grok models не запускался; native деградирует" >&2
   else
     GM=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
-    if timeout "${GROK_MODELS_TIMEOUT:-30}" grok models >"$GM" 2>/dev/null; then
+    # Numeric or the default: a non-numeric value makes timeout(1) itself fail, and with stderr
+    # discarded native would degrade with no reason on screen (preflight-env.sh validates its
+    # CLI budget the same way).
+    GMT="${GROK_MODELS_TIMEOUT:-30}"
+    case "$GMT" in ''|*[!0-9]*|0) echo "ВНИМАНИЕ: GROK_MODELS_TIMEOUT='$GMT' не число — использую 30" >&2; GMT=30 ;; esac
+    if timeout "$GMT" grok models >"$GM" 2>/dev/null; then
       HOST_MODELS=$(bash "$(dirname "$LOADER")/list-host-models.sh" --from-file "$GM")
     fi
     rm -f "$GM"
   fi
 fi
 echo "HOST_MODELS=[$(printf '%s' "$HOST_MODELS" | tr '\n' ' ')]"
+# Grok wait deadline (Step 6): the number the loop stops at. Read here so it is ON SCREEN —
+# the wait paragraph used to name `runtime.timeouts.global_sec` and nothing had ever read it.
+GLOBAL_SEC=$("$LOADER" get-runtime 2>/dev/null | jq -r '.timeouts.global_sec // 3600')
+[[ "$GLOBAL_SEC" =~ ^[0-9]+$ ]] || GLOBAL_SEC=3600
+echo "GLOBAL_SEC=$GLOBAL_SEC"
 ```
 
 rc=0 → proceed; rc=2 → fresh-install hint + clean exit; rc=1 → surface the validator stderr and stop (iter-3 CRITICAL-3). Parse `DEFAULTS_JSON` with jq (`.builtin`, `.claude_models`, `.native_models`, `.grok_models`, `.models`, `.grok_degraded`) to build `DEFAULT_IDS` (recommended ext-claude model ids), `CLAUDE_DEFAULT_IDS` (recommended Claude models), `NATIVE_DEFAULT_IDS` (recommended native slugs — the ★ set Step 5.2.3 marks with), `GROK_DEFAULT_IDS` (recommended grok models — the ★ set Step 5.2.6 marks with, so that page needs no loader read of its own) and the recommended built-in set. Compare `HAS_CODEX` / `HAS_GEMINI` / `HAS_GROK` / `HAS_MODELS` / `HAS_CLAUDE_MODELS` to `1` (the loader emits `1`/`0`, never `"true"`).
@@ -704,7 +714,7 @@ Task tool:
 
 **If a HOST=claude-code claude reviewer's Task errors** — most likely a `claude_models` entry this Claude Code build does not accept — treat it exactly like a failed executor per Error Handling ("One agent fails, others succeed"): note the failure in the merged file, omit its section, continue with the rest. Never silently re-dispatch it on a different model: a failed dispatch is the only signal that a model name is wrong (design §13), and substituting another model hides it while pretending the cross-check happened.
 
-**HOST=grok — native:** the composed Step 4 prompt + tooling constraint + **Do not edit files.** `subagent_type: "general-purpose"`, `background: true`, `model: "<slug>"`, `description: "Design review via native:<slug> (iter N)"`. **One `general-purpose` per entry of `SELECTED_NATIVE_MODELS`**. If the list is empty and native was selected (session-model fallback): one `general-purpose`, **omit** `model:`. Native writes no `runs/native/…` and is not on the watcher roster. The result is the child's text — `verify-delegation.sh is never invoked for native`. Do not inline the documents (the prompt already names them). A native spawn the host rejects is a failed reviewer: record it, do not substitute another slug.
+**HOST=grok — native:** the composed Step 4 prompt + tooling constraint + **Do not edit files.** `subagent_type: "general-purpose"`, `background: true`, `model: "<slug>"`, `description: "Design review via native:<slug> (iter N)"`. **One `general-purpose` per entry of `SELECTED_NATIVE_MODELS`**. If the list is empty and native was selected (session-model fallback: sentinel / absent key, `HOST_MODELS` non-empty, native still in selected types — after a spoken `native_degraded` removal native is no longer selected and nothing is dispatched): one `general-purpose`, **omit** `model:`. Native writes no `runs/native/…` and is not on the watcher roster. The result is the child's text — `verify-delegation.sh is never invoked for native`. Do not inline the documents (the prompt already names them). A native spawn the host rejects is a failed reviewer: record it, do not substitute another slug.
 
 ```
 spawn_subagent:
@@ -797,7 +807,7 @@ Agent-specific parameters:
 
 Collect output paths from every **executor** (codex / gemini / grok / ext-claude, and on HOST=grok also `claude`) — but do NOT passively wait for completions: the watch loop below is what turns finished runs into reports. HOST=claude-code claude reviewers have no output path to collect: they create no `runs/<engine>/…` dir and return their review as the Task result. HOST=grok native has no output path either: no `runs/native/…`; `verify-delegation.sh is never invoked for native`; the result is the child's text (INLINE).
 
-**Wait — HOST=grok.** No sleep poller. Completions arrive as harness notifications on the `spawn_subagent` ids; fetch each with `get_command_or_subagent_output`. A wait-all on several ids is allowed; each call's `timeout_ms` ≤ 600000. Loop until every child has finished or `runtime.timeouts.global_sec` elapses. Native is not on the watcher roster (`verify-delegation.sh is never invoked for native`). Wrappers still go through `watch-runs.sh` + `verify-delegation.sh`. Silent wrapper + `REAL` → read `output.txt` yourself — that is the **primary** collection path on Grok, not after two pings. No SendMessage.
+**Wait — HOST=grok.** No sleep poller. Completions arrive as harness notifications on the `spawn_subagent` ids; fetch each with `get_command_or_subagent_output`. A wait-all on several ids is allowed; each call's `timeout_ms` ≤ 600000. Loop until every child has finished or `GLOBAL_SEC` seconds — the `runtime.timeouts.global_sec` value echoed by the Step 5.0 preflight fence; substitute the number, it does not survive between calls — have elapsed since `DISPATCH_EPOCH`; then treat whatever is still running as dead and route it to Error Handling. Native is not on the watcher roster (`verify-delegation.sh is never invoked for native`). Wrappers still go through `watch-runs.sh` + `verify-delegation.sh`. Silent wrapper + `REAL` → read `output.txt` yourself — that is the **primary** collection path on Grok, not after two pings. No SendMessage.
 
 **Wait — HOST=claude-code.** **CRITICAL — an executor's report does NOT arrive on its own: disk-watch the runs and ping idle executors.** Each executor launches its external engine (watchdog + CLI) as a background Bash task, sends an interim status naming its run dir (`runs/<engine>/…` under the plugin data dir), ends its turn and goes idle. The harness delivers NO task-notification to an idle subagent when that background task exits, so the report stalls until pinged (same mechanics verified 2026-07-10 on the mesh-review wrappers: 0 notifications in 5/5 transcripts, reports stalled 8–12 min over a finished `output.txt`). After dispatch (both hosts run the disk watch for wrappers; HOST=grok does not SendMessage):
 
@@ -809,7 +819,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
    if [ -n "$SKILL_BASE" ]; then
      PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
    else
-     # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+     # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
      # helper cannot be called from here (it is what we are locating), so the branch has
      # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
      _LOADER=""
@@ -819,7 +829,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
      [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-     [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+     [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
      PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
      SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
    fi
@@ -852,7 +862,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
    if [ -n "$SKILL_BASE" ]; then
      PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
    else
-     # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+     # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
      # helper cannot be called from here (it is what we are locating), so the branch has
      # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
      _LOADER=""
@@ -862,7 +872,7 @@ Collect output paths from every **executor** (codex / gemini / grok / ext-claude
      [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
      [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-     [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+     [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
      PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
      SKILL_BASE="$PLUGIN_ROOT/skills/mesh-design-review"
    fi
@@ -907,8 +917,19 @@ After all agents complete:
 
 ## claude:opus
 
-[full output from the built-in claude reviewer on opus — one section per selected Claude model;
- a single fallback reviewer is titled just `claude`]
+[full output from the claude reviewer on opus — one section per selected Claude model; a single
+ fallback reviewer is titled just `claude`. HOST=claude-code: the host Task's text. HOST=grok:
+ the `claude -p` wrapper's `output.txt`]
+
+---
+
+## native:<slug>
+
+[HOST=grok only — the host child's text, one section per dispatched slug in
+ `SELECTED_NATIVE_MODELS` order (`native:grok-4.6`); a single section titled `native` in the
+ session-model fallback. These are the primary reviewers on Grok and this file is the only
+ input to Step 8, so a native review left out here is a review that never happened.
+ HOST=claude-code has no such sections: native collapsed into the claude host set]
 
 ---
 

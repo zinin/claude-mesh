@@ -62,9 +62,14 @@ a review from a **different model** (via `claude -p` on an alt provider), not fr
 
 ## Verification
 
-After the skill completes (Task 2.5: `${CLAUDE_PLUGIN_DATA}` is empty in agent Bash calls — glob the data dir). Run dirs are depth 3 (`<provider>/<short>/<run>`), so list the newest leaf run dir by mtime, not the persistent provider dirs:
+After the skill completes (Task 2.5: `${CLAUDE_PLUGIN_DATA}` is empty in agent Bash calls — glob the data dir). Run dirs are depth 3 (`<provider>/<short>/<run>`), so list the newest leaf run dirs by mtime under YOUR model, not the persistent provider dirs — and list only YOURS. The `*-exec` skills stamp `.session_id` into every run dir, and an unfiltered "newest under runs/ext-claude" answers a different question whenever another session is reviewing on this machine at the same time — on 2026-08-30 such a listing reported a live reviewer dead (see `grok-code-reviewer.md`). A run carrying no `.session_id` stays eligible on purpose — it predates the stamp. Substitute the MODEL you were given (`<provider>/<short>`):
 ```bash
-find "$HOME"/.claude/plugins/data/claude-mesh-*/runs/ext-claude -mindepth 3 -maxdepth 3 -type d 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -3 | cut -d' ' -f2-
+for d in "$HOME"/.claude/plugins/data/claude-mesh-*/runs/ext-claude/<the MODEL you were given>/*/; do
+    [ -d "$d" ] || continue
+    run_sid=""; [ -r "$d/.session_id" ] && IFS= read -r run_sid < "$d/.session_id"
+    [ -z "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" ] || [ -z "$run_sid" ] || [ "$run_sid" = "${CLAUDE_CODE_SESSION_ID:-${GROK_SESSION_ID:-}}" ] || continue
+    printf '%s %s\n' "$(stat -c %Y "$d")" "$d"
+done | sort -rn | head -3 | cut -d' ' -f2-
 ```
 
 If no run dir is listed, or the newest is not from this invocation (not recent), the review did NOT execute properly — report as error.

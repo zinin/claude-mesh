@@ -45,7 +45,7 @@ substitute the literal `grok` or `claude-code` you echoed.
 **If `default` is among the arguments** — in any order, alone or combined with `BASE_BRANCH=` and
 `autodecide` (Task 2.5: commands are namespaced; bare `/mesh-review` does not resolve on CC 2.1.156):
 - Skip Steps 1-3 entirely.
-- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.native_models`, `.grok_models`, `.models`, `.run_mode`, `.grok_degraded`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
+- Read `defaults.code_review` via `"$LOADER" get-defaults code_review` and parse with jq (`.builtin`, `.claude_models`, `.native_models`, `.grok_models`, `.models`, `.run_mode`, `.grok_degraded`); read the runtime block ONCE via `RUNTIME_JSON=$("$LOADER" get-runtime)` and pull BOTH fields from that single JSON — `DEFAULT_RUN_MODE=$(echo "$RUNTIME_JSON" | jq -r '.default_run_mode')` and `DISPATCH_MODEL=$(echo "$RUNTIME_JSON" | jq -r '.dispatch_model // empty')` — then `echo "DISPATCH_MODEL=$DISPATCH_MODEL"` to surface it (empty = inherit the session model on dispatch). Bind `GLOBAL_SEC=$(echo "$RUNTIME_JSON" | jq -r '.timeouts.global_sec // 3600')` from the same JSON and `echo "GLOBAL_SEC=$GLOBAL_SEC"`: the HOST=grok wait in Step 5a stops at that many seconds after `DISPATCH_EPOCH`, and a deadline nothing has read is no deadline. (iter-3 CONCERN-1 — these come through the loader, not raw-yaml reads; `get-runtime` validates the runtime block, so a charset-invalid `dispatch_model` fast-fails here.)
 - Read via the loader with the same rc=2/rc=1 distinction as Step 1 (iter-3 CRITICAL-3) — rc=2 ⇒ print the copy-config hint and exit cleanly; rc=1 ⇒ surface the validator stderr verbatim and stop — do NOT edit config.yaml (user-owned, agents never edit it).
 - If `defaults.code_review` not configured → STOP with error:
   `defaults.code_review not configured in config.yaml. Use /claude-mesh:mesh-review without argument or add the preset.`
@@ -138,6 +138,11 @@ DISPATCH_MODEL=$("$LOADER" get-flag dispatch_model 2>"$DM_ERR") \
     || { echo "config.yaml невалиден (runtime.dispatch_model):" >&2; cat "$DM_ERR" >&2; rm -f "$DM_ERR"; exit 1; }
 rm -f "$DM_ERR"
 echo "DISPATCH_MODEL=$DISPATCH_MODEL"   # empty = inherit session model on dispatch
+# Grok wait deadline (Step 5a): the number the loop stops at. Read here so it is ON SCREEN —
+# the wait paragraph used to name `runtime.timeouts.global_sec` and nothing had ever read it.
+GLOBAL_SEC=$("$LOADER" get-runtime 2>/dev/null | jq -r '.timeouts.global_sec // 3600')
+[[ "$GLOBAL_SEC" =~ ^[0-9]+$ ]] || GLOBAL_SEC=3600
+echo "GLOBAL_SEC=$GLOBAL_SEC"
 # Claude-model catalog (Step 2.4 gate). rc-aware like the dispatch_model read above:
 # these two subcommands validate the `claude:` section, so a malformed section must
 # fast-fail here with the validator's own message rather than surface as an empty list.
@@ -178,7 +183,12 @@ if [ "$HOST" = grok ]; then
     echo "ВНИМАНИЕ: timeout(1) отсутствует — grok models не запускался; native деградирует" >&2
   else
     GM=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
-    if timeout "${GROK_MODELS_TIMEOUT:-30}" grok models >"$GM" 2>/dev/null; then
+    # Numeric or the default: a non-numeric value makes timeout(1) itself fail, and with stderr
+    # discarded native would degrade with no reason on screen (preflight-env.sh validates its
+    # CLI budget the same way).
+    GMT="${GROK_MODELS_TIMEOUT:-30}"
+    case "$GMT" in ''|*[!0-9]*|0) echo "ВНИМАНИЕ: GROK_MODELS_TIMEOUT='$GMT' не число — использую 30" >&2; GMT=30 ;; esac
+    if timeout "$GMT" grok models >"$GM" 2>/dev/null; then
       HOST_MODELS=$(bash "$(dirname "$LOADER")/list-host-models.sh" --from-file "$GM")
     fi
     rm -f "$GM"
@@ -727,7 +737,7 @@ When each agent completes, read its output. After all agents finish (or the user
    ```bash
    LOADER="${CLAUDE_PLUGIN_ROOT}/skills/shared/config-loader.sh"
    [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-[ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
+   [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
    [ -f "$LOADER" ] || LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
    [ -f "$LOADER" ] || { echo "config-loader.sh not found" >&2; exit 1; }
    WATCH="$(dirname "$LOADER")/watch-runs.sh"
@@ -771,7 +781,7 @@ When each agent completes, read its output. After all agents finish (or the user
 
 **HOST=claude-code:** the builtin `claude` reviewers are exempt: they review inline, create no `runs/<engine>/…` dir and complete on their own. Never wait for a run dir for them and never ping them. Native is not a separate spawn.
 
-**Wait — HOST=grok.** No sleep poller. Completions arrive as harness notifications on the `spawn_subagent` ids; fetch each with `get_command_or_subagent_output`. A wait-all on several ids is allowed; each call's `timeout_ms` ≤ 600000. Loop until every child has finished or `runtime.timeouts.global_sec` elapses. There is no SendMessage.
+**Wait — HOST=grok.** No sleep poller. Completions arrive as harness notifications on the `spawn_subagent` ids; fetch each with `get_command_or_subagent_output`. A wait-all on several ids is allowed; each call's `timeout_ms` ≤ 600000. Loop until every child has finished or `GLOBAL_SEC` seconds — the `runtime.timeouts.global_sec` value echoed in Step 0 (`default`) / Step 1 (interactive); substitute the number, it does not survive between calls — have elapsed since `DISPATCH_EPOCH`; then treat whatever is still running as dead and go to Step 6.0. There is no SendMessage.
 
 - **Native** is not on the watcher roster. The result is the child's text. Step 6.0 marks each `native:<slug> INLINE`. `verify-delegation.sh is never invoked for native`.
 - **Wrappers** (codex / gemini / grok / ext-claude / Grok-host `claude`) still go through `watch-runs.sh` + `verify-delegation.sh`. Include `claude/opus` on the roster when a Grok-host claude wrapper was dispatched — depth 1, like grok: `claude/opus` matching `runs/claude/opus/`. Example: `"$WATCH" --since <DISPATCH_EPOCH> claude/opus grok/grok-4.6 ext-claude/zai/glm`. Then `bash "$VERIFY" claude opus <DISPATCH_EPOCH> "$DATA_DIR"`. Empty-catalog fallback: the roster lists `claude/_default` (T4 writes that dir) and the guard takes that same literal — `bash "$VERIFY" claude _default <DISPATCH_EPOCH> "$DATA_DIR"`. It is the ONE accepted name with a leading underscore, and it is accepted precisely so the fallback reviewer is verified like every other wrapper instead of being read by hand, which loses the dispatch-window check and the `permission_denials` -> `DEGRADED` check.
@@ -781,7 +791,7 @@ After dispatch, print the same "N agents running, do not block" line as HOST=cla
 
 ## Step 5b: Team of reviewers mode
 
-**HOST=grok never runs team.** Step 0 / Step 4 already STOP with `На Grok team mode не поддерживается — остановите запуск и используйте background.` If you reach this step on Grok, that is a bug — stop and use Step 5a (background). Grok has no TeamCreate.
+**HOST=grok never runs team.** Step 0 STOPs a `default` preset that says `team` with `На Grok team mode не поддерживается — остановите запуск и используйте background.`, and Step 4 is skipped on Grok (always background), so this step is unreachable there. If you still reach it on Grok, that is a bug: STOP with the same message and dispatch nothing — never fall through to Step 5a on your own; the design forbids a silent background fallback. Grok has no TeamCreate.
 
 1. Generate the team name via a **Bash tool call** (which has a real `$$`, unlike the slash-command context which does not): `TEAM_NAME="code-review-$(date +%Y%m%d-%H%M%S)-$$"; DISPATCH_EPOCH=$(date +%s); echo "$TEAM_NAME $DISPATCH_EPOCH"`. Use the first value as the TeamCreate name (timestamp+PID suffix prevents collisions when two `/mesh-review` invocations run concurrently; on collision, regenerate). **Keep `DISPATCH_EPOCH`** and the same `engine:model` wrapper list as Step 5a (excluding the builtin `claude` reviewers — all of them) — Step 6.0's guard needs both. iter-3 QUESTION-1: do not paste a literal `<pid>` — there is no shell `$$` in the slash-command context itself.
 2. Create one task per selected reviewer — with several Claude models selected that means one task per Claude model (`claude:opus`, `claude:fable`), not one shared `claude` task; and **one task per entry of `SELECTED_GROK_MODELS`**, named `grok:<model>`, exactly as Step 5a dispatches them — never one shared `grok` task, and none at all when that list is empty
@@ -908,7 +918,7 @@ Then continue with the remaining reviewers, per the existing rule "One agent fai
 
 ### Step 6.1: Deduplicate, Verify, and Classify
 
-1. **Deduplicate:** If multiple agents found the same issue (same file, same problem), merge into one entry. Note all agents that found it. Claude reviewers are attributed as `claude:<model>` (`claude:opus`, `claude:fable`); a single fallback reviewer is just `claude`. Two different Claude models reporting the same issue is corroboration — exactly like codex and ext-claude agreeing — so merge them into one entry that lists both, never collapse them into a nameless "claude". Grok reviewers are attributed the same way, as `grok:<model>` (`grok:grok-4.6`) — two grok models reporting one issue is corroboration exactly as two Claude models are, so merge them into one entry that lists both and never collapse them into a nameless "grok".
+1. **Deduplicate:** If multiple agents found the same issue (same file, same problem), merge into one entry. Note all agents that found it. Claude reviewers are attributed as `claude:<model>` (`claude:opus`, `claude:fable`); a single fallback reviewer is just `claude`. Two different Claude models reporting the same issue is corroboration — exactly like codex and ext-claude agreeing — so merge them into one entry that lists both, never collapse them into a nameless "claude". Grok reviewers are attributed the same way, as `grok:<model>` (`grok:grok-4.6`) — two grok models reporting one issue is corroboration exactly as two Claude models are, so merge them into one entry that lists both and never collapse them into a nameless "grok". On HOST=grok, native reviewers are attributed as `native:<slug>` (`native:grok-4.6`; a single `native` in the session-model fallback) — two native slugs reporting one issue is corroboration in the same way, and `native:grok-4.6` and `grok:grok-4.6` stay two reviewers even when they are the same underlying model.
 
 2. **Verify each issue against the codebase:** read the code at the reported location.
    - Is the issue real?

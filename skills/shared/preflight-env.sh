@@ -578,9 +578,11 @@ esac
 [ -z "$GROK_LISTING" ] || rm -f "$GROK_LISTING"
 row native-models "$NM_STATUS" "$NM_DETAIL"
 
+CLAUDE_CLI_STATUS=OK
 if command -v claude >/dev/null 2>&1; then
     row claude-cli OK "claude on PATH"
 else
+    CLAUDE_CLI_STATUS=MISSING
     row claude-cli MISSING "claude CLI not on PATH"
 fi
 
@@ -998,6 +1000,7 @@ fi
 # whenever CONFIG_STATUS=OK (the toolchain gate ran first).
 for PRESET in design_review code_review; do
     DLIST="—"
+    DJ=""
     if [ "$CONFIG_STATUS" = "OK" ] && DJ="$(bash "$LOADER" get-defaults "$PRESET" 2>/dev/null)"; then
         # grok and native are expanded over their *_models lists exactly as claude is over
         # claude_models, and for the same reason: SUMMARY available spells those reviewers
@@ -1030,7 +1033,12 @@ for PRESET in design_review code_review; do
         [ -n "$DLIST" ] || DLIST="— (preset empty)"
     fi
     printf 'SUMMARY defaults %s: %s\n' "$PRESET" "$DLIST"
-    case "$DLIST" in *native*) SAW_NATIVE_DEFAULT=1 ;; esac
+    # From the preset JSON, not from the rendered DLIST: `*native*` on the joined string also
+    # matched a model id that merely contains the word (`zai/alternative`), and the note below
+    # is about the `native` TYPE being in `builtin`.
+    if [ -n "${DJ:-}" ] && jq -e '((.builtin // []) | index("native")) != null' <<<"$DJ" >/dev/null 2>&1; then
+        SAW_NATIVE_DEFAULT=1
+    fi
 done
 # `native` is the one reviewer type whose meaning depends on a host this script cannot see.
 # Host detection is "does the orchestrator have spawn_subagent" — invisible from a shell, and
@@ -1041,6 +1049,13 @@ done
 # PREFLIGHT_SKIP_NETWORK note above says that those rows do not mean what they look like.
 if [ "${SAW_NATIVE_DEFAULT:-0}" = 1 ] && [ "$NM_STATUS" != "OK" ]; then
     printf 'SUMMARY note: a preset names `native` but `grok models` did not answer, so no native:* entry is in SUMMARY available. On Grok Build that IS a real gap. On Claude Code it is not: there `native` collapses into `claude` and native_models is ignored, so exclude every native:* name from the defaults-vs-available membership check on that host\n'
+fi
+# `claude` / `claude:*` above are host reviewers on Claude Code and need no binary. On Grok
+# Build the same entries mean the Claude Code CLI (`claude -p`, HOST_CLAUDE=1), and the
+# claude-cli row is the only thing that says whether it can start. The script cannot see the
+# host (see the native note above), so it explains the row instead of dropping the entries.
+if [ "${CLAUDE_CLI_STATUS:-OK}" = MISSING ] && [ -z "$BLOCKER" ]; then
+    printf 'SUMMARY note: claude-cli is MISSING. `claude` / `claude:*` in SUMMARY available are the host reviewers on Claude Code and still run there; on Grok Build they mean the Claude Code CLI and will not start until `claude` is on PATH and logged in (`claude login`).\n'
 fi
 # One `hint:` line, whose text was chosen with the blocker above. The literal `hint: ` prefix is
 # load-bearing: the suite's closed-set gate skips this line on `$1 != "hint:"`, and $1 alone —

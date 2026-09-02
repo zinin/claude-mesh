@@ -605,9 +605,13 @@ rm -rf "$TDIR"
 echo "=== Test: run identity — GROK parent accepts a child-stamped run via subagent meta ==="
 TDIR=$(mktemp -d)
 GH=$(mktemp -d)
-mkdir -p "$GH/sessions/cwd/subagents/grok-child-1"
-printf '%s\n' '{"parent_session_id": "grok-parent-1", "child_session_id": "grok-child-1"}' \
-    > "$GH/sessions/cwd/subagents/grok-child-1/meta.json"
+# Real layout, measured 2026-09-02: sessions/<urlencoded cwd>/<parent id>/subagents/<child id>/.
+# The first cut globbed sessions/*/subagents/ — one level too shallow — and this fixture
+# mirrored the mistake, so the suite was green over a function that never matched a file.
+# Compact JSON on purpose: the match is on the VALUE, not on Grok's pretty-printing.
+mkdir -p "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1"
+printf '%s\n' '{"parent_session_id":"grok-parent-1","child_session_id":"grok-child-1"}' \
+    > "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1/meta.json"
 mine=$(mk_run "$TDIR/runs/claude/opus" 2026-09-01-23-58-07-206201-review)
 mk_output "$mine/output.txt" 'real review'; ln -s attempt-1 "$mine/final"
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":44}' > "$mine/raw.jsonl"
@@ -618,7 +622,7 @@ assert_eq "verdict REAL when meta names this session as parent" "REAL" "$VERDICT
 assert_eq "exit 0" "0" "$RC"
 # A child of someone else stays foreign even when a meta file exists.
 printf '%s\n' '{"parent_session_id": "other-parent", "child_session_id": "grok-child-1"}' \
-    > "$GH/sessions/cwd/subagents/grok-child-1/meta.json"
+    > "$GH/sessions/%2Fcwd/grok-parent-1/subagents/grok-child-1/meta.json"
 VERDICT=$(env -u CLAUDE_CODE_SESSION_ID GROK_SESSION_ID=grok-parent-1 GROK_HOME="$GH" \
     bash "$SCRIPT" claude opus 1 "$TDIR" 2>/dev/null); RC=$?
 assert_eq "verdict FLIP for a child of another parent" "FLIP" "$VERDICT"

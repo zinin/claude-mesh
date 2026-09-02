@@ -12,7 +12,7 @@ Execute arbitrary prompts via `claude -p` with provider/model env taken from
 
 When `HOST_CLAUDE=1`, the same `claude -p` pipeline talks to official Claude Code
 (`claude login`): skip provider `export`, unset leaked `ANTHROPIC_*`, write
-`runs/claude/<alias>/`, pass `-m` when MODEL is set.
+`runs/claude/<alias>/`, pass `--model` when MODEL is set.
 
 **Announce at start:** "Using ext-claude-exec skill to run prompt via configured provider."
 
@@ -76,7 +76,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -86,12 +86,12 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
 
-Do not rewrite the fence. The else-branch searches `$HOME/.claude/plugins` first — version-sorted, `| sort -V | tail -1` — and only falls back to `$HOME/.grok/plugins` when that finds nothing. The roots are tried in PRIORITY order, never in one find over both: `sort -V` compares whole paths, and `.claude` < `.grok`, so a single find picked the `.grok` copy whatever its version. `.claude` is where the active copy lives on both hosts — Grok loads claude-mesh from the Claude cache. It then sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. The else-branch repeats `resolve-plugin-root.sh`'s remaining order IDENTICALLY — `$CLAUDE_PLUGIN_ROOT`, `$GROK_PLUGIN_ROOT`, then the two plugin trees — because it cannot call the helper (that is the file it is locating). Keep the two in step: they are one contract in two copies. If nothing resolves it STOPs, rather than resolving a `PLUGIN_ROOT` from the current directory.
+Do not rewrite the fence. The else-branch searches `$HOME/.grok/installed-plugins` first — an unpublished `grok plugin install <tree>` copy, the one `grok inspect` loads, which a stale Claude cache must not outrank (measured 2026-09-01: `sort -V` on the cache picked 0.12.0 and the wrappers ran the old loader) — then `$HOME/.claude/plugins`, then `$HOME/.grok/plugins`, each version-sorted, `| sort -V | tail -1`, and each tried only when the previous root finds nothing. The roots are tried in PRIORITY order, never in one find over all three: `sort -V` compares whole paths, and `.claude` < `.grok`, so a single find picked the `.grok` copy whatever its version. `.claude` is where a published copy lives on both hosts — Grok loads a marketplace claude-mesh from the Claude cache; only an unpublished tree sits under `installed-plugins`. It then sets `PLUGIN_ROOT` two directories up, and sets `SKILL_BASE=$PLUGIN_ROOT/skills/<this-skill>`. The else-branch repeats `resolve-plugin-root.sh`'s remaining order IDENTICALLY — `$CLAUDE_PLUGIN_ROOT`, `$GROK_PLUGIN_ROOT`, then the three plugin trees — because it cannot call the helper (that is the file it is locating). Keep the two in step: they are one contract in two copies. If nothing resolves it STOPs, rather than resolving a `PLUGIN_ROOT` from the current directory.
 
 From `SKILL_BASE` / `PLUGIN_ROOT`:
 - loader = `$SKILL_BASE/../shared/config-loader.sh`
@@ -117,7 +117,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -127,7 +127,7 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -137,7 +137,9 @@ LOADER="$SKILL_BASE/../shared/config-loader.sh"
 command -v claude >/dev/null 2>&1 || { echo "STOP: claude CLI not found"; exit 1; }
 command -v jq     >/dev/null 2>&1 || { echo "STOP: jq not found"; exit 1; }
 command -v bc     >/dev/null 2>&1 || { echo "STOP: bc not found (used by progress-monitor.sh)"; exit 1; }
-command -v curl   >/dev/null 2>&1 || { echo "STOP: curl not found"; exit 1; }
+# curl serves the token precheck and the ollama precheck — provider path only. HOST_CLAUDE=1
+# skips both, so a machine without curl still runs the official CLI.
+[ "${HOST_CLAUDE:-}" = "1" ] || command -v curl >/dev/null 2>&1 || { echo "STOP: curl not found (provider precheck needs it)"; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "STOP: python3 not found"; exit 1; }
 
 if [ "${HOST_CLAUDE:-}" = "1" ]; then
@@ -217,7 +219,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -227,7 +229,7 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -240,11 +242,10 @@ if [ "${HOST_CLAUDE:-}" = "1" ]; then
     # construction rather than by catalog: a slash (that is ext-claude's <provider>/<short>,
     # which would silently create a depth-3 run dir) and any `..`, `-` or `.` lead (path
     # traversal out of the data dir, or a value the CLI reads as a flag). grok-exec runs the
-    # same guard at skills/grok-exec/SKILL.md. The remaining charset question — claude.models
-    # is validated with IDENT_RE, which admits `:`/`@` that watch-runs.sh and
-    # verify-delegation.sh both reject — is deliberately NOT decided here.
-    # Watch-runs and verify-delegation accept [A-Za-z0-9][A-Za-z0-9._-]* only
-    # (`:`/`@` in claude.models IDENT_RE would mkdir a dir the guard then refuses).
+    # same guard at skills/grok-exec/SKILL.md. claude.models is validated with the wider
+    # IDENT_RE, which admits `:`/`@`; this guard rejects those for HOST_CLAUDE on purpose —
+    # watch-runs.sh and verify-delegation.sh accept [A-Za-z0-9][A-Za-z0-9._-]* only, so a
+    # `:`/`@` alias would mkdir a run dir the delegation guard then refuses to score.
     if [ -n "${MODEL:-}" ] && ! printf '%s' "$MODEL" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
         echo "STOP: MODEL '$MODEL' must match [A-Za-z0-9][A-Za-z0-9._-]* (HOST_CLAUDE alias, e.g. opus)" >&2
         exit 1
@@ -293,7 +294,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -303,7 +304,7 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -409,6 +410,12 @@ an `rc=2` bail — once you are woken. Do NOT wrap the launch in a foreground wa
 such a call is capped exactly like the one you just avoided. If the run dies, report the death
 rather than relaunching it — a second, untracked run dir is worse than a reported failure.
 
+**That is the Claude Code shape.** On Grok Build — no Skill tool, no SendMessage, nothing that
+wakes an idle wrapper — do NOT end the turn while the CLI is alive: keep the launch in the
+background and wait on its command id with `get_command_or_subagent_output` (loop; each call's
+ceiling is 600 s) until it exits, then read `$WORK_DIR/output.txt` and report, exactly as the
+agent definition says. Ending the turn there leaves the review on disk with nobody to collect it.
+
 ```bash
 set -euo pipefail
 command -v jq >/dev/null 2>&1 || { echo "supervised mode requires jq" >&2; exit 64; }
@@ -420,7 +427,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -430,7 +437,7 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -585,7 +592,7 @@ SKILL_BASE="<absolute base dir Claude Code printed, or empty>"
 if [ -n "$SKILL_BASE" ]; then
   PLUGIN_ROOT=$(SKILL_BASE="$SKILL_BASE" bash "$SKILL_BASE/../shared/resolve-plugin-root.sh")
 else
-  # Same order as resolve-plugin-root.sh: env roots, then the two plugin trees. The
+  # Same order as resolve-plugin-root.sh: env roots, then the three plugin trees, installed-plugins first. The
   # helper cannot be called from here (it is what we are locating), so the branch has
   # to repeat it — and repeat it IDENTICALLY, or the two copies of one contract drift.
   _LOADER=""
@@ -595,7 +602,7 @@ else
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -f "$_LOADER" ] || _LOADER="$(find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
   [ -n "$_LOADER" ] || _LOADER="$(find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/shared/config-loader.sh' 2>/dev/null | sort -V | tail -1)"
-  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
+  [ -n "$_LOADER" ] || { echo "STOP: claude-mesh plugin root not found — \$CLAUDE_PLUGIN_ROOT and \$GROK_PLUGIN_ROOT hold no plugin, and nothing under $HOME/.grok/installed-plugins, $HOME/.claude/plugins or $HOME/.grok/plugins matched" >&2; exit 1; }
   PLUGIN_ROOT=$(cd "$(dirname "$_LOADER")/../.." && pwd)
   SKILL_BASE="$PLUGIN_ROOT/skills/ext-claude-exec"
 fi
@@ -619,7 +626,7 @@ fi
 | Flag | Purpose |
 |------|---------|
 | `-p` | Headless (print) mode — no interactive session, prompt arrives on stdin |
-| `--model <alias>` | HOST_CLAUDE=1 only, and only when MODEL is non-empty. Empty catalog → omit `-m` (CLI default). Provider path never passes `-m`; it sets `ANTHROPIC_MODEL` via export instead. |
+| `--model <alias>` | HOST_CLAUDE=1 only, and only when MODEL is non-empty. Empty catalog → omit `--model` (CLI default). Provider path never passes `--model`; it sets `ANTHROPIC_MODEL` via export instead. |
 | `--permission-mode bypassPermissions` | Skip every permission check, **including the confinement to the launch directory**. Not optional: under `-p` nobody can answer a permission prompt, so without it every access outside the cwd is auto-denied and the reviewer silently loses the sibling repositories it needs to check an API signature against real source — the review degrades to guesswork instead of failing. `--add-dir` is NOT needed alongside it (the bypass lifts the directory confinement too). Parity with codex `--dangerously-bypass-approvals-and-sandbox` and gemini `--approval-mode yolo`; `--dangerously-skip-permissions` was measured equivalent and is spelled this way to match the mode vocabulary the other engines use. |
 | `--output-format stream-json` | Emit JSONL events, consumed by `progress-monitor.sh` (default mode), `extract-result.py` (supervised) and `shared/stream-json-report.sh` (BOTH modes — default renders from `log.jsonl`, supervised from `raw.jsonl`) |
 | `timeout $SINGLE_RUN` | Per-run limit from the `runtime` timeouts in config.yaml (default 1800s). HOST_CLAUDE=1 reads them via `get-runtime` JSON, not from export. |

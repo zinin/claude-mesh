@@ -12,7 +12,11 @@ All notable changes to claude-mesh will be documented here.
 - **Unpublished Grok install lost to the Claude cache.** `resolve-plugin-root.sh` and every skill/command else-branch now search `~/.grok/installed-plugins` before `~/.claude/plugins`.
 - **HOST_CLAUDE `claude -p -m` is not a flag** on Claude Code 2.1.257. Pass `--model`.
 - **Empty `.session_id` on Grok.** Stamp and match `GROK_SESSION_ID` when `CLAUDE_CODE_SESSION_ID` is unset.
-- **Grok wrapper `.session_id` is the child session, not the parent.** Wrapper bash sees its own `GROK_SESSION_ID`; `watch-runs` / `verify-delegation` run as the orchestrator. A child-stamped run is still this dispatch when Grok's subagent `meta.json` names the parent. Without that meta the stamp stays foreign.
+- **Grok wrapper `.session_id` is the child session, not the parent.** Wrapper bash sees its own `GROK_SESSION_ID`; `watch-runs` / `verify-delegation` run as the orchestrator. A child-stamped run is still this dispatch when Grok's subagent `meta.json` names the parent. Without that meta the stamp stays foreign. The meta lives at `~/.grok/sessions/<cwd>/<parent id>/subagents/<child id>/meta.json`; the first cut globbed one level too shallow and matched nothing, and the match is now on the value, not on Grok's pretty-printing.
+- **Grok wait rule contradicted by the exec skills.** The four `*-exec` skills told every wrapper to end its turn after the launch; on Grok Build the wrapper waits on the command id instead, as the agent definitions already said.
+- `mesh-design-review` merge template gained the `native:<slug>` section; the Grok wait loop now binds `runtime.timeouts.global_sec` (`GLOBAL_SEC`) instead of naming a value nothing had read.
+- `list-host-models.sh` stops at the first non-bullet line after `Available models:` — bulleted prose printed after the list no longer becomes slugs.
+- Preflight: `native` detection reads the preset JSON, not the joined summary string; a `claude-cli MISSING` row now carries a note that `claude:*` is the CLI on Grok Build.
 - **Review→exec Read on Grok opened the Claude cache.** The no-Skill-tool paragraph in the five `*-code-review` skills (and fresh-session preflight) now searches `~/.grok/installed-plugins` before `~/.claude/plugins`.
 - Preflight no longer marks a zero-slug `grok models` listing as `OK` (and no longer leaks a temp file).
 
