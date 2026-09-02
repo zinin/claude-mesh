@@ -2,6 +2,13 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Changed
+- **`/transfer-session` always writes under `docs/`.** `docs/session-transfer-<date>-<time>.md`,
+  creating the directory when needed, like every other prompt generator in the plugin. The
+  `/tmp` fallback is gone: the fresh session has to find the file by a project-relative path.
+
 ## [0.14.0] - 2026-09-02
 
 ### Changed
