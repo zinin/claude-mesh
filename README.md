@@ -45,7 +45,7 @@ daemon), and session helpers.
   frontmatter for conditional loading, quality checklist. Vendored from an external project —
   see [Credits](#credits)
 - **Grok Build** — `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `general-purpose` reviewers (`builtin: native`, slugs from `grok models`; `explore` has no shell on Grok 1.0.13, so the child is told not to edit files) alongside the CLI wrappers. `grok plugin list` empty is not "missing" — see [Grok Build](#grok-build)
-- **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else). On Grok it reads `signals.json` and is also registered on `PreToolUse`
+- **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else). On Grok `/do-plan` polls `signals.json` instead of waiting for a hook reminder
 
 ## Install
 
