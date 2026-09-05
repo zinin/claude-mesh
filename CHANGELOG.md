@@ -2,6 +2,14 @@
 
 All notable changes to claude-mesh will be documented here.
 
+## [Unreleased]
+
+### Changed
+- **`/do-plan` on Grok inherits the session model when `runtime.dispatch_model` is not a host slug.** The Step 1 fence probes `grok models` (same `timeout` + `list-host-models.sh` as `/mesh-review`); a miss, an empty catalog, or a missing `timeout(1)` clears `DISPATCH_MODEL` so subagents omit `model:` rather than spawning `opus`. `spawn_subagent` has no effort field — omitting `model:` is what inherits session effort (`xhigh` on `grok-4.6`).
+- **`/do-plan` binds the context hook with `GROK_SESSION_ID` when `CLAUDE_CODE_SESSION_ID` is empty.** Both empty still abort.
+- **`check-context-size.sh` reads Grok `signals.json` (`contextTokensUsed`) and keys the session off `sessionId` / `$GROK_SESSION_ID`.** Data dir falls back to `$GROK_PLUGIN_DATA`. Subagent fires (`subagentType` or `agent_id`) stay silent. Wiring stays `PostToolUse` only — same as Claude Code.
+- **`/do-plan` on Grok polls `signals.json` for STOP.** The hook is not the primary channel: Grok does not inject status-line / `/session-info` numbers into the model, and `PostToolUse` stdout is ignored. Step 1 echoes `CONTEXT_SIGNALS=`; after each task checkpoint the controller reads `contextTokensUsed` and pauses when it crosses the threshold.
+
 ## [0.14.1] - 2026-09-02
 
 ### Changed

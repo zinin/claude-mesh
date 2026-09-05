@@ -371,6 +371,9 @@ runtime:
   # (e.g. opus, sonnet, fable, claude-fable-5, Bedrock us.anthropic.…-v2:0, Vertex
   # claude-opus-4@date). No enum is enforced — flip it freely when a model opens or
   # closes, no plugin release needed. Charset: [A-Za-z0-9._:@-] (first char alphanumeric).
+  # On Grok, /do-plan additionally checks the live `grok models` catalog: a slug that is
+  # not a host model (typical: opus) is dropped and subagents inherit the session
+  # (model and reasoning effort — spawn_subagent has no effort field).
   # dispatch_model: opus
 
   timeouts:                                    # all [optional]; each must be a positive integer (seconds).

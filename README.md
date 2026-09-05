@@ -45,7 +45,7 @@ daemon), and session helpers.
   frontmatter for conditional loading, quality checklist. Vendored from an external project —
   see [Credits](#credits)
 - **Grok Build** — `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `general-purpose` reviewers (`builtin: native`, slugs from `grok models`; `explore` has no shell on Grok 1.0.13, so the child is told not to edit files) alongside the CLI wrappers. `grok plugin list` empty is not "missing" — see [Grok Build](#grok-build)
-- **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else)
+- **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else). On Grok `/do-plan` polls `signals.json` instead of waiting for a hook reminder
 
 ## Install
 
@@ -97,7 +97,10 @@ The same `config.yaml` serves both hosts.
 - Data dir is still `~/.claude/plugins/data/claude-mesh-zinin/`.
 - The `grok models` probe that builds the native page waits `GROK_MODELS_TIMEOUT` seconds, else
   `PREFLIGHT_CLI_TIMEOUT` (the knob `preflight-env.sh` names in its NO-NETWORK row), else 30.
-  A non-numeric value falls back to 30 with a warning.
+  A non-numeric value falls back to 30 with a warning. `/do-plan` uses the same probe: a
+  `runtime.dispatch_model` that is not a live host slug is dropped and subagents inherit the
+  session. On Grok, STOP is a poll of `signals.json` (`contextTokensUsed`), keyed by
+  `$GROK_SESSION_ID`; the hook is a backup, not the primary channel.
 
 ## Claude Code settings (not plugin config)
 
@@ -154,7 +157,7 @@ value before the harness intervenes — which is exactly the runaway the default
 ## Dependencies
 
 The plugin requires:
-- `claude` CLI (this plugin runs on top of Claude Code). Mesh agents pin no model — subagents inherit your session model by default. To force a specific tier (e.g. `opus`, `fable`), set `runtime.dispatch_model` in config.yaml; if you name a model your Claude Code build does not support, dispatch fails at runtime — pick a supported alias/id.
+- `claude` CLI (this plugin runs on top of Claude Code). Mesh agents pin no model — subagents inherit your session model by default. To force a specific tier (e.g. `opus`, `fable`), set `runtime.dispatch_model` in config.yaml; if you name a model your Claude Code build does not support, dispatch fails at runtime — pick a supported alias/id. On Grok, `/do-plan` does not pass that value to `spawn_subagent` unless it is a live host slug from `grok models`; `opus` is dropped and the child inherits this session's model and effort (`spawn_subagent` has no effort field).
   - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / grok / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once) — whether the models come from the preset or from the interactive selection page — and those reviewers ignore `dispatch_model`. Leave the section out (or leave the list empty) and — whenever `claude` is selected at all (interactively, or via the preset's `builtin`) — you get exactly one claude reviewer on `dispatch_model` — as before for `/mesh-review`, and one more than before for `/mesh-design-review`, where `claude` used to be silently dropped. Without `claude` in play no claude reviewer runs, catalog or no catalog. **Cost scales linearly:** N Claude models = N full reviews of the same diff, on top of codex/gemini and every external model — three Claude models plus codex plus five external models is nine reviewers for one `/mesh-review`. Catalog entries are not checked against your Claude Code build: a name it does not accept fails that reviewer's dispatch — the run continues with the others, and the model is never silently substituted.
 - `yq` — **either flavor**: Python-yq (`kislyuk/yq`) or Go-yq v4+ (`mikefarah/yq`). `config-loader.sh` does not identify the binary: it runs the transcode, keeps whichever invocation produced JSON, and — when the config contains a value that could have been mis-resolved — checks that `off`/`on`/`yes`/`no` came through as strings before trusting it. A `yq` that fails either check is refused by name, and your `config.yaml` is not blamed for it.
 - `jq` — for JSON parsing in stream-json mode
