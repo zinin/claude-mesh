@@ -99,7 +99,8 @@ The same `config.yaml` serves both hosts.
   `PREFLIGHT_CLI_TIMEOUT` (the knob `preflight-env.sh` names in its NO-NETWORK row), else 30.
   A non-numeric value falls back to 30 with a warning. `/do-plan` uses the same probe: a
   `runtime.dispatch_model` that is not a live host slug is dropped and subagents inherit the
-  session. The STOP hook keys off `GROK_SESSION_ID` and `signals.json`.
+  session. On Grok, STOP is a poll of `signals.json` (`contextTokensUsed`), keyed by
+  `$GROK_SESSION_ID`; the hook is a backup, not the primary channel.
 
 ## Claude Code settings (not plugin config)
 
