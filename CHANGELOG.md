@@ -2,7 +2,7 @@
 
 All notable changes to claude-mesh will be documented here.
 
-## [Unreleased]
+## [0.15.0] - 2026-09-05
 
 ### Changed
 - **`/do-plan` on Grok inherits the session model when `runtime.dispatch_model` is not a host slug.** The Step 1 fence probes `grok models` (same `timeout` + `list-host-models.sh` as `/mesh-review`); a miss, an empty catalog, or a missing `timeout(1)` clears `DISPATCH_MODEL` so subagents omit `model:` rather than spawning `opus`. `spawn_subagent` has no effort field — omitting `model:` is what inherits session effort (`xhigh` on `grok-4.6`).
